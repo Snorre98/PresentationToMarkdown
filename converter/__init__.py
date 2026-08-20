@@ -5,6 +5,9 @@ Public API::
     from converter import convert_file, convert_files, ConvertResult
 
     results = convert_files(["deck.pptx", "handout.pdf"], "out/")
+
+``output_dir`` is optional; when omitted (or ``None``) each file is written to
+``<source-folder>/markdown/``.
 """
 from __future__ import annotations
 
@@ -36,33 +39,42 @@ __all__ = [
 ]
 
 
+def _default_output_dir(path: Path) -> Path:
+    return path.parent / "markdown"
+
+
 def convert_file(
     path: str | Path,
-    output_dir: str | Path,
+    output_dir: str | Path | None = None,
 ) -> ConvertResult:
-    """Convert one supported file to a .md file plus an assets folder."""
+    """Convert one supported file to a .md file plus an assets folder.
+
+    ``output_dir`` defaults to ``<source-folder>/markdown`` when omitted.
+    """
     path = Path(path)
-    output_dir = Path(output_dir)
     converter = registry.get(path)
     if converter is None:
         return ConvertResult(
             source_path=path,
             error=f"Unsupported file type: {path.suffix or '(none)'}",
         )
-    output_dir.mkdir(parents=True, exist_ok=True)
-    return converter.convert(path, output_dir)
+    resolved = Path(output_dir) if output_dir else _default_output_dir(path)
+    resolved.mkdir(parents=True, exist_ok=True)
+    return converter.convert(path, resolved)
 
 
 def convert_files(
     paths: list[str | Path],
-    output_dir: str | Path,
+    output_dir: str | Path | None = None,
     progress_callback: ProgressCallback | None = None,
 ) -> list[ConvertResult]:
-    """Convert multiple files; errors are captured per file."""
+    """Convert multiple files; errors are captured per file.
+
+    ``output_dir`` defaults to ``<source-folder>/markdown`` per file when
+    omitted.
+    """
     results: list[ConvertResult] = []
     total = len(paths)
-    output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
     for idx, path in enumerate(paths, start=1):
         result = convert_file(path, output_dir)
         results.append(result)

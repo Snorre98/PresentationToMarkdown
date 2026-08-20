@@ -47,5 +47,16 @@ def test_convert_files_mixed(tmp_path):
     assert all(r.error is None for r in results)
 
 
+def test_convert_file_default_output_dir(tmp_path):
+    import shutil
+
+    src = tmp_path / "deck.pptx"
+    shutil.copy(PPTX, src)
+    result = convert_file(src)
+    assert result.error is None
+    assert result.md_path == tmp_path / "markdown" / "deck.md"
+    assert result.md_path.exists()
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__]))

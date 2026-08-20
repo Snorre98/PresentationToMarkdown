@@ -42,7 +42,7 @@ Also: slide-number and date placeholders are skipped, headers/footers are italic
 
 1. **Add files** — click *Add Files...* to pick `.pptx`/`.pdf` files, *Add Folder...* to scan a folder (and subfolders) for supported files, or drag-and-drop either onto the list.
 2. **Adjust the list** — *Remove* selected entries or *Clear* everything.
-3. **Pick an output folder** — defaults to `~/Documents/Markdown`; click *Browse...* to change.
+3. **Pick an output folder (optional)** — by default each file is written to its own `<input-folder>/markdown/`; enter a path and click *Browse...* to override and send everything to one folder instead.
 4. **Convert** — click *Convert*. Conversion runs on a background thread, so the UI stays responsive while a progress bar advances and the log reports one line per file:
    - `[OK]  deck.pptx -> /path/deck.md`
    - `[ERR] broken.pdf: ...` on failure
@@ -53,9 +53,12 @@ Also: slide-number and date placeholders are skipped, headers/footers are italic
 ```python
 from converter import convert_file, convert_files, SUPPORTED_EXTENSIONS
 
-# one file
-result = convert_file("deck.pptx", "out/")
+# one file (output defaults to <input-folder>/markdown)
+result = convert_file("deck.pptx")
 print(result.md_path or result.error)
+
+# one file, explicit output folder
+result = convert_file("deck.pptx", "out/")
 
 # many files, with progress
 def on_progress(idx, total, name):
@@ -68,11 +71,12 @@ for r in results:
         print("  warn:", warning)
 ```
 
-- `convert_file(path, output_dir) -> ConvertResult`
-- `convert_files(paths, output_dir, progress_callback=None) -> list[ConvertResult]`
+- `convert_file(path, output_dir=None) -> ConvertResult`
+- `convert_files(paths, output_dir=None, progress_callback=None) -> list[ConvertResult]`
 - `progress_callback(idx: int, total: int, name: str) -> None`
 - `ConvertResult` fields: `source_path`, `md_path`, `error`, `warnings`
 - `SUPPORTED_EXTENSIONS` — e.g. `{".pptx", ".pdf"}`
+- `output_dir` is optional; when omitted, each file is written to `<source-folder>/markdown/`.
 
 ## Output layout
 
@@ -88,6 +92,8 @@ out/
 ```
 
 Images are deduplicated by content hash and named `<name>_<NN>_<hash>.<ext>`.
+
+With the default `output_dir=None`, the same layout is written under each source file's own folder, i.e. `<input-folder>/markdown/`.
 
 ## Example
 

@@ -49,7 +49,7 @@ class ConversionThread(QThread):
     progressed = Signal(int, int, str)
     conversion_finished = Signal(list)
 
-    def __init__(self, paths: list[Path], output_dir: Path):
+    def __init__(self, paths: list[Path], output_dir: Path | None):
         super().__init__()
         self._paths = paths
         self._output_dir = output_dir
@@ -88,7 +88,8 @@ class MainWindow(QMainWindow):
         file_buttons.addWidget(remove_btn)
         file_buttons.addWidget(clear_btn)
 
-        self.output_edit = QLineEdit(str(Path.home() / "Documents" / "Markdown"))
+        self.output_edit = QLineEdit()
+        self.output_edit.setPlaceholderText("Defaults to <input-folder>/markdown")
         browse_btn = QPushButton("Browse...")
         browse_btn.clicked.connect(self.pick_output_dir)
         output_row = QHBoxLayout()
@@ -182,14 +183,31 @@ class MainWindow(QMainWindow):
         if not paths:
             QMessageBox.warning(self, "No files", "Add at least one .pptx or .pdf file first.")
             return
-        output_dir = Path(self.output_edit.text().strip() or ".")
-        output_dir.mkdir(parents=True, exist_ok=True)
+
+        text = self.output_edit.text().strip()
+        output_dir = Path(text) if text else None
+        if output_dir is not None:
+            output_dir.mkdir(parents=True, exist_ok=True)
+        else:
+            parents = {path.parent for path in paths}
+            if len(parents) > 1:
+                QMessageBox.warning(
+                    self,
+                    "Files from different folders",
+                    "Selected files come from different folders. Each file will be "
+                    "written to its own <folder>/markdown/ subfolder.",
+                )
 
         self.convert_btn.setEnabled(False)
         self.progress.setVisible(True)
         self.progress.setMaximum(len(paths))
         self.progress.setValue(0)
-        self.log.appendPlainText(f"Converting {len(paths)} file(s) to {output_dir} ...")
+        if output_dir is None:
+            self.log.appendPlainText(
+                f"Converting {len(paths)} file(s) to <input-folder>/markdown ..."
+            )
+        else:
+            self.log.appendPlainText(f"Converting {len(paths)} file(s) to {output_dir} ...")
 
         self._worker_thread = ConversionThread(paths, output_dir)
         self._worker_thread.progressed.connect(self._on_progress)
