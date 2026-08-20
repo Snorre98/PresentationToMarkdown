@@ -1,4 +1,4 @@
-"""PySide6 GUI for the PPTX -> Markdown converter."""
+"""PySide6 GUI for the Presentation/PDF -> Markdown converter."""
 from __future__ import annotations
 
 import sys
@@ -23,11 +23,11 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from converter import ConvertResult, convert_files
+from converter import ConvertResult, SUPPORTED_EXTENSIONS, convert_files
 
 
 class DropList(QListWidget):
-    """File list accepting drag-and-dropped .pptx files and folders."""
+    """File list accepting drag-and-dropped presentation/PDF files and folders."""
 
     def dragEnterEvent(self, event: QDragEnterEvent):
         if event.mimeData().hasUrls():
@@ -65,7 +65,7 @@ class ConversionThread(QThread):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("PPTX to Markdown")
+        self.setWindowTitle("Presentation to Markdown")
         self.resize(640, 520)
         self._worker_thread: QThread | None = None
 
@@ -105,8 +105,8 @@ class MainWindow(QMainWindow):
         self.log = QPlainTextEdit()
         self.log.setReadOnly(True)
         self.log.setPlaceholderText(
-            "Drop .pptx files or folders here, or use Add Files. "
-            "One .md file per deck, images saved under assets/<deck>/."
+            "Drop .pptx/.pdf files or folders here, or use Add Files. "
+            "One .md file per document, images saved under assets/<name>/."
         )
 
         layout = QVBoxLayout()
@@ -133,8 +133,12 @@ class MainWindow(QMainWindow):
         added = 0
         for path in paths:
             if path.is_dir():
-                candidates = sorted(path.rglob("*.pptx"))
-            elif path.suffix.lower() == ".pptx":
+                candidates = sorted(
+                    cand
+                    for cand in path.rglob("*")
+                    if cand.suffix.lower() in SUPPORTED_EXTENSIONS
+                )
+            elif path.suffix.lower() in SUPPORTED_EXTENSIONS:
                 candidates = [path]
             else:
                 continue
@@ -151,7 +155,7 @@ class MainWindow(QMainWindow):
 
     def pick_files(self):
         paths, _ = QFileDialog.getOpenFileNames(
-            self, "Select PowerPoint files", "", "PowerPoint files (*.pptx)"
+            self, "Select files", "", "Presentations and PDFs (*.pptx *.pdf)"
         )
         if paths:
             self.add_paths([Path(p) for p in paths])
@@ -176,7 +180,7 @@ class MainWindow(QMainWindow):
             for i in range(self.file_list.count())
         ]
         if not paths:
-            QMessageBox.warning(self, "No files", "Add at least one .pptx file first.")
+            QMessageBox.warning(self, "No files", "Add at least one .pptx or .pdf file first.")
             return
         output_dir = Path(self.output_edit.text().strip() or ".")
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -201,12 +205,12 @@ class MainWindow(QMainWindow):
         ok = 0
         for result in results:
             if result.error:
-                self.log.appendPlainText(f"[ERR] {result.pptx_path.name}: {result.error}")
+                self.log.appendPlainText(f"[ERR] {result.source_path.name}: {result.error}")
             else:
                 ok += 1
-                self.log.appendPlainText(f"[OK]  {result.pptx_path.name} -> {result.md_path}")
+                self.log.appendPlainText(f"[OK]  {result.source_path.name} -> {result.md_path}")
                 for warning in result.warnings:
-                    self.log.appendPlainText(f"[WARN] {result.pptx_path.name}: {warning}")
+                    self.log.appendPlainText(f"[WARN] {result.source_path.name}: {warning}")
         self.log.appendPlainText(f"Done: {ok} of {len(results)} converted.\n")
         self.progress.setVisible(False)
         self.convert_btn.setEnabled(True)
