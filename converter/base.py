@@ -108,14 +108,23 @@ def write_image(
     stem: str,
     counter: list[int],
     warnings: list[str],
+    dedup: dict[str, str] | None = None,
 ) -> str | None:
-    """Write an image blob to ``assets/<stem>/`` and return its filename."""
+    """Write an image blob to ``assets/<stem>/`` and return its filename.
+
+    ``dedup`` is an optional ``{digest: filename}`` map; when provided, identical
+    content is written only once and the existing filename is returned.
+    """
     try:
         digest = hashlib.md5(blob).hexdigest()[:8]
+        if dedup is not None and digest in dedup:
+            return dedup[digest]
         ext = (ext or "bin").lstrip(".")
         filename = f"{stem}_{counter[0]:02d}_{digest}.{ext}"
         counter[0] += 1
         (assets_dir / filename).write_bytes(blob)
+        if dedup is not None:
+            dedup[digest] = filename
         return filename
     except Exception as exc:
         warnings.append(f"Could not write image: {exc}")

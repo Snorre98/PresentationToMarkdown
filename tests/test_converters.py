@@ -28,9 +28,30 @@ def test_convert_pdf(tmp_path):
     assert result.error is None
     assert result.md_path is not None and result.md_path.exists()
     text = result.md_path.read_text(encoding="utf-8")
-    assert "# Page 1" in text
-    assert "# Page 2" in text
-    assert "Sample PDF Page" in text
+    assert "# Sample PDF Page" in text
+    assert "# Second Page" in text
+    assert "Some more body text." in text
+    assert "![slide](assets/test_doc/" in text
+
+
+def test_convert_pdf_bullets(tmp_path):
+    result = convert_file(PDF, tmp_path)
+    text = result.md_path.read_text(encoding="utf-8")
+    assert "- First bullet item" in text
+    assert "- Second bullet inline" in text
+
+
+def test_convert_pdf_bold_formatting(tmp_path):
+    result = convert_file(PDF, tmp_path)
+    text = result.md_path.read_text(encoding="utf-8")
+    assert "**Enterprise Modeling**" in text
+    assert "** " not in text
+
+
+def test_convert_pdf_footer_stripped(tmp_path):
+    result = convert_file(PDF, tmp_path)
+    text = result.md_path.read_text(encoding="utf-8")
+    assert "Sample Footer" not in text
 
 
 def test_unsupported_extension(tmp_path):

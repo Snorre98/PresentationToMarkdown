@@ -28,9 +28,21 @@ Also: slide-number and date placeholders are skipped, headers/footers are italic
 
 | Source element | Markdown output |
 | --- | --- |
-| Each page | `# Page N` heading |
-| Text | Extracted block-by-block, preserving bold/italic via font flags |
-| Images | Extracted to `assets/<name>/` and referenced |
+| Each page | `# {slide title}` heading (falls back to `# Page N`) |
+| Page render | Rendered PNG referenced as `![slide](…)` — the visual ground truth |
+| Text | Reconstructed into reading order, preserving bold/italic |
+| Bullets | `- ` / nested `  - ` lists (bullet glyphs + indentation) |
+| Tables | Pipe tables via `page.find_tables()` |
+| Footer / slide number | Dropped (repeats identically on every page) |
+
+Layout-aware: lines are reordered by their coordinates, bullets are detected from
+the `•`/`–` glyphs and their indent, and real tables are detected by PyMuPDF.
+Pages whose text can't be linearized (diagrams, multi-column flowcharts) fall
+back to the rendered PNG plus a collapsed raw-text block — and can optionally be
+transcribed by a local vision model. See [docs/ai-vision.md](docs/ai-vision.md).
+
+Shared slide-master background images are detected and skipped, and all extracted
+images are deduplicated by content hash.
 
 ## How to use
 
@@ -124,7 +136,9 @@ python3 -m venv .venv
   - `__init__.py` — public API and extension-based dispatch (`convert_file`, `convert_files`)
   - `base.py` — shared `Converter` interface, registry, and reusable Markdown helpers
   - `pptx.py` — PowerPoint converter (python-pptx)
-  - `pdf.py` — PDF converter (PyMuPDF)
+  - `pdf.py` — PDF converter (PyMuPDF), layout-aware text + table/bullet reconstruction
+  - `vision.py` — optional local vision-LLM post-pass (OpenAI-compatible endpoint)
+- `docs/ai-vision.md` — how to serve the vision model and enable the AI pass
 - `gui.py` — PySide6 interface (file list, output folder, progress, log)
 - `main.py` — entry point
 - `tests/make_test_deck.py` — generates a synthetic deck covering all features
@@ -149,10 +163,19 @@ python3 -m venv .venv
    ```
 3. Add the extension to the GUI file filter and placeholder text if you want it listed.
 
+## AI vision pass
+
+For diagram/multi-column slides, the PDF converter can hand the rendered page to a
+local **MLX vision model** (`mlx-vlm`) for a structured Markdown transcription. It
+is off by default and fully deterministic without it. See
+**[docs/ai-vision.md](docs/ai-vision.md)** for how to serve the model (referencing
+`macos-dev-config/inference-readme.md`) and the env vars that enable it.
+
 ## Known limitations / future ideas
 
 - Charts and SmartArt are skipped (SmartArt text lives in a separate XML part)
-- PDF text is extracted block-by-block; no table detection, and multi-column layouts may read out of order
+- PDF multi-column layouts and diagrams are not linearized deterministically —
+  they fall back to the rendered PNG (+ optional vision transcription)
 - PyMuPDF is AGPL-3.0 (or commercial) licensed — fine for personal use, review if you distribute
 - Markdown flavor toggle (Obsidian `![[wiki-links]]`), note style, and heading level options could go in a settings pane
 - Packaging into a standalone executable with PyInstaller
