@@ -26,9 +26,95 @@ mlx_vlm.server --model mlx-community/Ornith-1.0-9B-8bit --port 8081
 
 Add `--host 0.0.0.0` only if you need to reach it from another device on the LAN.
 
+> Ornith is the *default*, not the only option — see
+> [Improving the vision model](#improving-the-vision-model) below for candidates
+> that are a better fit for lossless slide transcription.
+
 > No `ollama pull` and no separate download: this follows the
 > `inference-readme.md` "lanes" convention (one runner per model). The
 > PresentationToMarkdown converter never downloads models itself.
+
+## Improving the vision model
+
+This section is a starting point for doing your own deep research, not an
+exhaustive ranking. `mlx-vlm` supports a much wider range of models than just
+Ornith — including dedicated **OCR** models that are arguably a better fit for
+*lossless* slide transcription than a general-purpose VLM.
+
+### What the current model is (and its limit)
+
+`mlx-community/Ornith-1.0-9B-8bit` is a **9B general vision-language model**
+(qwen3_5 arch). Its strength is producing structured Markdown (headings, lists,
+tables) in one shot. Its weakness for *this* task is that, like any generalist,
+it can paraphrase or silently drop text — which is exactly why the converter
+runs a missing-word cross-check and keeps the raw text when too much is missing.
+
+### Two directions to explore
+
+| Direction | Models | Output | Fits when |
+| --- | --- | --- | --- |
+| **A. General VLM** | Qwen2.5-VL / Qwen3-VL, Gemma 4, MiniCPM-V | Structured Markdown directly | You want readable diagrams/flowcharts in one call |
+| **B. OCR specialist** | DeepSeek-OCR / 2, GLM-OCR, DOTS-OCR, PaddleOCR-VL, Falcon-OCR | Near-verbatim text (+ boxes) | Verbatim fidelity is the priority; structure comes from the deterministic layout pass |
+
+Direction **B** is interesting precisely because the converter already
+reconstructs reading order, bullets and tables from coordinates. An OCR model
+that is *faithful* but flat can be paired with that pass, instead of asking one
+generalist to do both "read every word" and "lay it out" at once.
+
+### Candidate shortlist (verify the exact `mlx-community` quant before pulling)
+
+General VLMs:
+
+- **Qwen2.5-VL** (3B / 7B / 32B) — the strongest well-established document
+  understanding in the mlx-vlm set; e.g. `mlx-community/Qwen2.5-VL-7B-Instruct-4bit`,
+  `mlx-community/Qwen2.5-VL-32B-Instruct-8bit`.
+- **Qwen3-VL** (4B+) — newer Qwen VL generation (e.g. `Qwen/Qwen3-VL-4B-Instruct`).
+- **Gemma 4** (E2B / 26B / 31B) — Google multimodal; note the Gemma license
+  (attribution) vs Qwen's Apache-2.0.
+- **MiniCPM-V 4.6** — small but strong at OCR-like tasks.
+- **Moondream2 / 3** — tiny and fast, for a cheap first sanity check.
+
+OCR specialists (best verbatim fidelity, lowest hallucination, but flat text):
+
+- **DeepSeek-OCR / DeepSeek-OCR-2**, **GLM-OCR**, **DOTS-OCR**, **PaddleOCR-VL**,
+  **Falcon-OCR**.
+
+### Selection criteria for this task
+
+1. **Verbatim fidelity** — does it reproduce exact wording, numbers, URLs?
+2. **Table reconstruction** — does it keep columns/cells or mangle them?
+3. **Bullet / indent preservation** — list nesting survives intact.
+4. **Low hallucination** — does it invent text or fill gaps?
+5. **License** — Qwen (Apache-2.0) preferred per `inference-readme.md` lanes;
+   Gemma carries attribution terms; Llama is avoided as a default.
+6. **Size** — M4 / 32 GB → ~24 GB usable, ~0.55 GB per 1B params at 4-bit. Up to
+   ~30B at 4-bit is comfortable; 70B+ is archive-only.
+
+### Recommended first candidate
+
+Start with **`mlx-community/Qwen2.5-VL-7B-Instruct-4bit`** — strong document
+understanding at ~4 GB, a clear step up from the 9B generalist. If text
+*omission* remains the dominant failure mode, switch to **DeepSeek-OCR**
+(verbatim OCR + the deterministic layout pass). `Qwen2.5-VL-32B` (8-bit) is the
+quality ceiling this machine can run.
+
+### Experiment workflow (A/B a candidate)
+
+```sh
+# 1. Serve the candidate (add --trust-remote-code if the model requires it)
+mlx_vlm.server --model mlx-community/Qwen2.5-VL-7B-Instruct-4bit --port 8081
+
+# 2. Point the converter at it and convert the same deck
+VISION_ENABLED=1 \
+VISION_BASE_URL=http://127.0.0.1:8081/v1 \
+VISION_MODEL=mlx-community/Qwen2.5-VL-7B-Instruct-4bit \
+./python main.py
+```
+
+Compare the complex pages against the rendered PNG, and treat the converter's
+missing-word warning count as a quantitative omission metric — lower is better.
+For throughput, `mlx_vlm.server` also supports speculative decoding
+(`--draft-model`, DFlash for Qwen3.5 / MTP for Gemma 4).
 
 ## Configuration
 
