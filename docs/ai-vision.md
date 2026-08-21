@@ -125,9 +125,13 @@ via environment variables:
 | Var | Default | Purpose |
 | --- | --- | --- |
 | `VISION_ENABLED` | *(unset = off)* | Master switch — `1`/`true`/`yes`/`on` enables the pass |
-| `VISION_BASE_URL` | `http://127.0.0.1:8081/v1` | Server base URL |
-| `VISION_MODEL` | `mlx-community/Ornith-1.0-9B-8bit` | Model id the server exposes |
+| `VISION_BASE_URL` | `http://127.0.0.1:8081/v1` | Transcriber server base URL |
+| `VISION_MODEL` | `mlx-community/Ornith-1.0-9B-8bit` | Transcriber model id |
 | `VISION_API_KEY` | *(unset)* | Optional bearer token (unused for local servers) |
+| `VISION_CLASSIFY_ENABLED` | *(unset = off)* | Enables the cheap classifier gate (and image-level transcription) |
+| `VISION_CLASSIFY_BASE_URL` | `http://127.0.0.1:8082/v1` | Classifier server base URL |
+| `VISION_CLASSIFY_MODEL` | `vikhyatk/moondream2` | Classifier model id (switch to any mlx-vlm VLM) |
+| `SOFFICE_PATH` | `soffice` | LibreOffice binary, for PPTX chart rendering only |
 
 Example:
 
@@ -138,6 +142,60 @@ VISION_ENABLED=1 ./python main.py
 When `VISION_ENABLED` is off (the default), conversion is fully deterministic and
 offline — diagrams fall back to the rendered PNG plus a collapsed
 `<details>` block of the raw extracted text.
+
+## The classifier gate (optional)
+
+The expensive transcriber (Ornith) is wasteful on decorative images — lecture
+decks are full of photographs, logos and backgrounds that have no educational
+value to extract. A **second, tiny vision model** (Moondream2 by default) can sit
+in front of it and decide whether an image/page is worth transcribing at all:
+
+```
+                  ┌─ TRANSCRIBE ─▶ transcriber (Ornith, :8081)
+classifier (:8082)┤
+                  └─ SKIP ───────▶ keep the image link as-is
+```
+
+Serve it on its own port (mlx-vlm runs one chat model per process):
+
+```sh
+mlx_vlm.server --model vikhyatk/moondream2 --port 8082
+```
+
+Enable the gate (and image-level transcription) with `VISION_CLASSIFY_ENABLED=1`:
+
+```sh
+VISION_ENABLED=1 VISION_CLASSIFY_ENABLED=1 ./python main.py
+```
+
+What the gate changes:
+
+- **Page pass** — a *complex* page is only sent to the transcriber when the
+  classifier says it is a diagram/table/chart. Without the gate,
+  `VISION_ENABLED=1` alone transcribes every complex page.
+- **Image-level transcription** — *new*: embedded images (PDF and PPTX pictures,
+  and PPTX charts rendered via LibreOffice) are classified, and educational ones
+  get a transcription appended below their `![image]` link. This only runs when
+  **both** `VISION_ENABLED` *and* `VISION_CLASSIFY_ENABLED` are on.
+
+The classifier is cheap and switchable — set `VISION_CLASSIFY_MODEL` to any
+mlx-vlm VLM (e.g. `mlx-community/Qwen2.5-VL-3B-Instruct-4bit`). Its answer is
+parsed loosely (a false signal like "photograph" wins over "graph"), and any
+classifier error degrades to "keep the link" — never to data loss.
+
+### PPTX charts
+
+Charts live in the file as data, not pixels, so `python-pptx` can't read them
+directly. With vision + classifier enabled, the converter renders them via
+headless LibreOffice (deck → PDF → cropped chart PNG), then classifies and
+transcribes them:
+
+```sh
+brew install --cask libreoffice
+```
+
+If LibreOffice is missing, charts are skipped with a warning and everything else
+still converts.
 
 ## How it works
 

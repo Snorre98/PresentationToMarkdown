@@ -18,6 +18,13 @@ from converter.base import (
     repeated_image_hashes,
     write_image,
 )
+from converter.classify import (
+    VISION_CLASSIFY_ENABLED,
+    maybe_transcribe_image,
+    should_transcribe,
+)
+from converter.render import PPTXRenderer, emu_rect_to_points, soffice_available
+from converter.vision import VISION_ENABLED, transcribe_image
 
 SKIP_PLACEHOLDERS = {PP_PLACEHOLDER.SLIDE_NUMBER, PP_PLACEHOLDER.DATE}
 FOOTER_PLACEHOLDERS = {PP_PLACEHOLDER.FOOTER, PP_PLACEHOLDER.HEADER}
@@ -132,7 +139,7 @@ def _handle_image(shape, assets_dir: Path, stem: str, counter: list[int], warnin
     filename = write_image(blob, ext, assets_dir, stem, counter, warnings, dedup)
     if filename is None:
         return None
-    return filename, image_digest(blob)
+    return filename, image_digest(blob), blob, ext
 
 
 def _shape_image_digests(shape) -> set[str]:
@@ -166,19 +173,85 @@ def _walk_shape(shape, ctx) -> list[str]:
         return _table_to_md(_table_rows(shape.table))
     image = _handle_image(shape, ctx["assets_dir"], ctx["stem"], ctx["counter"], ctx["warnings"], ctx["dedup"])
     if image:
-        filename, digest = image
+        filename, digest, blob, ext = image
         rel = _link_dest(f"assets/{ctx['stem']}/{filename}")
         if digest in ctx["repeated"]:
             if digest in ctx["seen"]:
                 return [f"[{shape.name}]({rel})"]
             ctx["seen"].add(digest)
-        return [f"![{shape.name}]({rel})"]
+        out = [f"![{shape.name}]({rel})"]
+        transcription = maybe_transcribe_image(blob, ext, ctx["warnings"])
+        if transcription:
+            out.extend(transcription.splitlines())
+            out.append("")
+        return out
     if shape.has_chart:
-        ctx["warnings"].append(f"Chart '{shape.name}' skipped (charts not supported yet)")
-        return []
+        return _handle_chart(shape, ctx)
     if shape.has_text_frame:
         _shape_text_to_md(shape, out, ctx["warnings"])
     return out
+
+
+def _handle_chart(shape, ctx) -> list[str]:
+    """Render a chart via LibreOffice, then classify + transcribe it.
+
+    Charts are only handled when both ``VISION_ENABLED`` and
+    ``VISION_CLASSIFY_ENABLED`` are on and LibreOffice is available; otherwise
+    the chart is skipped with a warning (the pre-existing behaviour).
+    """
+    if not (VISION_ENABLED and VISION_CLASSIFY_ENABLED):
+        ctx["warnings"].append(
+            f"Chart '{shape.name}' skipped (set VISION_ENABLED and VISION_CLASSIFY_ENABLED to transcribe charts)"
+        )
+        return []
+    renderer = ctx.get("renderer")
+    if renderer is None:
+        ctx["warnings"].append(f"Chart '{shape.name}' skipped (LibreOffice not available to render it)")
+        return []
+    slide_index = ctx["slide_num"] - 1
+    page_rect = renderer.page_rect(slide_index)
+    rect = emu_rect_to_points(
+        shape.left,
+        shape.top,
+        shape.width,
+        shape.height,
+        ctx["slide_w"],
+        ctx["slide_h"],
+        page_rect.width,
+        page_rect.height,
+    )
+    png = renderer.render_rect(slide_index, rect)
+    if not png:
+        ctx["warnings"].append(f"Chart '{shape.name}' skipped (could not render)")
+        return []
+    filename = write_image(png, "png", ctx["assets_dir"], ctx["stem"], ctx["counter"], ctx["warnings"], ctx["dedup"])
+    if filename is None:
+        return []
+    rel = _link_dest(f"assets/{ctx['stem']}/{filename}")
+    out = [f"![{shape.name}]({rel})"]
+    if should_transcribe(png, "image/png", ctx["warnings"]):
+        try:
+            transcription = transcribe_image(png, "image/png")
+        except Exception as exc:
+            ctx["warnings"].append(f"Vision transcription failed: {exc}")
+            transcription = None
+        if transcription:
+            out.extend(transcription.splitlines())
+            out.append("")
+    return out
+
+
+def _shape_has_chart(shape) -> bool:
+    if shape.shape_type == MSO_SHAPE_TYPE.GROUP:
+        return any(_shape_has_chart(sub) for sub in shape.shapes)
+    try:
+        return bool(shape.has_chart)
+    except Exception:
+        return False
+
+
+def _slide_has_chart(slide) -> bool:
+    return any(_shape_has_chart(shape) for shape in slide.shapes)
 
 
 def _is_skipped_placeholder(shape) -> bool:
@@ -249,18 +322,40 @@ class PPTXConverter(Converter):
                 "dedup": {},
                 "repeated": repeated_image_hashes(per_slide),
                 "seen": set(),
+                "renderer": None,
+                "slide_w": int(prs.slide_width),
+                "slide_h": int(prs.slide_height),
             }
-            lines: list[str] = []
-            for idx, slide in enumerate(prs.slides, start=1):
-                ctx["slide_num"] = idx
-                lines.extend(_slide_to_md(slide, ctx))
-                lines.extend([
-                    "",
-                    '<div style="page-break-after: always; break-after: page;"></div>',
-                    "",
-                    "---",
-                    "",
-                ])
+            renderer = None
+            has_charts = any(_slide_has_chart(slide) for slide in prs.slides)
+            if has_charts and VISION_ENABLED and VISION_CLASSIFY_ENABLED:
+                if soffice_available():
+                    try:
+                        renderer = PPTXRenderer(path)
+                    except Exception as exc:
+                        result.warnings.append(f"Could not render charts: {exc}")
+                        renderer = None
+                else:
+                    result.warnings.append(
+                        "Charts present but LibreOffice is not installed; "
+                        "chart transcription skipped (brew install --cask libreoffice)"
+                    )
+            ctx["renderer"] = renderer
+            try:
+                lines: list[str] = []
+                for idx, slide in enumerate(prs.slides, start=1):
+                    ctx["slide_num"] = idx
+                    lines.extend(_slide_to_md(slide, ctx))
+                    lines.extend([
+                        "",
+                        '<div style="page-break-after: always; break-after: page;"></div>',
+                        "",
+                        "---",
+                        "",
+                    ])
+            finally:
+                if renderer is not None:
+                    renderer.close()
             md_path = output_dir / f"{stem}.md"
             md_path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
             result.md_path = md_path

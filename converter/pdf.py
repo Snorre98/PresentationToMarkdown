@@ -29,6 +29,7 @@ from converter.base import (
     repeated_image_hashes,
     write_image,
 )
+from converter.classify import maybe_transcribe_image, should_transcribe
 from converter.vision import (
     VISION_ENABLED,
     transcribe_page,
@@ -291,6 +292,12 @@ def _page_images(page, doc, assets_dir, stem, counter, warnings, skip_xrefs, ded
                     continue
                 seen.add(digest)
             refs.append(f"![image]({rel})")
+            transcription = maybe_transcribe_image(
+                extracted["image"], extracted.get("ext", "bin"), warnings
+            )
+            if transcription:
+                refs.extend(transcription.splitlines())
+                refs.append("")
     return refs
 
 
@@ -523,6 +530,8 @@ class PDFConverter(Converter):
         png = pix.tobytes("png")
         raw = _raw_text(content)
         try:
+            if not should_transcribe(png, "image/png", warnings):
+                return None
             markdown = transcribe_page(png)
         except Exception as exc:
             warnings.append(f"Vision transcription failed: {exc}")
