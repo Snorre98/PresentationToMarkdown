@@ -13,7 +13,7 @@ One Markdown file per source document, with images extracted to a sidecar `asset
 
 | Source element | Markdown output |
 | --- | --- |
-| Slide title | `# Title` heading (falls back to `# Slide N` when absent) |
+| Slide title | `# Title — Slide N` heading (falls back to `# Slide N` when absent) |
 | Text runs | `**bold**`, `*italic*`, `***both***` preserved |
 | Bullets | `- ` list items |
 | Numbered lists | `1. ` list items |
@@ -28,8 +28,8 @@ Also: slide-number and date placeholders are skipped, headers/footers are italic
 
 | Source element | Markdown output |
 | --- | --- |
-| Each page | `# {slide title}` heading (falls back to `# Page N`) |
-| Page render | Rendered PNG referenced as `![slide](…)` — the visual ground truth |
+| Each page | `# {slide title} — Page N` heading (falls back to `# Page N`) |
+| Page render | Rendered PNG linked as `[Page N](…)` — the visual ground truth |
 | Text | Reconstructed into reading order, preserving bold/italic |
 | Bullets | `- ` / nested `  - ` lists (bullet glyphs + indentation) |
 | Tables | Pipe tables via `page.find_tables()` |
@@ -38,11 +38,13 @@ Also: slide-number and date placeholders are skipped, headers/footers are italic
 Layout-aware: lines are reordered by their coordinates, bullets are detected from
 the `•`/`–` glyphs and their indent, and real tables are detected by PyMuPDF.
 Pages whose text can't be linearized (diagrams, multi-column flowcharts) fall
-back to the rendered PNG plus a collapsed raw-text block — and can optionally be
-transcribed by a local vision model. See [docs/ai-vision.md](docs/ai-vision.md).
+back to a link to the rendered PNG plus a collapsed raw-text block — and can
+optionally be transcribed by a local vision model. See [docs/ai-vision.md](docs/ai-vision.md).
 
 Shared slide-master background images are detected and skipped, and all extracted
-images are deduplicated by content hash.
+images are deduplicated by content hash. Images that recur on ≥80% of slides/pages
+(logos, watermarks) are embedded inline only on their first occurrence; later
+occurrences become a text hyperlink to the same asset instead of a repeated image.
 
 ## How to use
 
@@ -112,7 +114,7 @@ With the default `output_dir=None`, the same layout is written under each source
 A slide with title "Bullets and *formatting*", a couple of bullets, and a note becomes:
 
 ```markdown
-# Bullets and \*formatting\*
+# Bullets and \*formatting\* — Slide 1
 
 - Plain point
 - **Bold ***italic* tail
@@ -121,7 +123,13 @@ A slide with title "Bullets and *formatting*", a couple of bullets, and a note b
 > **Notes:**
 > First line
 > Second line.
+
+<div style="page-break-after: always; break-after: page;"></div>
+
+---
 ```
+
+Slides are separated by an HTML page break (`<div style="page-break-after: always;"></div>`) plus a visible `---` rule, and each heading carries its slide/page number.
 
 ## Install
 

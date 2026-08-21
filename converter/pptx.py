@@ -12,7 +12,10 @@ from converter.base import (
     Converter,
     _escape,
     _format_md,
+    _link_dest,
     _table_to_md,
+    image_digest,
+    repeated_image_hashes,
     write_image,
 )
 
@@ -113,7 +116,7 @@ def _picture_bytes(shape):
     return None
 
 
-def _handle_image(shape, assets_dir: Path, stem: str, counter: list[int], warnings: list[str]):
+def _handle_image(shape, assets_dir: Path, stem: str, counter: list[int], warnings: list[str], dedup: dict[str, str]):
     try:
         image = _picture_bytes(shape)
     except Exception:
@@ -126,7 +129,30 @@ def _handle_image(shape, assets_dir: Path, stem: str, counter: list[int], warnin
     except Exception as exc:
         warnings.append(f"Could not read image '{shape.name}': {exc}")
         return None
-    return write_image(blob, ext, assets_dir, stem, counter, warnings)
+    filename = write_image(blob, ext, assets_dir, stem, counter, warnings, dedup)
+    if filename is None:
+        return None
+    return filename, image_digest(blob)
+
+
+def _shape_image_digests(shape) -> set[str]:
+    """Collect content digests of every image in a shape (groups recursed)."""
+    digests: set[str] = set()
+    if shape.shape_type == MSO_SHAPE_TYPE.GROUP:
+        for sub in shape.shapes:
+            digests |= _shape_image_digests(sub)
+        return digests
+    try:
+        image = _picture_bytes(shape)
+    except Exception:
+        return digests
+    if image is None:
+        return digests
+    try:
+        digests.add(image_digest(image.blob))
+    except Exception:
+        pass
+    return digests
 
 
 def _walk_shape(shape, ctx) -> list[str]:
@@ -138,9 +164,14 @@ def _walk_shape(shape, ctx) -> list[str]:
         return out
     if shape.has_table:
         return _table_to_md(_table_rows(shape.table))
-    image = _handle_image(shape, ctx["assets_dir"], ctx["stem"], ctx["counter"], ctx["warnings"])
+    image = _handle_image(shape, ctx["assets_dir"], ctx["stem"], ctx["counter"], ctx["warnings"], ctx["dedup"])
     if image:
-        rel = f"assets/{ctx['stem']}/{image}"
+        filename, digest = image
+        rel = _link_dest(f"assets/{ctx['stem']}/{filename}")
+        if digest in ctx["repeated"]:
+            if digest in ctx["seen"]:
+                return [f"[{shape.name}]({rel})"]
+            ctx["seen"].add(digest)
         return [f"![{shape.name}]({rel})"]
     if shape.has_chart:
         ctx["warnings"].append(f"Chart '{shape.name}' skipped (charts not supported yet)")
@@ -167,9 +198,10 @@ def _slide_to_md(slide, ctx) -> list[str]:
     title_shape = slide.shapes.title
     if title_shape is not None and title_shape.text_frame.text.strip():
         title = _escape(title_shape.text_frame.text.strip())
+        heading = f"{title} — Slide {ctx['slide_num']}"
     else:
-        title = f"Slide {ctx['slide_num']}"
-    lines.append(f"# {title}")
+        heading = f"Slide {ctx['slide_num']}"
+    lines.append(f"# {heading}")
     lines.append("")
     for shape in slide.shapes:
         if _is_skipped_placeholder(shape):
@@ -202,17 +234,33 @@ class PPTXConverter(Converter):
             stem = path.stem
             assets_dir = output_dir / "assets" / stem
             assets_dir.mkdir(parents=True, exist_ok=True)
+            per_slide: list[set[str]] = []
+            for slide in prs.slides:
+                digests: set[str] = set()
+                for shape in slide.shapes:
+                    digests |= _shape_image_digests(shape)
+                per_slide.append(digests)
             ctx = {
                 "assets_dir": assets_dir,
                 "stem": stem,
                 "counter": [1],
                 "warnings": result.warnings,
                 "slide_num": 0,
+                "dedup": {},
+                "repeated": repeated_image_hashes(per_slide),
+                "seen": set(),
             }
             lines: list[str] = []
             for idx, slide in enumerate(prs.slides, start=1):
                 ctx["slide_num"] = idx
                 lines.extend(_slide_to_md(slide, ctx))
+                lines.extend([
+                    "",
+                    '<div style="page-break-after: always; break-after: page;"></div>',
+                    "",
+                    "---",
+                    "",
+                ])
             md_path = output_dir / f"{stem}.md"
             md_path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
             result.md_path = md_path

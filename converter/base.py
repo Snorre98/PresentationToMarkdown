@@ -7,14 +7,21 @@ subclasses :class:`Converter`. Dispatch by file extension happens through
 from __future__ import annotations
 
 import hashlib
+import math
 from abc import ABC, abstractmethod
+from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
+from urllib.parse import quote
 
 ProgressCallback = Callable[[int, int, str], None]
 
 _MD_SPECIALS = str.maketrans({"\\": "\\\\", "`": "\\`", "*": "\\*", "_": "\\_"})
+
+# Images whose content appears on at least this fraction of slides/pages are
+# treated as recurring (logos/watermarks): shown inline once, then as a link.
+REPEATED_IMAGE_THRESHOLD = 0.8
 
 
 @dataclass
@@ -60,6 +67,15 @@ class ConverterRegistry:
 registry = ConverterRegistry()
 
 
+def _link_dest(rel: str) -> str:
+    """Percent-encode a relative path for use as a Markdown link destination.
+
+    Spaces and other URL-unsafe characters (``(``, ``#``, ``%``, …) break link
+    parsing in Obsidian and other CommonMark renderers; ``/`` is kept as-is.
+    """
+    return quote(rel, safe="/")
+
+
 def _escape(text: str) -> str:
     text = text.translate(_MD_SPECIALS)
     if text.startswith("#"):
@@ -79,6 +95,28 @@ def _format_md(text: str, bold: bool = False, italic: bool = False) -> str:
     if italic:
         return f"*{text}*"
     return text
+
+
+def image_digest(blob: bytes) -> str:
+    """Return a short content digest for an image blob."""
+    return hashlib.md5(blob).hexdigest()[:8]
+
+
+def repeated_image_hashes(
+    per_slide: list[set[str]], threshold: float = REPEATED_IMAGE_THRESHOLD
+) -> set[str]:
+    """Return image digests that appear on at least ``threshold`` of slides/pages.
+
+    ``per_slide`` maps each slide/page to the set of image digests it contains.
+    """
+    total = len(per_slide)
+    if total == 0:
+        return set()
+    counts: Counter = Counter()
+    for hashes in per_slide:
+        counts.update(hashes)
+    min_slides = max(2, math.ceil(total * threshold))
+    return {digest for digest, n in counts.items() if n >= min_slides}
 
 
 def _table_to_md(rows: list[list[str]]) -> list[str]:
@@ -116,7 +154,7 @@ def write_image(
     content is written only once and the existing filename is returned.
     """
     try:
-        digest = hashlib.md5(blob).hexdigest()[:8]
+        digest = image_digest(blob)
         if dedup is not None and digest in dedup:
             return dedup[digest]
         ext = (ext or "bin").lstrip(".")
