@@ -137,6 +137,8 @@ via environment variables:
 | `VISION_CLASSIFY_MODEL` | `mlx-community/Qwen2.5-VL-3B-Instruct-4bit` | Classifier model id (switch to any mlx-vlm VLM) |
 | `VISION_LOG_ENABLED` | `on` | Record vision decisions/transcriptions to SQLite |
 | `VISION_LOG_DB` | `ptm.sqlite` | SQLite log path (the project dir for now) |
+| `VISION_MIN_IMAGE_DIM` | `250` | Skip transcription for images whose smaller native side is below this many pixels |
+| `VISION_BLUR_THRESHOLD` | `30.0` | Skip transcription for images whose Laplacian variance is below this value |
 | `SOFFICE_PATH` | `soffice` | LibreOffice binary, for PPTX chart rendering only |
 
 Example:
@@ -197,6 +199,25 @@ mlx-vlm VLM. Its answer is parsed loosely (a decorative signal like "photograph"
 wins over "graph"), and any classifier error degrades to "keep the link" — never
 to data loss.
 
+### Readability gate
+
+Before *any* model call, an image is checked for **readability** — a VLM cannot
+read a blurry or tiny image, and will only hallucinate filler (e.g. a numbered
+list of invented "Data Source 1…111"). Skipping such images saves both the
+classifier *and* transcriber:
+
+- **Resolution** — images whose smaller native side is below
+  `VISION_MIN_IMAGE_DIM` (default `250` px) are skipped. This is pure metadata
+  (no decoding).
+- **Blur** — otherwise, the image's Laplacian variance (a sharpness proxy) is
+  computed from its pixels; if it is below `VISION_BLUR_THRESHOLD` (default
+  `30.0`), the image is skipped. The metric measures edge energy, so clean
+  line-art diagrams score low even when sharp — the default is deliberately
+  conservative (tune it up if you see blurry images slipping through).
+
+A skipped image keeps its `![image]` link, logs a `[WARN]`, and records a
+`stage = "readability"` event in the SQLite log.
+
 ### Quality gate
 
 Every transcription (image, chart, or diagram description) is passed through a
@@ -204,8 +225,12 @@ deterministic quality gate before it is written. The gate catches the classic
 vision-model failure modes and discards the transcription, keeping only the
 image link:
 
-- **Repetition loops** — the same label emitted over and over (e.g. a flowchart
-  reduced to a single repeated "Start process / End process" label).
+- **Repetition loops** — the same label emitted over and over, including
+  monotonically numbered filler (e.g. `Data Source 1…111`, collapsed by stripping
+  trailing enumeration digits before comparing).
+- **Placeholder/template echo** — output containing `...` or bracketed
+  placeholders like `[specific …]` (the model echoing a fill-in-the-blank
+  template instead of reading).
 - **Excessive nesting** — bullet indentation that deepens pathologically.
 - **Runaway length** — an implausibly long transcription for one figure.
 - **Low information density** — near-zero unique-word ratio.

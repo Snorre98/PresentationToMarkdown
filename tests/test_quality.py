@@ -1,6 +1,6 @@
 """Unit tests for the transcription quality gate and classifier category parsing."""
 from converter.classify import _parse_category
-from converter.vision import transcription_quality
+from converter.vision import _laplacian_variance, image_readable, transcription_quality
 
 
 def _loop(label: str, depth: int, count: int) -> str:
@@ -43,6 +43,45 @@ def test_quality_rejects_runaway_length():
 def test_quality_rejects_low_information():
     md = " ".join(["process"] * 60)
     assert transcription_quality(md) == "low information"
+
+
+def test_quality_rejects_enumerated_loop():
+    md = "# Workflow Diagram\n\n- **Main Components:**\n" + "\n".join(
+        f"  - **Data Source {i}**" for i in range(1, 112)
+    )
+    assert transcription_quality(md) == "repetitive"
+
+
+def test_quality_rejects_placeholder_ellipsis():
+    md = (
+        "```markdown\n# Title\n\n"
+        "- **Rules:** The rules of the game are...\n"
+        "- **Objective:** The objective of the game is...\n"
+        "```"
+    )
+    assert transcription_quality(md) == "placeholder"
+
+
+def test_quality_rejects_placeholder_bracket():
+    md = "- **Represents:** A process flow for [specific process]"
+    assert transcription_quality(md) == "placeholder"
+
+
+def test_image_readable_low_resolution():
+    assert image_readable(b"", "png", width=100, height=100) == "low resolution"
+    assert image_readable(b"", "png", width=249, height=300) == "low resolution"
+
+
+def test_image_readable_ok_resolution_fails_open_on_decode():
+    assert image_readable(b"", "png", width=400, height=300) is None
+
+
+def test_laplacian_variance_sharp_vs_flat():
+    w = h = 16
+    sharp = [255 if (x + y) % 2 == 0 else 0 for y in range(h) for x in range(w)]
+    flat = [128] * (w * h)
+    assert _laplacian_variance(sharp, w, h) > _laplacian_variance(flat, w, h)
+    assert _laplacian_variance(flat, w, h) == 0.0
 
 
 def test_parse_category_decorative():

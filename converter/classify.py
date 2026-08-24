@@ -32,6 +32,7 @@ from converter.vision import (
     _chat_completion,
     _image_content,
     image_mime,
+    image_readable,
     transcribe_image,
     transcribe_image_meta,
     transcription_quality,
@@ -327,19 +328,37 @@ def maybe_transcribe_image(
     base_url: str | None = None,
     model: str | None = None,
     log_ctx: dict | None = None,
+    width: int | None = None,
+    height: int | None = None,
 ) -> str | None:
     """Transcribe an embedded image based on its classifier category.
 
     Only runs when both ``VISION_ENABLED`` and ``VISION_CLASSIFY_ENABLED`` are on;
-    otherwise returns ``None`` (images stay link-only). Text images are
-    transcribed verbatim; diagrams get a high-level description; decorative
-    images are skipped. A transcription that fails the quality gate is discarded
-    with a warning. Any error degrades to ``None``.
+    otherwise returns ``None`` (images stay link-only). Images that are too
+    low-resolution or blurry to read are skipped before any model call. Text
+    images are transcribed verbatim; diagrams get a high-level description;
+    decorative images are skipped. A transcription that fails the quality gate is
+    discarded with a warning. Any error degrades to ``None``.
     """
     if not (VISION_ENABLED and VISION_CLASSIFY_ENABLED):
         return None
     mime = image_mime(ext)
     ctx = log_ctx or {}
+    reason = image_readable(blob, ext, width=width, height=height)
+    if reason is not None:
+        if warnings is not None:
+            warnings.append(f"Skipping unreadable image ({reason}); keeping image link")
+        record(
+            source=ctx.get("source", ""),
+            page=ctx.get("page"),
+            image_ref=ctx.get("image_ref"),
+            image_digest=ctx.get("image_digest"),
+            stage="readability",
+            model=model or VISION_MODEL,
+            decision=reason,
+            base_url=base_url or VISION_BASE_URL,
+        )
+        return None
     category = classify_image_with_log(blob, mime, warnings, base_url, model, ctx)
     if category == "decorative":
         return None

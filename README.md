@@ -246,10 +246,13 @@ transcription. It is off by default and fully deterministic without it. A cheap
 *text* (transcribed verbatim), *diagram* (described at a high level — purpose and
 main components, not every label), or *decorative* (skipped), and enables
 **image-level transcription** (embedded images in PDF and PPTX, plus PPTX charts
-via LibreOffice). Every transcription passes a deterministic **quality gate** that
-discards repetition loops, pathological nesting, and runaway output. See
-**[docs/ai-vision.md](docs/ai-vision.md)** for how to serve the models (referencing
-`macos-dev-config/inference-readme.md`) and the env vars that enable it.
+via LibreOffice). Before any model call, a **readability gate** skips images that
+are too low-resolution or blurry to read (a VLM only hallucinates on those), and
+every transcription passes a deterministic **quality gate** that discards
+repetition loops, pathological nesting, placeholder/template echo, and runaway
+output. See **[docs/ai-vision.md](docs/ai-vision.md)** for how to serve the models
+(referencing `macos-dev-config/inference-readme.md`) and the env vars that enable
+it.
 
 ## Known limitations / future ideas
 

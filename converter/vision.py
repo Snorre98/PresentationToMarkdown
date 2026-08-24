@@ -11,6 +11,14 @@ Configuration (environment variables):
 - ``VISION_BASE_URL`` — server base URL, default ``http://127.0.0.1:8081/v1``.
 - ``VISION_MODEL`` — model id, default ``mlx-community/Ornith-1.0-9B-8bit``.
 - ``VISION_API_KEY`` — optional bearer token (not needed for local servers).
+- ``VISION_MIN_IMAGE_DIM`` — skip transcription for images whose smaller native
+  side is below this many pixels (default ``250``). Unreadably low-res images
+  just waste inference time.
+- ``VISION_BLUR_THRESHOLD`` — skip transcription for images whose Laplacian
+  variance (a sharpness proxy) is below this value (default ``30.0``). Note the
+  metric measures edge energy, so clean line-art diagrams (flat backgrounds,
+  thin lines) score low even when sharp; the default is deliberately
+  conservative to avoid skipping them.
 """
 from __future__ import annotations
 
@@ -30,6 +38,9 @@ VISION_ENABLED = os.environ.get("VISION_ENABLED", "").strip().lower() in {
 VISION_BASE_URL = os.environ.get("VISION_BASE_URL", "http://127.0.0.1:8081/v1")
 VISION_MODEL = os.environ.get("VISION_MODEL", "mlx-community/Qwen2.5-VL-7B-Instruct-4bit")
 VISION_API_KEY = os.environ.get("VISION_API_KEY") or None
+
+VISION_MIN_IMAGE_DIM = int(os.environ.get("VISION_MIN_IMAGE_DIM", "250"))
+VISION_BLUR_THRESHOLD = float(os.environ.get("VISION_BLUR_THRESHOLD", "30.0"))
 
 TRANSCRIBE_MAX_TOKENS = 1024
 
@@ -103,6 +114,83 @@ def _image_content(image_bytes: bytes, mime: str = "image/png") -> dict:
     return {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}}
 
 
+def _laplacian_variance(gray: list[int], width: int, height: int) -> float:
+    """Variance of the Laplacian of a grayscale buffer — a sharpness proxy.
+
+    A blurry image has little high-frequency energy, so its Laplacian variance
+    is low; a sharp image has edges, so it is high. ``gray`` is a flat list of
+    byte values (0-255), row-major.
+    """
+    if width < 3 or height < 3 or len(gray) < width * height:
+        return 0.0
+    laps: list[float] = []
+    for y in range(1, height - 1):
+        row = y * width
+        up = row - width
+        down = row + width
+        for x in range(1, width - 1):
+            lap = (
+                4 * gray[row + x]
+                - gray[up + x]
+                - gray[down + x]
+                - gray[row + x - 1]
+                - gray[row + x + 1]
+            )
+            laps.append(float(lap))
+    if not laps:
+        return 0.0
+    mean = sum(laps) / len(laps)
+    return sum((v - mean) ** 2 for v in laps) / len(laps)
+
+
+def image_sharpness(blob: bytes, ext: str = "png") -> float | None:
+    """Return the Laplacian variance (sharpness) of an image, or ``None`` on failure."""
+    try:
+        import pymupdf as fitz
+
+        doc = fitz.open(stream=blob, filetype=(ext or "png").lstrip("."))
+        pix = doc[0].get_pixmap()
+        doc.close()
+    except Exception:
+        return None
+    n = pix.n
+    width, height = pix.width, pix.height
+    samples = pix.samples
+    stride = pix.stride
+    gray: list[int] = []
+    for y in range(height):
+        row_start = y * stride
+        for x in range(width):
+            idx = row_start + x * n
+            if n >= 3:
+                v = (samples[idx] + samples[idx + 1] + samples[idx + 2]) // 3
+            else:
+                v = samples[idx]
+            gray.append(v)
+    return _laplacian_variance(gray, width, height)
+
+
+def image_readable(
+    blob: bytes,
+    ext: str = "png",
+    width: int | None = None,
+    height: int | None = None,
+) -> str | None:
+    """Return a reason the image is unreadable, or ``None`` if it is worth trying.
+
+    Checks native resolution first (cheap metadata), then blur (decodes the
+    image). Unreadably low-resolution or blurry images are skipped before any
+    model call, since a VLM cannot read them and will only hallucinate.
+    """
+    if width is not None and height is not None:
+        if min(width, height) < VISION_MIN_IMAGE_DIM:
+            return "low resolution"
+    sharpness = image_sharpness(blob, ext)
+    if sharpness is not None and sharpness < VISION_BLUR_THRESHOLD:
+        return "blurry"
+    return None
+
+
 def _chat_completion(
     messages: list[dict],
     base_url: str | None = None,
@@ -169,25 +257,34 @@ _QUALITY_MIN_WORDS_FOR_TTR = 50
 
 
 def _normalize_line(line: str) -> str:
-    """Strip emphasis and list markers so repeated lines compare equal."""
+    """Strip emphasis, list markers and trailing enumeration digits so repeated
+    lines compare equal (e.g. ``Data Source 1`` … ``Data Source 111``)."""
     line = line.strip()
     line = re.sub(r"\*\*+|\*", "", line)
     line = re.sub(r"^[-+]\s+", "", line)
+    line = re.sub(r"\s*\d+\s*$", "", line)
     return re.sub(r"\s+", " ", line).strip().lower()
+
+
+_PLACEHOLDER_RE = re.compile(r"\.\.\.|\[[^\]]*\.\.\.[^\]]*\]|\[(?:specific|your|insert|placeholder)[^\]]*\]")
 
 
 def transcription_quality(markdown: str) -> str | None:
     """Return a rejection reason if a transcription looks worthless, else None.
 
     Detects the classic vision-model failure modes: a repetition loop where the
-    same label is emitted over and over, pathological bullet nesting, runaway
-    length, and near-zero information density.
+    same label is emitted over and over (including monotonically numbered
+    filler), pathological bullet nesting, runaway length, placeholder/template
+    echo, and near-zero information density.
     """
     if not markdown or not markdown.strip():
         return "empty"
     lines = [ln for ln in markdown.splitlines() if ln.strip()]
     if len(lines) > _QUALITY_MAX_LINES:
         return "runaway length"
+
+    if _PLACEHOLDER_RE.search(markdown):
+        return "placeholder"
 
     max_depth = 0
     for ln in lines:

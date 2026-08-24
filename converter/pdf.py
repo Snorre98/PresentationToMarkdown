@@ -297,6 +297,8 @@ def _page_images(page, doc, assets_dir, stem, counter, warnings, skip_xrefs, ded
                     "image_ref": filename,
                     "image_digest": digest,
                 },
+                width=extracted.get("width"),
+                height=extracted.get("height"),
             )
             if transcription:
                 refs.extend(transcription.splitlines())

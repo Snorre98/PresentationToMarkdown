@@ -136,13 +136,15 @@ def _handle_image(shape, assets_dir: Path, stem: str, counter: list[int], warnin
     try:
         blob = image.blob
         ext = image.ext or "bin"
+        size = image.size
     except Exception as exc:
         warnings.append(f"Could not read image '{shape.name}': {exc}")
         return None
     filename = write_image(blob, ext, assets_dir, stem, counter, warnings, dedup)
     if filename is None:
         return None
-    return filename, image_digest(blob), blob, ext
+    width, height = size if size else (None, None)
+    return filename, image_digest(blob), blob, ext, width, height
 
 
 def _shape_image_digests(shape) -> set[str]:
@@ -176,7 +178,7 @@ def _walk_shape(shape, ctx) -> list[str]:
         return _table_to_md(_table_rows(shape.table))
     image = _handle_image(shape, ctx["assets_dir"], ctx["stem"], ctx["counter"], ctx["warnings"], ctx["dedup"])
     if image:
-        filename, digest, blob, ext = image
+        filename, digest, blob, ext, width, height = image
         rel = _link_dest(f"assets/{ctx['stem']}/{filename}")
         if digest in ctx["repeated"]:
             if digest in ctx["seen"]:
@@ -193,6 +195,8 @@ def _walk_shape(shape, ctx) -> list[str]:
                 "image_ref": shape.name,
                 "image_digest": digest,
             },
+            width=width,
+            height=height,
         )
         if transcription:
             out.extend(transcription.splitlines())
