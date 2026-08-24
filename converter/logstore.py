@@ -66,7 +66,7 @@ def _connection() -> sqlite3.Connection:
     if _conn is not None:
         return _conn
     Path(VISION_LOG_DB).parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(VISION_LOG_DB, timeout=30.0)
+    conn = sqlite3.connect(VISION_LOG_DB, timeout=30.0, check_same_thread=False)
     conn.execute("PRAGMA journal_mode=WAL;")
     conn.executescript(_SCHEMA)
     conn.execute(

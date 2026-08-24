@@ -2,3 +2,5 @@ python-pptx>=1.0.2
 PySide6>=6.7
 PyMuPDF>=1.24
 pymupdf_layout>=1.28.2
+sqlite-vec>=0.1.9
+numpy>=1.26

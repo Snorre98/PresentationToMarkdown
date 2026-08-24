@@ -323,6 +323,32 @@ tables, blockquotes, `<details>` blocks, and the page-break `<div>` — must als
 survive verbatim. `FORMAT_BASE_URL`/`FORMAT_MODEL`/`FORMAT_API_KEY` default to
 their `VISION_*` equivalents.
 
+## Summary pass (per-presentation RAG)
+
+A separate opt-in pass (`SUMMARY_ENABLED=1`, see the README) prepends a
+standardized English summary header to each converted presentation. It stores
+per-slide chunks and **sqlite-vec** embeddings in `ptm.sqlite`, retrieves the most
+salient chunks, and has a dedicated summary chat model write the header.
+
+- **Summary model** — reuses the **vision transcriber** by default
+  (`SUMMARY_BASE_URL=http://127.0.0.1:8081/v1`,
+  `SUMMARY_MODEL=mlx-community/Qwen2.5-VL-7B-Instruct-4bit`), so no extra server
+  is needed; override `SUMMARY_*` to use a dedicated text model instead.
+- **Embeddings** — served by Ollama (`EMBED_BASE_URL=http://localhost:11434/v1`,
+  `EMBED_MODEL=embeddinggemma`, a 768-dim embedding model). The dimension is
+  auto-detected, so any embedding model works.
+
+The `sqlite-vec` extension is a Python dependency (`pip install sqlite-vec`) and
+loads on its own; no separate server is needed for the vector store.
+
+All three AI passes can be enabled together in one command (vision + classifier,
+markdown restructure, and the RAG summary):
+
+```sh
+VISION_ENABLED=1 VISION_CLASSIFY_ENABLED=1 FORMAT_ENABLED=1 SUMMARY_ENABLED=1 \
+  ./.venv/bin/python main.py
+```
+
 ## Logging
 
 Every classifier decision and transcription is recorded to a SQLite database so
