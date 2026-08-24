@@ -22,6 +22,7 @@ from converter.base import (
 )
 from converter.pptx import PPTXConverter
 from converter.pdf import PDFConverter
+from converter.format import polish_text
 
 registry.register(PPTXConverter)
 registry.register(PDFConverter)
@@ -60,7 +61,17 @@ def convert_file(
         )
     resolved = Path(output_dir) if output_dir else _default_output_dir(path)
     resolved.mkdir(parents=True, exist_ok=True)
-    return converter.convert(path, resolved)
+    result = converter.convert(path, resolved)
+    if result.error is None and result.md_path is not None:
+        try:
+            original = result.md_path.read_text(encoding="utf-8")
+            polished = polish_text(original, warnings=result.warnings)
+            rewritten = (polished + "\n") if polished else ""
+            if rewritten != original:
+                result.md_path.write_text(rewritten, encoding="utf-8")
+        except Exception as exc:  # noqa: BLE001 - polish never fails the conversion
+            result.warnings.append(f"Markdown polish failed: {exc}")
+    return result
 
 
 def convert_files(

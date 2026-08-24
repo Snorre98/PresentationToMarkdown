@@ -333,6 +333,13 @@ def _merge_lone_bullets(items: list[dict]) -> list[dict]:
     return merged
 
 
+def _looks_like_lead(md: str) -> bool:
+    """A non-bullet line that starts a bolded term is a paragraph lead-in, not a
+    wrapped continuation of the previous bullet (e.g. ``**Process** is a
+    collection of activities that:``)."""
+    return md.lstrip().startswith("**")
+
+
 def _emit_items(items: list[dict], bullet_levels: dict[int, int]) -> list[str]:
     out: list[str] = []
     mode = None  # None | "list" | "para"
@@ -353,7 +360,7 @@ def _emit_items(items: list[dict], bullet_levels: dict[int, int]) -> list[str]:
             out.append(f"{indent}- {rest}" if rest else f"{indent}-")
             mode, list_level = "list", level
         elif mode == "list":
-            if gap <= h * 1.6:
+            if gap <= h * 1.6 and not _looks_like_lead(md):
                 out.append("  " * (list_level + 1) + md)
             else:
                 out.append("")

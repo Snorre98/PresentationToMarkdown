@@ -31,6 +31,7 @@ from converter.vision import (
     VISION_MODEL,
     _chat_completion,
     _image_content,
+    bullet_item_count,
     image_mime,
     image_readable,
     transcribe_image,
@@ -44,17 +45,21 @@ VISION_CLASSIFY_ENABLED = os.environ.get("VISION_CLASSIFY_ENABLED", "").strip().
     "yes",
     "on",
 }
+VISION_MIN_CONTENT_AREA = int(os.environ.get("VISION_MIN_CONTENT_AREA", "150000"))
+VISION_MIN_CONTENT_ASPECT = float(os.environ.get("VISION_MIN_CONTENT_ASPECT", "2.0"))
 VISION_CLASSIFY_BASE_URL = os.environ.get("VISION_CLASSIFY_BASE_URL", "http://127.0.0.1:8082/v1")
 VISION_CLASSIFY_MODEL = os.environ.get("VISION_CLASSIFY_MODEL", "mlx-community/Qwen2.5-VL-3B-Instruct-4bit")
 
 _PROMPT = (
     "Classify this image. Answer with exactly one word.\n\n"
     "Answer TEXT if the image is mostly text worth transcribing verbatim "
-    "(a document, slide, screenshot, or table).\n"
+    "(a document, slide, screenshot, table, or matrix).\n"
     "Answer DIAGRAM if the image is a diagram, flowchart, or conceptual figure "
     "where a short high-level description is more useful than its labels.\n"
-    "Answer DECORATIVE if the image is a photograph, logo, icon, clip-art, or "
-    "background with nothing worth extracting.\n\n"
+    "Answer DECORATIVE only if the image is a photograph, logo, icon, clip-art, "
+    "or decorative background with nothing worth extracting.\n"
+    "A wide table, matrix, or full-width figure is TEXT or DIAGRAM, never "
+    "DECORATIVE.\n\n"
     "Answer:"
 )
 
@@ -122,6 +127,7 @@ def _ms(t0: float) -> int:
 _category_cache: dict[str, str] = {}
 _transcribe_cache: dict[str, str] = {}
 _meta_transcribe_cache: dict[str, str] = {}
+_readability_cache: dict[str, str | None] = {}
 
 
 def transcribe_image_cached(
@@ -321,6 +327,35 @@ def should_transcribe(
     return classify_image_with_log(image_bytes, mime, warnings, base_url, model, log_ctx) != "decorative"
 
 
+# A high-level diagram gist is prose, not a list; more than a handful of bullet
+# items means the model enumerated components (i.e. fabricated) instead.
+_DIAGRAM_MAX_BULLETS = 6
+
+
+def _looks_like_content(width: int | None, height: int | None) -> bool:
+    """Return True if a large, wide image is almost certainly slide content.
+
+    A false "decorative" classification drops real content (data loss), while a
+    false "text"/"diagram" merely costs one transcription (caught by the quality
+    gate). So the classifier's "decorative" verdict is overridden for images
+    that are both large and wide — banner tables/matrices — which decorative
+    images (logos, icons, photos) almost never are.
+    """
+    if not width or not height:
+        return False
+    long_side = max(width, height)
+    short_side = min(width, height)
+    return (
+        width * height >= VISION_MIN_CONTENT_AREA
+        and long_side / short_side >= VISION_MIN_CONTENT_ASPECT
+    )
+
+
+def _blockquote(md: str) -> str:
+    """Wrap prose in a Markdown blockquote, one ``>`` per line."""
+    return "\n".join("> " + line if line.strip() else ">" for line in md.splitlines())
+
+
 def maybe_transcribe_image(
     blob: bytes,
     ext: str,
@@ -344,7 +379,10 @@ def maybe_transcribe_image(
         return None
     mime = image_mime(ext)
     ctx = log_ctx or {}
-    reason = image_readable(blob, ext, width=width, height=height)
+    digest = image_digest(blob)
+    if digest not in _readability_cache:
+        _readability_cache[digest] = image_readable(blob, ext, width=width, height=height)
+    reason = _readability_cache[digest]
     if reason is not None:
         if warnings is not None:
             warnings.append(f"Skipping unreadable image ({reason}); keeping image link")
@@ -352,7 +390,7 @@ def maybe_transcribe_image(
             source=ctx.get("source", ""),
             page=ctx.get("page"),
             image_ref=ctx.get("image_ref"),
-            image_digest=ctx.get("image_digest"),
+            image_digest=digest,
             stage="readability",
             model=model or VISION_MODEL,
             decision=reason,
@@ -360,6 +398,8 @@ def maybe_transcribe_image(
         )
         return None
     category = classify_image_with_log(blob, mime, warnings, base_url, model, ctx)
+    if category == "decorative" and _looks_like_content(width, height):
+        category = "diagram"
     if category == "decorative":
         return None
     t0 = time.perf_counter()
@@ -389,6 +429,9 @@ def maybe_transcribe_image(
         return None
     prompt_tokens, generated_tokens = _usage_counts(usage)
     reason = transcription_quality(markdown)
+    if category == "diagram" and reason is None:
+        if bullet_item_count(markdown) > _DIAGRAM_MAX_BULLETS:
+            reason = "enumerated"
     if reason is not None:
         if warnings is not None:
             warnings.append(f"Discarding low-value vision transcription ({reason})")
@@ -420,4 +463,4 @@ def maybe_transcribe_image(
         markdown=markdown,
         base_url=base_url or VISION_BASE_URL,
     )
-    return markdown
+    return _blockquote(markdown) if category == "diagram" else markdown

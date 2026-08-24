@@ -71,17 +71,17 @@ _IMAGE_PROMPT = (
 )
 
 _DIAGRAM_PROMPT = (
-    "Describe this diagram at a high level. Do NOT transcribe every label "
-    "verbatim.\n\n"
-    "In Markdown, briefly state:\n"
-    "- What the diagram represents and its purpose.\n"
-    "- Its main stages, components, or actors (a few bullets).\n"
-    "- The overall flow or relationships between them.\n\n"
+    "Describe this diagram in plain prose. State what kind of diagram it is "
+    "(e.g. process flow, layered architecture, org chart) and the main idea or "
+    "purpose it conveys.\n\n"
     "Rules:\n"
-    "- Keep it short: one heading plus 3-6 bullets.\n"
-    "- Do not repeat the same label or text.\n"
-    "- Do not add commentary or explanations beyond the diagram.\n\n"
-    "Output only the Markdown."
+    "- Write 1-3 sentences of prose. Do not use bullet lists or headings.\n"
+    "- Do not enumerate every node or label; a high-level gist is what matters.\n"
+    "- If you can read a title or a few prominent labels confidently, append "
+    "them verbatim after your prose, one per line.\n"
+    "- Do not invent text or labels you cannot actually read.\n"
+    "- Do not output code or Mermaid.\n\n"
+    "Output only the description (and any verbatim labels)."
 )
 
 # Words shorter than this, or in this set, are ignored by the omission check.
@@ -264,6 +264,15 @@ def _normalize_line(line: str) -> str:
     line = re.sub(r"^[-+]\s+", "", line)
     line = re.sub(r"\s*\d+\s*$", "", line)
     return re.sub(r"\s+", " ", line).strip().lower()
+
+
+def bullet_item_count(markdown: str) -> int:
+    """Count bullet list items in a transcription."""
+    return sum(
+        1
+        for line in markdown.splitlines()
+        if line.lstrip().startswith(("- ", "* ", "+ "))
+    )
 
 
 _PLACEHOLDER_RE = re.compile(r"\.\.\.|\[[^\]]*\.\.\.[^\]]*\]|\[(?:specific|your|insert|placeholder)[^\]]*\]")

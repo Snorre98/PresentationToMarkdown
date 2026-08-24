@@ -1,6 +1,12 @@
 """Unit tests for the transcription quality gate and classifier category parsing."""
-from converter.classify import _parse_category
-from converter.vision import _laplacian_variance, image_readable, transcription_quality
+from converter.base import _table_to_md
+from converter.classify import _blockquote, _looks_like_content, _parse_category
+from converter.vision import (
+    _laplacian_variance,
+    bullet_item_count,
+    image_readable,
+    transcription_quality,
+)
 
 
 def _loop(label: str, depth: int, count: int) -> str:
@@ -82,6 +88,30 @@ def test_laplacian_variance_sharp_vs_flat():
     flat = [128] * (w * h)
     assert _laplacian_variance(sharp, w, h) > _laplacian_variance(flat, w, h)
     assert _laplacian_variance(flat, w, h) == 0.0
+
+
+def test_bullet_item_count():
+    assert bullet_item_count("A process flow.\n- one\n  - nested\n- two") == 3
+    assert bullet_item_count("plain prose, no lists") == 0
+
+
+def test_blockquote_wraps_lines():
+    assert _blockquote("A process flow.\n\nIt shows X to Y.") == (
+        "> A process flow.\n>\n> It shows X to Y."
+    )
+
+
+def test_table_to_md_handles_none_cells():
+    md = _table_to_md([[None, "b"], ["c", "d"]])
+    assert "|  | b |" in md[0]
+    assert "| c | d |" in md[2]
+
+
+def test_looks_like_content():
+    assert _looks_like_content(1092, 397) is True
+    assert _looks_like_content(300, 336) is False  # large but portrait-ish
+    assert _looks_like_content(100, 100) is False  # small
+    assert _looks_like_content(None, None) is False
 
 
 def test_parse_category_decorative():

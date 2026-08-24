@@ -209,6 +209,7 @@ The model weights live on the external SSD under `HF_HOME` (see
   - `pptx.py` — PowerPoint converter (python-pptx)
   - `pdf.py` — PDF converter (PyMuPDF), layout-aware text + table/bullet reconstruction
   - `vision.py` — optional local vision-LLM post-pass (OpenAI-compatible endpoint)
+  - `format.py` — Markdown polish post-pass (deterministic whitespace cleanup + optional LLM restructure)
   - `classify.py` — cheap classifier gate for the vision pass (tiny VLM)
   - `render.py` — LibreOffice + PyMuPDF rendering for PPTX charts
   - `logstore.py` — SQLite log of classifier/transcription decisions (`ptm.sqlite`)
@@ -243,8 +244,9 @@ For diagrams, flowcharts and tables that appear as *images*, the converter can h
 them to a local **MLX vision model** (`mlx-vlm`) for a structured Markdown
 transcription. It is off by default and fully deterministic without it. A cheap
 **classifier gate** (a small VLM such as Qwen2.5-VL-3B) classifies each image as
-*text* (transcribed verbatim), *diagram* (described at a high level — purpose and
-main components, not every label), or *decorative* (skipped), and enables
+*text* (transcribed verbatim), *diagram* (a short high-level prose *gist* — type
+and purpose, not its structure or labels — rendered as a blockquote), or
+*decorative* (skipped), and enables
 **image-level transcription** (embedded images in PDF and PPTX, plus PPTX charts
 via LibreOffice). Before any model call, a **readability gate** skips images that
 are too low-resolution or blurry to read (a VLM only hallucinates on those), and
@@ -253,6 +255,27 @@ repetition loops, pathological nesting, placeholder/template echo, and runaway
 output. See **[docs/ai-vision.md](docs/ai-vision.md)** for how to serve the models
 (referencing `macos-dev-config/inference-readme.md`) and the env vars that enable
 it.
+
+## Markdown polish pass
+
+Every conversion finishes with a formatting post-pass (`converter/format.py`):
+
+- **Deterministic (always on)** — strips trailing whitespace, collapses excess
+  blank lines, and normalises heading spacing. No dependencies.
+- **LLM restructure (opt-in)** — hands each slide to a local OpenAI-compatible
+  chat model to reflow mid-sentence line breaks into paragraphs and promote
+  heading-like bullets into `##`/`###` headings, while a word cross-check keeps
+  the content verbatim.
+
+Enable it by reusing the vision endpoint (see [AI vision pass](#ai-vision-pass)):
+
+```bash
+FORMAT_ENABLED=1 ./.venv/bin/python main.py
+```
+
+`FORMAT_BASE_URL`/`FORMAT_MODEL`/`FORMAT_API_KEY` default to their `VISION_*`
+equivalents; override them to point the restructure pass at a different text
+model.
 
 ## Known limitations / future ideas
 

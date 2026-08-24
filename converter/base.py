@@ -126,7 +126,7 @@ def _table_to_md(rows: list[list[str]]) -> list[str]:
         return lines
 
     def cell_text(cell: str) -> str:
-        return cell.replace("|", "\\|").replace("\n", "<br>").strip()
+        return (cell or "").replace("|", "\\|").replace("\n", "<br>").strip()
 
     def render_row(row: list[str]) -> str:
         return "| " + " | ".join(cell_text(c) for c in row) + " |"
