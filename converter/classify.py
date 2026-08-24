@@ -1,29 +1,40 @@
 """Cheap vision-classifier gate for the AI vision pass.
 
-Uses a tiny vision-language model (Moondream2 by default, or any mlx-vlm
-OpenAI-compatible endpoint) to decide whether an image or page contains
-*educational* content (tables, charts, graphs, diagrams, flowcharts, equations)
-worth an expensive transcription, versus *decorative* content (photographs,
-logos, icons, clip-art, backgrounds) that should be left as an image link.
+Uses a tiny vision-language model (Qwen2.5-VL-3B by default, or any mlx-vlm
+OpenAI-compatible endpoint) to classify an image into one of three categories:
+
+- ``text`` — mostly text (documents, slides, screenshots, tables) worth
+  transcribing verbatim;
+- ``diagram`` — a flowchart or conceptual figure, where a short high-level
+  description is more useful than its labels;
+- ``decorative`` — photographs, logos, icons, clip-art, backgrounds left as an
+  image link.
 
 Configuration (environment variables):
 
 - ``VISION_CLASSIFY_ENABLED`` — master switch for the gate. Default off.
 - ``VISION_CLASSIFY_BASE_URL`` — classifier server base URL, default ``http://127.0.0.1:8082/v1``.
-- ``VISION_CLASSIFY_MODEL`` — classifier model id, default ``vikhyatk/moondream2``
-  (switch to e.g. ``mlx-community/Qwen2.5-VL-3B-Instruct-4bit`` via this var).
+- ``VISION_CLASSIFY_MODEL`` — classifier model id, default
+  ``mlx-community/Qwen2.5-VL-3B-Instruct-4bit`` (switch to any mlx-vlm VLM via
+  this var; note ``vikhyatk/moondream2`` does not load in mlx-vlm 0.6.15).
 """
 from __future__ import annotations
 
 import os
+import time
 
 from converter.base import image_digest
+from converter.logstore import record
 from converter.vision import (
+    VISION_BASE_URL,
     VISION_ENABLED,
+    VISION_MODEL,
     _chat_completion,
     _image_content,
     image_mime,
     transcribe_image,
+    transcribe_image_meta,
+    transcription_quality,
 )
 
 VISION_CLASSIFY_ENABLED = os.environ.get("VISION_CLASSIFY_ENABLED", "").strip().lower() in {
@@ -33,78 +44,171 @@ VISION_CLASSIFY_ENABLED = os.environ.get("VISION_CLASSIFY_ENABLED", "").strip().
     "on",
 }
 VISION_CLASSIFY_BASE_URL = os.environ.get("VISION_CLASSIFY_BASE_URL", "http://127.0.0.1:8082/v1")
-VISION_CLASSIFY_MODEL = os.environ.get("VISION_CLASSIFY_MODEL", "vikhyatk/moondream2")
+VISION_CLASSIFY_MODEL = os.environ.get("VISION_CLASSIFY_MODEL", "mlx-community/Qwen2.5-VL-3B-Instruct-4bit")
 
 _PROMPT = (
-    "Decide whether this image contains educational content worth transcribing "
-    "into Markdown. Answer with exactly one word.\n\n"
-    "Answer TRANSCRIBE if the image is a table, chart, graph, diagram, "
-    "flowchart, equation, or any figure whose text and structure is worth "
-    "extracting.\n"
-    "Answer SKIP if the image is a photograph, logo, icon, clip-art, decorative "
-    "background, or any purely visual image with nothing worth extracting.\n\n"
+    "Classify this image. Answer with exactly one word.\n\n"
+    "Answer TEXT if the image is mostly text worth transcribing verbatim "
+    "(a document, slide, screenshot, or table).\n"
+    "Answer DIAGRAM if the image is a diagram, flowchart, or conceptual figure "
+    "where a short high-level description is more useful than its labels.\n"
+    "Answer DECORATIVE if the image is a photograph, logo, icon, clip-art, or "
+    "background with nothing worth extracting.\n\n"
     "Answer:"
 )
 
-# Signals checked in order: a false signal (e.g. "photograph" contains "graph")
-# must win over a true signal, so false words are tested first.
-_FALSE_WORDS = (
-    "skip",
+# Category keywords checked in priority order: decorative first (e.g. so
+# "photograph" wins over "graph"), then diagram, then text.
+_DECORATIVE_WORDS = (
+    "decorative",
     "photograph",
     "photo",
     "logo",
     "icon",
     "clip",
-    "decorat",
     "background",
     "purely visual",
+    "skip",
 )
-_TRUE_WORDS = (
-    "transcribe",
-    "educational",
-    "chart",
+_DIAGRAM_WORDS = (
     "diagram",
-    "table",
-    "equation",
     "flowchart",
-    "graph",
     "figure",
-    "worth extract",
+    "chart",
+    "graph",
+    "conceptual",
+)
+_TEXT_WORDS = (
+    "text",
+    "table",
+    "document",
+    "slide",
+    "screenshot",
+    "transcribe",
 )
 
 
-def _parse_answer(answer: str) -> bool:
+def _parse_category(answer: str) -> str:
+    """Map a loose classifier answer to ``text`` / ``diagram`` / ``decorative``."""
     a = answer.strip().lower()
-    for word in _FALSE_WORDS:
+    for word in _DECORATIVE_WORDS:
         if word in a:
-            return False
-    for word in _TRUE_WORDS:
+            return "decorative"
+    for word in _DIAGRAM_WORDS:
         if word in a:
-            return True
-    # Unrecognized answer: treat as "skip" (the conservative default for a gate
-    # whose purpose is to save compute).
-    return False
+            return "diagram"
+    for word in _TEXT_WORDS:
+        if word in a:
+            return "text"
+    # Unrecognized answer: default to "decorative" (the conservative choice for a
+    # gate whose purpose is to save compute).
+    return "decorative"
 
-# Content-hash cache so deduplicated/repeated images are classified once.
-_cache: dict[str, bool] = {}
+
+def _usage_counts(usage) -> tuple[int | None, int | None]:
+    if not usage:
+        return None, None
+    prompt = usage.get("prompt_tokens")
+    generated = usage.get("completion_tokens", usage.get("generated_tokens"))
+    return prompt, generated
 
 
-def classify_image(
+def _ms(t0: float) -> int:
+    return int((time.perf_counter() - t0) * 1000)
+
+
+# Content-hash caches so deduplicated/repeated images are classified/transcribed once.
+_category_cache: dict[str, str] = {}
+_transcribe_cache: dict[str, str] = {}
+_meta_transcribe_cache: dict[str, str] = {}
+
+
+def transcribe_image_cached(
+    blob: bytes,
+    mime: str = "image/png",
+    base_url: str | None = None,
+    model: str | None = None,
+    api_key: str | None = None,
+    timeout: float = 600.0,
+    return_usage: bool = False,
+):
+    """Transcribe an image, memoized by content digest.
+
+    Returns the markdown, or ``(markdown, usage)`` when ``return_usage`` is True
+    (``usage`` is ``None`` on a cache hit, since no model call is made).
+    """
+    digest = image_digest(blob)
+    if digest in _transcribe_cache:
+        if return_usage:
+            return _transcribe_cache[digest], None
+        return _transcribe_cache[digest]
+    if return_usage:
+        markdown, usage = transcribe_image(
+            blob, mime, base_url=base_url, model=model, api_key=api_key, timeout=timeout, return_usage=True
+        )
+    else:
+        markdown = transcribe_image(
+            blob, mime, base_url=base_url, model=model, api_key=api_key, timeout=timeout
+        )
+        usage = None
+    _transcribe_cache[digest] = markdown
+    if return_usage:
+        return markdown, usage
+    return markdown
+
+
+def transcribe_image_meta_cached(
+    blob: bytes,
+    mime: str = "image/png",
+    base_url: str | None = None,
+    model: str | None = None,
+    api_key: str | None = None,
+    timeout: float = 600.0,
+    return_usage: bool = False,
+):
+    """Transcribe an image as a high-level description, memoized by digest.
+
+    Returns the markdown, or ``(markdown, usage)`` when ``return_usage`` is True.
+    """
+    digest = image_digest(blob)
+    if digest in _meta_transcribe_cache:
+        if return_usage:
+            return _meta_transcribe_cache[digest], None
+        return _meta_transcribe_cache[digest]
+    if return_usage:
+        markdown, usage = transcribe_image_meta(
+            blob, mime, base_url=base_url, model=model, api_key=api_key, timeout=timeout, return_usage=True
+        )
+    else:
+        markdown = transcribe_image_meta(
+            blob, mime, base_url=base_url, model=model, api_key=api_key, timeout=timeout
+        )
+        usage = None
+    _meta_transcribe_cache[digest] = markdown
+    if return_usage:
+        return markdown, usage
+    return markdown
+
+
+def classify_category(
     image_bytes: bytes,
     mime: str = "image/png",
     base_url: str | None = None,
     model: str | None = None,
     api_key: str | None = None,
     timeout: float = 120.0,
-) -> bool:
-    """Return True if the image looks worth transcribing, False otherwise.
+    return_meta: bool = False,
+):
+    """Classify an image as ``text`` / ``diagram`` / ``decorative``.
 
-    Raises on network/HTTP errors so callers can fall back safely.
+    When ``return_meta`` is True, returns ``(category, meta)`` where ``meta``
+    holds the raw answer and token usage. Raises on network/HTTP errors so
+    callers can fall back safely.
     """
     messages = [
         {"role": "user", "content": [{"type": "text", "text": _PROMPT}, _image_content(image_bytes, mime)]}
     ]
-    answer = _chat_completion(
+    answer, usage = _chat_completion(
         messages,
         base_url=base_url or VISION_CLASSIFY_BASE_URL,
         model=model or VISION_CLASSIFY_MODEL,
@@ -112,25 +216,92 @@ def classify_image(
         temperature=0.0,
         max_tokens=32,
         timeout=timeout,
+        return_usage=True,
     )
-    return _parse_answer(answer)
+    category = _parse_category(answer)
+    if return_meta:
+        return category, {"raw_answer": answer, "usage": usage}
+    return category
 
 
-def classify_image_cached(
+def classify_category_cached(
     image_bytes: bytes,
     mime: str = "image/png",
     base_url: str | None = None,
     model: str | None = None,
     api_key: str | None = None,
     timeout: float = 120.0,
-) -> bool:
-    """Like :func:`classify_image` but memoized by content digest."""
+    return_meta: bool = False,
+):
+    """Like :func:`classify_category` but memoized by content digest."""
     digest = image_digest(image_bytes)
-    if digest in _cache:
-        return _cache[digest]
-    decision = classify_image(image_bytes, mime, base_url, model, api_key, timeout)
-    _cache[digest] = decision
-    return decision
+    if digest in _category_cache:
+        if return_meta:
+            return _category_cache[digest], {"raw_answer": None, "usage": None}
+        return _category_cache[digest]
+    category, meta = classify_category(
+        image_bytes, mime, base_url, model, api_key, timeout, return_meta=True
+    )
+    _category_cache[digest] = category
+    if return_meta:
+        return category, meta
+    return category
+
+
+def classify_image_with_log(
+    image_bytes: bytes,
+    mime: str = "image/png",
+    warnings: list[str] | None = None,
+    base_url: str | None = None,
+    model: str | None = None,
+    log_ctx: dict | None = None,
+) -> str:
+    """Classify an image into ``text`` / ``diagram`` / ``decorative``, logging it.
+
+    When ``VISION_CLASSIFY_ENABLED`` is off this returns ``text`` (no gate, so the
+    verbatim transcription runs as before). On classifier error it appends a
+    warning and returns ``decorative``, so a failed gate degrades to "keep the
+    image link" rather than spending the transcriber.
+    """
+    if not VISION_CLASSIFY_ENABLED:
+        return "text"
+    ctx = log_ctx or {}
+    t0 = time.perf_counter()
+    try:
+        category, meta = classify_category_cached(
+            image_bytes, mime, base_url, model, return_meta=True
+        )
+        prompt_tokens, generated_tokens = _usage_counts(meta["usage"])
+        record(
+            source=ctx.get("source", ""),
+            page=ctx.get("page"),
+            image_ref=ctx.get("image_ref"),
+            image_digest=ctx.get("image_digest"),
+            stage="classify",
+            model=model or VISION_CLASSIFY_MODEL,
+            decision=category,
+            raw_answer=meta["raw_answer"],
+            latency_ms=_ms(t0),
+            prompt_tokens=prompt_tokens,
+            generated_tokens=generated_tokens,
+            base_url=base_url or VISION_CLASSIFY_BASE_URL,
+        )
+        return category
+    except Exception as exc:  # noqa: BLE001 - degrade gracefully on any failure
+        if warnings is not None:
+            warnings.append(f"Vision classifier failed: {exc}; skipping transcription")
+        record(
+            source=ctx.get("source", ""),
+            page=ctx.get("page"),
+            image_ref=ctx.get("image_ref"),
+            image_digest=ctx.get("image_digest"),
+            stage="classify",
+            model=model or VISION_CLASSIFY_MODEL,
+            latency_ms=_ms(t0),
+            error=str(exc),
+            base_url=base_url or VISION_CLASSIFY_BASE_URL,
+        )
+        return "decorative"
 
 
 def should_transcribe(
@@ -139,21 +310,14 @@ def should_transcribe(
     warnings: list[str] | None = None,
     base_url: str | None = None,
     model: str | None = None,
+    log_ctx: dict | None = None,
 ) -> bool:
     """Run the classifier gate, returning True when transcription should proceed.
 
-    When ``VISION_CLASSIFY_ENABLED`` is off this always returns True (no gate).
-    On classifier error it appends a warning and returns False, so a failed
-    gate degrades to "keep the image link" rather than spending the transcriber.
+    Used by the chart path, which always transcribes verbatim (chart data is
+    worth keeping) regardless of the text/diagram split.
     """
-    if not VISION_CLASSIFY_ENABLED:
-        return True
-    try:
-        return classify_image_cached(image_bytes, mime, base_url, model)
-    except Exception as exc:  # noqa: BLE001 - degrade gracefully on any failure
-        if warnings is not None:
-            warnings.append(f"Vision classifier failed: {exc}; skipping transcription")
-        return False
+    return classify_image_with_log(image_bytes, mime, warnings, base_url, model, log_ctx) != "decorative"
 
 
 def maybe_transcribe_image(
@@ -162,21 +326,79 @@ def maybe_transcribe_image(
     warnings: list[str] | None = None,
     base_url: str | None = None,
     model: str | None = None,
+    log_ctx: dict | None = None,
 ) -> str | None:
-    """Transcribe an embedded image if the classifier deems it educational.
+    """Transcribe an embedded image based on its classifier category.
 
     Only runs when both ``VISION_ENABLED`` and ``VISION_CLASSIFY_ENABLED`` are on;
-    otherwise returns ``None`` (images stay link-only). Any error degrades to
-    ``None`` with a warning rather than failing the conversion.
+    otherwise returns ``None`` (images stay link-only). Text images are
+    transcribed verbatim; diagrams get a high-level description; decorative
+    images are skipped. A transcription that fails the quality gate is discarded
+    with a warning. Any error degrades to ``None``.
     """
     if not (VISION_ENABLED and VISION_CLASSIFY_ENABLED):
         return None
     mime = image_mime(ext)
-    if not should_transcribe(blob, mime, warnings, base_url, model):
+    ctx = log_ctx or {}
+    category = classify_image_with_log(blob, mime, warnings, base_url, model, ctx)
+    if category == "decorative":
         return None
+    t0 = time.perf_counter()
     try:
-        return transcribe_image(blob, mime, base_url=base_url, model=model)
+        if category == "diagram":
+            markdown, usage = transcribe_image_meta_cached(
+                blob, mime, base_url=base_url, model=model, return_usage=True
+            )
+        else:
+            markdown, usage = transcribe_image_cached(
+                blob, mime, base_url=base_url, model=model, return_usage=True
+            )
     except Exception as exc:  # noqa: BLE001
         if warnings is not None:
             warnings.append(f"Vision transcription failed: {exc}")
+        record(
+            source=ctx.get("source", ""),
+            page=ctx.get("page"),
+            image_ref=ctx.get("image_ref"),
+            image_digest=ctx.get("image_digest"),
+            stage="transcribe",
+            model=model or VISION_MODEL,
+            latency_ms=_ms(t0),
+            error=str(exc),
+            base_url=base_url or VISION_BASE_URL,
+        )
         return None
+    prompt_tokens, generated_tokens = _usage_counts(usage)
+    reason = transcription_quality(markdown)
+    if reason is not None:
+        if warnings is not None:
+            warnings.append(f"Discarding low-value vision transcription ({reason})")
+        record(
+            source=ctx.get("source", ""),
+            page=ctx.get("page"),
+            image_ref=ctx.get("image_ref"),
+            image_digest=ctx.get("image_digest"),
+            stage="transcribe",
+            model=model or VISION_MODEL,
+            latency_ms=_ms(t0),
+            prompt_tokens=prompt_tokens,
+            generated_tokens=generated_tokens,
+            markdown=markdown,
+            error=f"quality gate: {reason}",
+            base_url=base_url or VISION_BASE_URL,
+        )
+        return None
+    record(
+        source=ctx.get("source", ""),
+        page=ctx.get("page"),
+        image_ref=ctx.get("image_ref"),
+        image_digest=ctx.get("image_digest"),
+        stage="transcribe",
+        model=model or VISION_MODEL,
+        latency_ms=_ms(t0),
+        prompt_tokens=prompt_tokens,
+        generated_tokens=generated_tokens,
+        markdown=markdown,
+        base_url=base_url or VISION_BASE_URL,
+    )
+    return markdown

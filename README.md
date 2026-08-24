@@ -173,26 +173,26 @@ process**, so each model is its own server on its own port.
 
 2. Start the **transcriber** (required for any vision use; leave it running):
    ```bash
-   mlx_vlm.server --model mlx-community/Ornith-1.0-9B-8bit --port 8081
+   mlx_vlm.server --model mlx-community/Qwen2.5-VL-7B-Instruct-4bit --port 8081
    ```
    Convert with just this one model running:
    ```bash
    VISION_ENABLED=1 ./.venv/bin/python main.py
    ```
 
-3. *(Optional)* Start the **classifier** — a second, tiny model that gates what
+3. *(Optional)* Start the **classifier** — a second, small model that gates what
    gets transcribed (skips photos/logos) and enables image-level transcription:
    ```bash
-   mlx_vlm.server --model vikhyatk/moondream2 --port 8082
+   mlx_vlm.server --model mlx-community/Qwen2.5-VL-3B-Instruct-4bit --port 8082
    VISION_ENABLED=1 VISION_CLASSIFY_ENABLED=1 ./.venv/bin/python main.py
    ```
 
 | Model | Port | Needed for |
 | --- | --- | --- |
-| Ornith (transcriber) | `:8081` | any vision transcription |
-| Moondream2 (classifier) | `:8082` | the classifier gate + image-level transcription (optional) |
+| Qwen2.5-VL-7B (transcriber) | `:8081` | any vision transcription |
+| Qwen2.5-VL-3B (classifier) | `:8082` | the classifier gate + image-level transcription (optional) |
 
-Running both uses ~11 GB of unified memory (~9 GB Ornith + ~2 GB Moondream2).
+Running both uses ~8 GB of unified memory (~4 GB transcriber + ~4 GB classifier).
 Run each server in its own terminal, or in the background (`nohup`/`launchd`).
 
 PPTX chart transcription additionally needs LibreOffice:
@@ -211,6 +211,7 @@ The model weights live on the external SSD under `HF_HOME` (see
   - `vision.py` — optional local vision-LLM post-pass (OpenAI-compatible endpoint)
   - `classify.py` — cheap classifier gate for the vision pass (tiny VLM)
   - `render.py` — LibreOffice + PyMuPDF rendering for PPTX charts
+  - `logstore.py` — SQLite log of classifier/transcription decisions (`ptm.sqlite`)
 - `docs/ai-vision.md` — how to serve the vision model and enable the AI pass
 - `gui.py` — PySide6 interface (file list, output folder, progress, log)
 - `main.py` — entry point
@@ -238,21 +239,25 @@ The model weights live on the external SSD under `HF_HOME` (see
 
 ## AI vision pass
 
-For diagram/multi-column slides, the PDF converter can hand the rendered page to a
-local **MLX vision model** (`mlx-vlm`) for a structured Markdown transcription. It
-is off by default and fully deterministic without it. A cheap **classifier gate**
-(a tiny VLM such as Moondream2) can decide what is worth transcribing and enable
-**image-level transcription** (embedded images in PDF/PPTX, plus PPTX charts via
-LibreOffice). See **[docs/ai-vision.md](docs/ai-vision.md)** for how to serve the
-models (referencing `macos-dev-config/inference-readme.md`) and the env vars that
-enable it.
+For diagrams, flowcharts and tables that appear as *images*, the converter can hand
+them to a local **MLX vision model** (`mlx-vlm`) for a structured Markdown
+transcription. It is off by default and fully deterministic without it. A cheap
+**classifier gate** (a small VLM such as Qwen2.5-VL-3B) classifies each image as
+*text* (transcribed verbatim), *diagram* (described at a high level — purpose and
+main components, not every label), or *decorative* (skipped), and enables
+**image-level transcription** (embedded images in PDF and PPTX, plus PPTX charts
+via LibreOffice). Every transcription passes a deterministic **quality gate** that
+discards repetition loops, pathological nesting, and runaway output. See
+**[docs/ai-vision.md](docs/ai-vision.md)** for how to serve the models (referencing
+`macos-dev-config/inference-readme.md`) and the env vars that enable it.
 
 ## Known limitations / future ideas
 
 - SmartArt is skipped (SmartArt text lives in a separate XML part); charts are
   skipped unless the vision pass + classifier + LibreOffice are enabled
-- PDF multi-column layouts and diagrams are not linearized deterministically —
-  they fall back to the rendered PNG (+ optional vision transcription)
+- PDF multi-column layouts and vector diagrams are not linearized deterministically —
+  they fall back to the rendered PNG plus a collapsed raw-text block (embedded
+  images are still transcribed via the vision pass)
 - PyMuPDF is AGPL-3.0 (or commercial) licensed — fine for personal use, review if you distribute
 - Markdown flavor toggle (Obsidian `![[wiki-links]]`), note style, and heading level options could go in a settings pane
 - Packaging into a standalone executable with PyInstaller

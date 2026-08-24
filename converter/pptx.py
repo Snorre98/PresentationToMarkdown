@@ -1,6 +1,7 @@
 """PPTX -> Markdown converter built on python-pptx."""
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 from pptx import Presentation
@@ -22,9 +23,11 @@ from converter.classify import (
     VISION_CLASSIFY_ENABLED,
     maybe_transcribe_image,
     should_transcribe,
+    transcribe_image_cached,
 )
+from converter.logstore import record
 from converter.render import PPTXRenderer, emu_rect_to_points, soffice_available
-from converter.vision import VISION_ENABLED, transcribe_image
+from converter.vision import VISION_ENABLED, VISION_MODEL, transcription_quality
 
 SKIP_PLACEHOLDERS = {PP_PLACEHOLDER.SLIDE_NUMBER, PP_PLACEHOLDER.DATE}
 FOOTER_PLACEHOLDERS = {PP_PLACEHOLDER.FOOTER, PP_PLACEHOLDER.HEADER}
@@ -180,7 +183,17 @@ def _walk_shape(shape, ctx) -> list[str]:
                 return [f"[{shape.name}]({rel})"]
             ctx["seen"].add(digest)
         out = [f"![{shape.name}]({rel})"]
-        transcription = maybe_transcribe_image(blob, ext, ctx["warnings"])
+        transcription = maybe_transcribe_image(
+            blob,
+            ext,
+            ctx["warnings"],
+            log_ctx={
+                "source": ctx["source"],
+                "page": ctx["slide_num"],
+                "image_ref": shape.name,
+                "image_digest": digest,
+            },
+        )
         if transcription:
             out.extend(transcription.splitlines())
             out.append("")
@@ -229,15 +242,66 @@ def _handle_chart(shape, ctx) -> list[str]:
         return []
     rel = _link_dest(f"assets/{ctx['stem']}/{filename}")
     out = [f"![{shape.name}]({rel})"]
-    if should_transcribe(png, "image/png", ctx["warnings"]):
+    log_ctx = {
+        "source": ctx["source"],
+        "page": ctx["slide_num"],
+        "image_ref": f"chart: {shape.name}",
+        "image_digest": image_digest(png),
+    }
+    if should_transcribe(png, "image/png", ctx["warnings"], log_ctx=log_ctx):
+        t0 = time.perf_counter()
         try:
-            transcription = transcribe_image(png, "image/png")
+            transcription, usage = transcribe_image_cached(png, "image/png", return_usage=True)
+            latency_ms = int((time.perf_counter() - t0) * 1000)
         except Exception as exc:
             ctx["warnings"].append(f"Vision transcription failed: {exc}")
+            record(
+                source=ctx["source"],
+                page=ctx["slide_num"],
+                image_ref=f"chart: {shape.name}",
+                image_digest=image_digest(png),
+                stage="transcribe",
+                model=VISION_MODEL,
+                latency_ms=int((time.perf_counter() - t0) * 1000),
+                error=str(exc),
+            )
             transcription = None
         if transcription:
-            out.extend(transcription.splitlines())
-            out.append("")
+            prompt_tokens = generated_tokens = None
+            if usage:
+                prompt_tokens = usage.get("prompt_tokens")
+                generated_tokens = usage.get("completion_tokens", usage.get("generated_tokens"))
+            reason = transcription_quality(transcription)
+            if reason is not None:
+                ctx["warnings"].append(f"Discarding low-value chart transcription ({reason})")
+                record(
+                    source=ctx["source"],
+                    page=ctx["slide_num"],
+                    image_ref=f"chart: {shape.name}",
+                    image_digest=image_digest(png),
+                    stage="transcribe",
+                    model=VISION_MODEL,
+                    latency_ms=latency_ms,
+                    prompt_tokens=prompt_tokens,
+                    generated_tokens=generated_tokens,
+                    markdown=transcription,
+                    error=f"quality gate: {reason}",
+                )
+            else:
+                record(
+                    source=ctx["source"],
+                    page=ctx["slide_num"],
+                    image_ref=f"chart: {shape.name}",
+                    image_digest=image_digest(png),
+                    stage="transcribe",
+                    model=VISION_MODEL,
+                    latency_ms=latency_ms,
+                    prompt_tokens=prompt_tokens,
+                    generated_tokens=generated_tokens,
+                    markdown=transcription,
+                )
+                out.extend(transcription.splitlines())
+                out.append("")
     return out
 
 
@@ -325,6 +389,7 @@ class PPTXConverter(Converter):
                 "renderer": None,
                 "slide_w": int(prs.slide_width),
                 "slide_h": int(prs.slide_height),
+                "source": str(path),
             }
             renderer = None
             has_charts = any(_slide_has_chart(slide) for slide in prs.slides)

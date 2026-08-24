@@ -29,12 +29,7 @@ from converter.base import (
     repeated_image_hashes,
     write_image,
 )
-from converter.classify import maybe_transcribe_image, should_transcribe
-from converter.vision import (
-    VISION_ENABLED,
-    transcribe_page,
-    verify_no_omissions,
-)
+from converter.classify import maybe_transcribe_image
 
 _BOLD_FLAG = 2**4
 _ITALIC_FLAG = 2**1
@@ -258,7 +253,7 @@ def _line_in_tables(line: Line, tables) -> bool:
     return False
 
 
-def _page_images(page, doc, assets_dir, stem, counter, warnings, skip_xrefs, dedup, pno, repeated, seen) -> list[str]:
+def _page_images(page, doc, assets_dir, stem, counter, warnings, skip_xrefs, dedup, pno, repeated, seen, source) -> list[str]:
     refs: list[str] = []
     assets_dir.mkdir(parents=True, exist_ok=True)
     pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
@@ -293,7 +288,15 @@ def _page_images(page, doc, assets_dir, stem, counter, warnings, skip_xrefs, ded
                 seen.add(digest)
             refs.append(f"![image]({rel})")
             transcription = maybe_transcribe_image(
-                extracted["image"], extracted.get("ext", "bin"), warnings
+                extracted["image"],
+                extracted.get("ext", "bin"),
+                warnings,
+                log_ctx={
+                    "source": source,
+                    "page": pno,
+                    "image_ref": filename,
+                    "image_digest": digest,
+                },
             )
             if transcription:
                 refs.extend(transcription.splitlines())
@@ -418,11 +421,12 @@ class PDFConverter(Converter):
             counter = [1]
             dedup: dict[str, str] = {}
             lines: list[str] = []
+            source = str(path)
             for pno, page in enumerate(doc, start=1):
                 lines.extend(
                     self._page_to_md(
                         page, doc, pno, assets_dir, stem, counter, skip_xrefs,
-                        footer_keys, dedup, result.warnings, repeated, seen,
+                        footer_keys, dedup, result.warnings, repeated, seen, source,
                     )
                 )
                 lines.extend([
@@ -441,7 +445,7 @@ class PDFConverter(Converter):
         return result
 
     def _page_to_md(
-        self, page, doc, pno, assets_dir, stem, counter, skip_xrefs, footer_keys, dedup, warnings, repeated, seen
+        self, page, doc, pno, assets_dir, stem, counter, skip_xrefs, footer_keys, dedup, warnings, repeated, seen, source
     ) -> list[str]:
         out: list[str] = []
         all_lines = _ordered_lines(_page_lines(page))
@@ -452,7 +456,7 @@ class PDFConverter(Converter):
         out.append("")
 
         image_refs = _page_images(
-            page, doc, assets_dir, stem, counter, warnings, skip_xrefs, dedup, pno, repeated, seen
+            page, doc, assets_dir, stem, counter, warnings, skip_xrefs, dedup, pno, repeated, seen, source
         )
         out.extend(image_refs)
         out.append("")
@@ -470,13 +474,7 @@ class PDFConverter(Converter):
 
         complex_page = _page_is_complex(content)
 
-        if complex_page and VISION_ENABLED:
-            markdown = self._vision_or_none(page, content, warnings)
-            if markdown is not None:
-                out.extend(markdown.splitlines())
-            else:
-                out.append(_details_block("Raw extracted text", _raw_text(content)))
-        elif complex_page:
+        if complex_page:
             out.append(_details_block("Raw extracted text", _raw_text(content)))
         else:
             bullet_levels = self._bullet_levels(content)
@@ -524,29 +522,6 @@ class PDFConverter(Converter):
         if text_buffer:
             out.extend(_emit_items(_merge_lone_bullets(text_buffer), bullet_levels))
         return out
-
-    def _vision_or_none(self, page, content, warnings) -> str | None:
-        pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
-        png = pix.tobytes("png")
-        raw = _raw_text(content)
-        try:
-            if not should_transcribe(png, "image/png", warnings):
-                return None
-            markdown = transcribe_page(png)
-        except Exception as exc:
-            warnings.append(f"Vision transcription failed: {exc}")
-            return None
-        missing = verify_no_omissions(raw, markdown)
-        if missing:
-            limit = max(3, int(len(missing) * 0.2))
-            if len(missing) > limit:
-                warnings.append(
-                    f"Vision output may omit text ({len(missing)} tokens missing, "
-                    f"e.g. {', '.join(missing[:5])}); keeping raw text instead"
-                )
-                return None
-        return markdown
-
 
 def _details_block(summary: str, body: str) -> str:
     return f"<details>\n<summary>{summary}</summary>\n\n{body}\n\n</details>"

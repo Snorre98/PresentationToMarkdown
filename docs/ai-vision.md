@@ -1,8 +1,8 @@
 # AI vision pass (optional)
 
-For slides whose text layer can't be linearized into clean Markdown (diagrams,
-flowcharts, multi-column timelines), the PDF converter can hand the rendered page
-to a **local vision-language model** and transcribe it back as structured
+For diagrams, flowcharts and tables that appear as *images* — embedded raster
+images in PDFs, pictures in PowerPoint decks, and charts — the converter can hand
+them to a **local vision-language model** and transcribe them back as structured
 Markdown. This is strictly a *post-pass*: the deterministic text extraction always
 runs first, and every page still keeps its rendered PNG as the visual ground
 truth.
@@ -15,20 +15,20 @@ MLX/GGUF "lanes", SSD storage layout, and LAN serving. In short:
 
 - Vision models run on **MLX via `mlx-vlm`** (Apple-native, fastest on Apple
   Silicon). `mlx-vlm` is already installed (`~/.local/bin/mlx_vlm.server`).
-- The model used here, `mlx-community/Ornith-1.0-9B-8bit` (MLX, qwen3_5 vision
-  arch), is already downloaded to the SSD's Hugging Face cache.
+- The transcriber used here is `mlx-community/Qwen2.5-VL-7B-Instruct-4bit` (MLX,
+  qwen2_5_vl arch, 4-bit).
 
 Serve it (OpenAI-compatible API on `:8081`):
 
 ```sh
-mlx_vlm.server --model mlx-community/Ornith-1.0-9B-8bit --port 8081
+mlx_vlm.server --model mlx-community/Qwen2.5-VL-7B-Instruct-4bit --port 8081
 ```
 
 Add `--host 0.0.0.0` only if you need to reach it from another device on the LAN.
 
-> Ornith is the *default*, not the only option — see
-> [Improving the vision model](#improving-the-vision-model) below for candidates
-> that are a better fit for lossless slide transcription.
+> Qwen2.5-VL-7B is the *default*, not the only option — override it with
+> `VISION_MODEL`, and see [Improving the vision model](#improving-the-vision-model)
+> below for candidates (including the previous default, Ornith).
 
 > No `ollama pull` and no separate download: this follows the
 > `inference-readme.md` "lanes" convention (one runner per model). The
@@ -38,8 +38,12 @@ Add `--host 0.0.0.0` only if you need to reach it from another device on the LAN
 
 This section is a starting point for doing your own deep research, not an
 exhaustive ranking. `mlx-vlm` supports a much wider range of models than just
-Ornith — including dedicated **OCR** models that are arguably a better fit for
-*lossless* slide transcription than a general-purpose VLM.
+the default — including dedicated **OCR** models that are arguably a better fit
+for *lossless* slide transcription than a general-purpose VLM.
+
+> Note: the default transcriber is now `mlx-community/Qwen2.5-VL-7B-Instruct-4bit`
+> (fast, document-optimised). Ornith, discussed below as the previous default, is
+> kept as a research reference and remains usable via `VISION_MODEL`.
 
 ### What the current model is (and its limit)
 
@@ -126,11 +130,13 @@ via environment variables:
 | --- | --- | --- |
 | `VISION_ENABLED` | *(unset = off)* | Master switch — `1`/`true`/`yes`/`on` enables the pass |
 | `VISION_BASE_URL` | `http://127.0.0.1:8081/v1` | Transcriber server base URL |
-| `VISION_MODEL` | `mlx-community/Ornith-1.0-9B-8bit` | Transcriber model id |
+| `VISION_MODEL` | `mlx-community/Qwen2.5-VL-7B-Instruct-4bit` | Transcriber model id |
 | `VISION_API_KEY` | *(unset)* | Optional bearer token (unused for local servers) |
 | `VISION_CLASSIFY_ENABLED` | *(unset = off)* | Enables the cheap classifier gate (and image-level transcription) |
 | `VISION_CLASSIFY_BASE_URL` | `http://127.0.0.1:8082/v1` | Classifier server base URL |
-| `VISION_CLASSIFY_MODEL` | `vikhyatk/moondream2` | Classifier model id (switch to any mlx-vlm VLM) |
+| `VISION_CLASSIFY_MODEL` | `mlx-community/Qwen2.5-VL-3B-Instruct-4bit` | Classifier model id (switch to any mlx-vlm VLM) |
+| `VISION_LOG_ENABLED` | `on` | Record vision decisions/transcriptions to SQLite |
+| `VISION_LOG_DB` | `ptm.sqlite` | SQLite log path (the project dir for now) |
 | `SOFFICE_PATH` | `soffice` | LibreOffice binary, for PPTX chart rendering only |
 
 Example:
@@ -145,21 +151,31 @@ offline — diagrams fall back to the rendered PNG plus a collapsed
 
 ## The classifier gate (optional)
 
-The expensive transcriber (Ornith) is wasteful on decorative images — lecture
-decks are full of photographs, logos and backgrounds that have no educational
-value to extract. A **second, tiny vision model** (Moondream2 by default) can sit
-in front of it and decide whether an image/page is worth transcribing at all:
+The expensive transcriber (Qwen2.5-VL-7B) is wasteful on decorative images —
+lecture decks are full of photographs, logos and backgrounds that have no
+educational value to extract. A **second, small vision model** (Qwen2.5-VL-3B by
+default) sits in front of it and classifies each image into one of three
+categories, so the right thing happens to each:
 
 ```
-                  ┌─ TRANSCRIBE ─▶ transcriber (Ornith, :8081)
-classifier (:8082)┤
-                  └─ SKIP ───────▶ keep the image link as-is
+                          ┌─ TEXT ────────▶ verbatim transcription (Qwen2.5-VL-7B, :8081)
+classifier (:8082) ───────┼─ DIAGRAM ─────▶ high-level description (Qwen2.5-VL-7B)
+                          └─ DECORATIVE ─▶ keep the image link as-is
 ```
+
+- **TEXT** — a document, slide, screenshot or table whose text is worth
+  transcribing verbatim.
+- **DIAGRAM** — a flowchart or conceptual figure. Instead of a lossless
+  transcription (which degenerates into repeated node labels), the transcriber
+  produces a short *description*: what the diagram represents and its purpose,
+  its main stages/components, and the overall flow.
+- **DECORATIVE** — a photograph, logo, icon or background, left as a plain image
+  link.
 
 Serve it on its own port (mlx-vlm runs one chat model per process):
 
 ```sh
-mlx_vlm.server --model vikhyatk/moondream2 --port 8082
+mlx_vlm.server --model mlx-community/Qwen2.5-VL-3B-Instruct-4bit --port 8082
 ```
 
 Enable the gate (and image-level transcription) with `VISION_CLASSIFY_ENABLED=1`:
@@ -170,18 +186,36 @@ VISION_ENABLED=1 VISION_CLASSIFY_ENABLED=1 ./python main.py
 
 What the gate changes:
 
-- **Page pass** — a *complex* page is only sent to the transcriber when the
-  classifier says it is a diagram/table/chart. Without the gate,
-  `VISION_ENABLED=1` alone transcribes every complex page.
-- **Image-level transcription** — *new*: embedded images (PDF and PPTX pictures,
-  and PPTX charts rendered via LibreOffice) are classified, and educational ones
-  get a transcription appended below their `![image]` link. This only runs when
-  **both** `VISION_ENABLED` *and* `VISION_CLASSIFY_ENABLED` are on.
+- **Image-level transcription** — embedded images (PDF and PPTX pictures, and
+  PPTX charts rendered via LibreOffice) are classified, and educational ones get
+  a transcription appended below their `![image]` link. Text images are
+  transcribed verbatim; diagrams get a high-level description. This only runs
+  when **both** `VISION_ENABLED` *and* `VISION_CLASSIFY_ENABLED` are on.
 
 The classifier is cheap and switchable — set `VISION_CLASSIFY_MODEL` to any
-mlx-vlm VLM (e.g. `mlx-community/Qwen2.5-VL-3B-Instruct-4bit`). Its answer is
-parsed loosely (a false signal like "photograph" wins over "graph"), and any
-classifier error degrades to "keep the link" — never to data loss.
+mlx-vlm VLM. Its answer is parsed loosely (a decorative signal like "photograph"
+wins over "graph"), and any classifier error degrades to "keep the link" — never
+to data loss.
+
+### Quality gate
+
+Every transcription (image, chart, or diagram description) is passed through a
+deterministic quality gate before it is written. The gate catches the classic
+vision-model failure modes and discards the transcription, keeping only the
+image link:
+
+- **Repetition loops** — the same label emitted over and over (e.g. a flowchart
+  reduced to a single repeated "Start process / End process" label).
+- **Excessive nesting** — bullet indentation that deepens pathologically.
+- **Runaway length** — an implausibly long transcription for one figure.
+- **Low information density** — near-zero unique-word ratio.
+
+A discarded transcription is logged as a warning, and the reason is recorded in
+the SQLite log (`stage = "transcribe"`, `error = "quality gate: <reason>"`).
+
+> **Moondream2 note:** `vikhyatk/moondream2` does not currently load in
+> `mlx-vlm 0.6.15` — its `config.json` declares `model_type: "moondream1"`,
+> which mlx-vlm routes to a broken loader. Qwen2.5-VL-3B is the default instead.
 
 ### PPTX charts
 
@@ -199,17 +233,43 @@ still converts.
 
 ## How it works
 
-1. A page is flagged **complex** when its text is scattered (many distinct left
-   edges) or laid out in parallel columns — i.e. when a linear reading order
-   can't faithfully represent it.
-2. The rendered page PNG is sent to the model with a lossless-transcription
-   prompt (verbatim text, headings, bullets, tables; no commentary).
-3. The model's Markdown is **cross-checked** against the deterministic text
-   layer: if too many content words are missing, the output is discarded and the
-   raw text is kept instead — so a hallucinating or truncating model can't drop
-   information silently.
-4. On any error (server down, model missing), the converter warns and falls back
-   to the raw-text block.
+1. Each embedded image / picture / chart is extracted (charts are rendered to a
+   PNG via LibreOffice first).
+2. The image is **classified** by the small classifier model into `text`
+   (transcribe verbatim), `diagram` (describe at a high level), or `decorative`
+   (leave as a plain image link).
+3. `text` images are **transcribed** with a lossless-transcription prompt
+   (verbatim text, headings, bullets, tables; no commentary). `diagram` images
+   get a high-level description instead (purpose, main components, flow). The
+   result is passed through the **quality gate** and appended below the image
+   link only if it passes.
+4. Transcription results are **cached by image digest**, so identical content is
+   only transcribed once per run.
+5. On any error (server down, model missing), the converter warns and falls back
+   to the plain image link.
+
+## Logging
+
+Every classifier decision and transcription is recorded to a SQLite database so
+the vision pipeline is easy to inspect. Each row carries the source file, page
+number, image reference/digest, model, the classifier's decision and raw answer,
+latency, token counts, and the transcription output.
+
+- **Where:** `ptm.sqlite` in the project directory (override with `VISION_LOG_DB`).
+- **On/off:** on by default; disable with `VISION_LOG_ENABLED=0`.
+- This is also the DB that will hold app configuration later (schema is versioned
+  via the `meta` table).
+
+Example queries:
+
+```sql
+-- every event for one source file, in order
+SELECT * FROM vision_events WHERE source = ? ORDER BY id;
+
+-- all decisions + transcripts for a specific image digest
+SELECT stage, decision, latency_ms, generated_tokens, markdown
+FROM vision_events WHERE image_digest = ? ORDER BY id;
+```
 
 ## Reference
 
