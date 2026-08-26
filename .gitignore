@@ -1,6 +1,7 @@
 __pycache__/
 *.pyc
 .venv/
+.env
 ptm.sqlite
 ptm.sqlite-*
 *.egg-info/

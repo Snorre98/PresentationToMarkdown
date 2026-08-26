@@ -35,21 +35,35 @@ Both speaker labels and deep denoise/dereverb run in one PyTorch service on
 -> {"ok": true}
 ```
 
+Both are managed by one script, `scripts/audio_serve.sh` (start/stop/status +
+install + optional launchd always-on — the same lifecycle the vision models get
+from `macos-dev-config/tools/serve.sh`).
+
 ### Option A — Stub (for testing, no PyTorch, no Hugging Face)
 
 ```bash
-./.venv/bin/python scripts/stub_audio_server.py --port 8083
+scripts/audio_serve.sh stub-start          # start in the background
+scripts/audio_serve.sh stub-status
+scripts/audio_serve.sh stub-stop
 ```
 
 Fakes speaker turns and copies audio, so the whole pipeline runs end-to-end
-without installing PyTorch or touching Hugging Face.
+without installing PyTorch or touching Hugging Face. (Under the hood it runs
+`.venv/bin/python scripts/stub_audio_server.py`; pass `--port N` to override the
+default `8083`.)
 
 ### Option B — Real server (isolated venv)
 
 ```bash
-uv venv ~/tools/audio-env --python 3.11
-uv pip install --python ~/tools/audio-env/bin/python -r requirements-audio.txt
+scripts/audio_serve.sh install             # one-time: create ~/tools/audio-env (py3.11) + deps
+scripts/audio_serve.sh start               # start in the background
+scripts/audio_serve.sh status              # running? on which port?
+scripts/audio_serve.sh log                 # tail -f the server log
+scripts/audio_serve.sh stop
 ```
+
+`install` prefers `uv` (`uv venv … --python 3.11` + `uv pip install …`) and
+falls back to `python3.11 -m venv` / `pip` when `uv` is absent. It is idempotent.
 
 > The pinned versions in `requirements-audio.txt` (Python 3.11, torch 2.5.1,
 > torchaudio 2.5.1, pyannote 3.4.0, deepfilternet 0.5.6, huggingface-hub <1.0)
@@ -59,13 +73,21 @@ uv pip install --python ~/tools/audio-env/bin/python -r requirements-audio.txt
 Only the **diarization** model is gated behind Hugging Face; **enhancement
 (DeepFilterNet) needs no HF account at all.** So:
 
-- If you only want enhancement (no speaker labels), just start the server — no
+- If you only want enhancement (no speaker labels), just `start` the server — no
   Hugging Face setup.
 - If you want speaker labels too, complete **§2.1 (Hugging Face setup)** first,
-  then start it.
+  then `start` it.
+
+`start` reads `HF_TOKEN` from the environment, or from a git-ignored `.env` in
+the repo root (see §2.1, Step 4). State lives in `~/.local/state/ptm`
+(`audio.pid` / `audio.log`); override with `PTM_STATE_DIR`, the port with
+`PTM_AUDIO_PORT` or `--port N`.
+
+**Always-on (survive reboot):**
 
 ```bash
-HF_TOKEN=hf_... ~/tools/audio-env/bin/python scripts/audio_server.py --port 8083
+scripts/audio_serve.sh launchd-install     # LaunchAgent, RunAtLoad + KeepAlive
+scripts/audio_serve.sh launchd-uninstall   # remove it
 ```
 
 ### 2.1 Hugging Face setup (only for `--diarize` / speaker labels)
@@ -101,22 +123,29 @@ Open each of these URLs, signed in, and click **"Agree and access repository"**
 
 **Step 4 — Give it to the server.**
 
-Set the token as the `HF_TOKEN` environment variable, then start the server —
-any of these three work:
+The management script (`scripts/audio_serve.sh start`) reads `HF_TOKEN` from the
+environment, or from a git-ignored `.env` in the repo root. Any of these work:
 
 ```bash
 # inline (one command)
-HF_TOKEN=hf_XXXXXXXXXXXXXXXXXXXX \
-  ~/tools/audio-env/bin/python scripts/audio_server.py --port 8083
+HF_TOKEN=hf_XXXXXXXXXXXXXXXXXXXX scripts/audio_serve.sh start
 
 # export for the session
 export HF_TOKEN=hf_XXXXXXXXXXXXXXXXXXXX
-~/tools/audio-env/bin/python scripts/audio_server.py --port 8083
+scripts/audio_serve.sh start
+
+# git-ignored .env in the repo root (never committed)
+echo 'HF_TOKEN=hf_XXXXXXXXXXXXXXXXXXXX' >> .env
+scripts/audio_serve.sh start
 
 # permanent (adds it to your shell profile)
 echo 'export HF_TOKEN=hf_XXXXXXXXXXXXXXXXXXXX' >> ~/.zshrc && source ~/.zshrc
-~/tools/audio-env/bin/python scripts/audio_server.py --port 8083
+scripts/audio_serve.sh start
 ```
+
+`launchd-install` embeds the token in the LaunchAgent plist at install time
+(machine-local, under `~/Library/LaunchAgents`) — re-run it after changing the
+token.
 
 The token is only used to download the weights on the first run (cached in
 `~/.cache/huggingface/` after that); no audio is ever sent to Hugging Face.

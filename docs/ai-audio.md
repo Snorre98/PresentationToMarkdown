@@ -40,10 +40,17 @@ venv, on `:8083`), because `pyannote-audio` and `deepfilternet` are deliberately
 kept out of `converter` (ADR-0006, ADR-0008):
 
 ```bash
-uv venv ~/tools/audio-env --python 3.11
-uv pip install --python ~/tools/audio-env/bin/python -r requirements-audio.txt
-HF_TOKEN=hf_... ~/tools/audio-env/bin/python scripts/audio_server.py --port 8083
+scripts/audio_serve.sh install       # one-time: ~/tools/audio-env (py3.11) + deps
+scripts/audio_serve.sh start         # background; reads HF_TOKEN from env or ./.env
+scripts/audio_serve.sh status
+scripts/audio_serve.sh stop
+scripts/audio_serve.sh stub-start    # no-PyTorch stand-in for testing
 ```
+
+`install` uses `uv` (falls back to `python3.11 -m venv`/`pip`). For reboot
+persistence, `scripts/audio_serve.sh launchd-install` installs a `RunAtLoad` +
+`KeepAlive` LaunchAgent. See [docs/runbook.md](runbook.md) for the full
+operational runbook.
 
 > Only **diarization** needs Hugging Face; enhancement (DeepFilterNet) does not.
 > For the exact Hugging Face steps — accept the licenses on
