@@ -294,5 +294,5 @@ PTM_RUN_AUDIO_INTEGRATION=1 ./.venv/bin/python -m pytest tests/test_transcribe_i
 | Server logs a 401/403 "gated repo" on startup | Re-do §2.1: accept both model licenses + create a **Read** token |
 | No `# Transcript` appears | No same-stem audio found → pass `--audio-file` or `--to` |
 | Wrong language / gibberish | Set `AUDIO_LANGUAGE`, or upgrade to `large-v3-mlx` |
-| Long silence / music transcribed | Whisper hallucination → trim the recording |
+| Long silence / music transcribed | Whisper hallucination → trim the recording, or try `AUDIO_CONDITION_ON_PREVIOUS_TEXT=1` |
 | `ptm-transcribe: another instance is already running (PID …)` (exit 3) | Another transcription is active — wait for it, or stop that PID (the `flock` releases on process death) |

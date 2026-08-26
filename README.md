@@ -447,6 +447,7 @@ releases the lock. See [docs/runbook.md](docs/runbook.md).
 | `AUDIO_FFMPEG_BIN` | `ffmpeg` | ffmpeg binary |
 | `AUDIO_LANGUAGE` | *(unset = auto-detect)* | Whisper language hint |
 | `AUDIO_HEARTBEAT_SECONDS` | `20` | Quiet-interval before a `still working …` heartbeat line |
+| `AUDIO_CONDITION_ON_PREVIOUS_TEXT` | *(unset = off)* | Feed prior output back as a prompt (off avoids the "log log log" repetition loop on long recordings) |
 | `AUDIO_DIARIZE_ENABLED` | *(unset = off)* | Enable speaker labelling |
 | `AUDIO_DIARIZE_BASE_URL` | `http://127.0.0.1:8083/v1` | Diarization service base URL |
 

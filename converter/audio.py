@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import json
 import os
+import urllib.error
 import urllib.request
 
 AUDIO_DIARIZE_ENABLED = os.environ.get("AUDIO_DIARIZE_ENABLED", "").strip().lower() in {
@@ -48,6 +49,24 @@ AUDIO_ENHANCE_API_KEY = os.environ.get("AUDIO_ENHANCE_API_KEY") or AUDIO_DIARIZE
 
 _DIARIZE_TIMEOUT = 1800.0
 _ENHANCE_TIMEOUT = 1800.0
+
+
+def _post_json(req: urllib.request.Request, timeout: float, what: str):
+    """POST ``req`` and return the parsed JSON body, surfacing server errors.
+
+    ``urlopen`` raises ``HTTPError`` on a 4xx/5xx *before* we can read the body,
+    so the server's ``{"error": ...}`` would otherwise be lost. We read it here
+    and fold it into a clear ``RuntimeError`` instead.
+    """
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        try:
+            detail = json.loads(exc.read().decode("utf-8")).get("error")
+        except Exception:  # noqa: BLE001 - best-effort; fall back to the status code
+            detail = None
+        raise RuntimeError(detail or f"{what} returned HTTP {exc.code}") from exc
 
 
 def diarize(
@@ -76,8 +95,7 @@ def diarize(
     key = api_key or AUDIO_DIARIZE_API_KEY
     if key:
         req.add_header("Authorization", f"Bearer {key}")
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        body = json.loads(resp.read().decode("utf-8"))
+    body = _post_json(req, timeout, "diarization")
     turns = body if isinstance(body, list) else body.get("turns", [])
     result: list[dict] = []
     for turn in turns:
@@ -112,8 +130,7 @@ def enhance(
     key = api_key or AUDIO_ENHANCE_API_KEY
     if key:
         req.add_header("Authorization", f"Bearer {key}")
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        body = json.loads(resp.read().decode("utf-8"))
+    body = _post_json(req, timeout, "enhancement")
     if isinstance(body, dict) and body.get("ok") is False:
         raise RuntimeError(body.get("error") or "enhancement failed")
 

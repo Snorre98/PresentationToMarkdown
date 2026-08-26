@@ -2,6 +2,8 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from converter import transcribe as t
 from converter.audio import assign_speakers
 
@@ -108,6 +110,42 @@ def test_transcribe_audio(monkeypatch, tmp_path):
     assert whisper[0] == t.AUDIO_MLX_WHISPER_BIN
     assert whisper[1] == str(clean)
     assert whisper[whisper.index("--model") + 1] == t.AUDIO_MODEL
+    # Repetition-loop hallucination is disabled by default (see ADR-0008 caveat).
+    assert "--condition-on-previous-text" in whisper
+    assert whisper[whisper.index("--condition-on-previous-text") + 1] == "False"
+
+
+def test_transcribe_audio_condition_on_previous_text_opt_in(monkeypatch, tmp_path):
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, timeout=3600.0):
+        calls.append(list(cmd))
+        if cmd[0] == t.AUDIO_FFMPEG_BIN:
+            return ""
+        idx = cmd.index("--output-dir")
+        outdir = Path(cmd[idx + 1])
+        (outdir / (Path(cmd[1]).stem + ".json")).write_text(
+            json.dumps({"segments": []}), encoding="utf-8"
+        )
+        return ""
+
+    monkeypatch.setattr(t, "_run", fake_run)
+    monkeypatch.setattr(t, "AUDIO_ENHANCE_ENABLED", False)
+    monkeypatch.setattr(t, "AUDIO_CONDITION_ON_PREVIOUS_TEXT", True)
+    t.transcribe_audio(tmp_path / "x.mp3", tmp_path / "x.clean.flac")
+    assert "--condition-on-previous-text" not in calls[1]
+
+
+def test_transcribe_audio_silent_failure_surfaces_output(monkeypatch, tmp_path):
+    def fake_run(cmd, timeout=3600.0):
+        if cmd[0] == t.AUDIO_FFMPEG_BIN:
+            return ""
+        return "Skipping x.clean.flac due to SomeError: boom\n"
+
+    monkeypatch.setattr(t, "_run", fake_run)
+    monkeypatch.setattr(t, "AUDIO_ENHANCE_ENABLED", False)
+    with pytest.raises(RuntimeError, match="Skipping"):
+        t.transcribe_audio(tmp_path / "x.mp3", tmp_path / "x.clean.flac")
 
 
 def test_transcribe_audio_preprocess_disabled(monkeypatch, tmp_path):

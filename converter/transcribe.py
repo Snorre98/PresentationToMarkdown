@@ -66,6 +66,15 @@ AUDIO_LANGUAGE = os.environ.get("AUDIO_LANGUAGE") or None
 AUDIO_TIMEOUT = float(os.environ.get("AUDIO_TIMEOUT", "3600"))
 AUDIO_HEARTBEAT_SECONDS = float(os.environ.get("AUDIO_HEARTBEAT_SECONDS", "20"))
 
+# mlx-whisper's default (``--condition-on-previous-text True``) feeds the previous
+# window's text back as a prompt, which triggers the classic repetition-loop
+# hallucination ("log log log …") on long recordings. We disable it by default;
+# set ``AUDIO_CONDITION_ON_PREVIOUS_TEXT=1`` to re-enable it for smoother
+# cross-window continuity at the cost of possible loops.
+AUDIO_CONDITION_ON_PREVIOUS_TEXT = os.environ.get(
+    "AUDIO_CONDITION_ON_PREVIOUS_TEXT", "0"
+).strip().lower() in {"1", "true", "yes", "on"}
+
 # Deterministic speech-enhancement chain for lecture-hall audio (ADR-0008):
 # remove hum/rumble, cut hiss, reduce stationary noise, normalise loudness.
 _ENHANCE_FILTER = "highpass=f=80,lowpass=f=8000,afftdn=nf=-30,loudnorm=I=-16:TP=-1.5:LRA=11"
@@ -111,7 +120,7 @@ def _run_capture(cmd: list[str], timeout: float = AUDIO_TIMEOUT) -> str:
     if proc.returncode != 0:
         tail = (proc.stderr or proc.stdout or "").strip().splitlines()[-10:]
         raise RuntimeError(f"{cmd[0]} failed ({proc.returncode}): " + " | ".join(tail))
-    return proc.stdout
+    return (proc.stdout or "") + (proc.stderr or "")
 
 
 # The single child currently being streamed, so a signal handler in the CLI can
@@ -337,7 +346,7 @@ def transcribe_audio(
         if on_line is not None:
             on_line("enhancing audio …\n")
         try:
-            enhance(str(clean_path), str(clean_path))
+            enhance(str(clean_path.resolve()), str(clean_path.resolve()))
         except Exception as exc:  # noqa: BLE001 - degrade to preprocessed audio
             if warnings is not None:
                 warnings.append(f"Audio enhancement failed: {exc}; using preprocessed audio")
@@ -354,11 +363,27 @@ def transcribe_audio(
             "--output-format", "json",
             "--output-dir", str(tmpdir),
         ]
+        if not AUDIO_CONDITION_ON_PREVIOUS_TEXT:
+            cmd += ["--condition-on-previous-text", "False"]
         lang = language or AUDIO_LANGUAGE
         if lang:
             cmd += ["--language", lang]
-        _run(cmd, timeout=timeout, **stream_kw)
-        data = json.loads((tmpdir / (clean_path.stem + ".json")).read_text(encoding="utf-8"))
+        whisper_out = _run(cmd, timeout=timeout, **stream_kw)
+        # mlx-whisper's writer does `Path(output_name).with_suffix(".json")`, which
+        # re-interprets dots in the stem (``week-2.clean.flac`` -> ``week-2.json``),
+        # so we can't predict the exact name — glob the (fresh, single-file) dir.
+        json_files = sorted(tmpdir.glob("*.json"))
+        if not json_files:
+            # mlx-whisper exits 0 even when transcription fails (it prints
+            # "Skipping <audio> due to <exc>" + a traceback and moves on), so a
+            # missing JSON is the only reliable signal — surface its output.
+            tail = [ln.strip() for ln in (whisper_out or "").splitlines() if ln.strip()][-15:]
+            detail = "\n  ".join(tail) if tail else "(no output captured)"
+            raise RuntimeError(
+                f"{AUDIO_MLX_WHISPER_BIN} produced no output for {clean_path.name} "
+                f"(it likely failed and exited 0):\n  {detail}"
+            )
+        data = json.loads(json_files[0].read_text(encoding="utf-8"))
 
     segments: list[dict] = []
     for seg in data.get("segments", []):
@@ -454,7 +479,7 @@ def _transcribe(
         if on_line is not None:
             on_line("diarizing …\n")
         try:
-            turns = diarize(str(clean_path))
+            turns = diarize(str(clean_path.resolve()))
             assign_speakers(segments, turns)
         except Exception as exc:  # noqa: BLE001 - degrade to unlabelled transcript
             warnings.append(f"Diarization failed: {exc}; keeping unlabelled transcript")

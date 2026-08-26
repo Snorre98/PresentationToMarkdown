@@ -32,6 +32,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 DIARIZE_MODEL = os.environ.get("PYANNOTE_MODEL", "pyannote/speaker-diarization-3.1")
@@ -126,6 +127,7 @@ class _Handler(BaseHTTPRequestHandler):
         try:
             turns = _run_diarization(path, req.get("min_speakers"), req.get("max_speakers"))
         except Exception as exc:  # noqa: BLE001 - report a clean 500
+            traceback.print_exc()
             self._send(500, {"error": str(exc)})
             return
         self._send(200, turns)
@@ -142,6 +144,7 @@ class _Handler(BaseHTTPRequestHandler):
         try:
             _run_enhance(path, output)
         except Exception as exc:  # noqa: BLE001 - report a clean 500
+            traceback.print_exc()
             self._send(500, {"error": str(exc)})
             return
         self._send(200, {"ok": True})

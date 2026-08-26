@@ -82,6 +82,38 @@ def test_enhance_client_against_stub(tmp_path):
     assert dst.read_bytes() == src.read_bytes()
 
 
+def test_enhance_client_surfaces_server_error(tmp_path):
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    class _ErrorHandler(BaseHTTPRequestHandler):
+        def do_POST(self):  # noqa: N802
+            body = json.dumps({"error": "DeepFilterNet exploded"}).encode("utf-8")
+            self.send_response(500)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):  # noqa: N802
+            pass
+
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), _ErrorHandler)
+    port = httpd.server_address[1]
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        with pytest.raises(RuntimeError, match="DeepFilterNet exploded"):
+            enhance(
+                str(tmp_path / "x.flac"),
+                str(tmp_path / "y.flac"),
+                base_url=f"http://127.0.0.1:{port}/v1",
+            )
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        thread.join(timeout=5)
+
+
 @pytest.mark.skipif(
     shutil.which("ffmpeg") is None, reason="requires ffmpeg on PATH"
 )
