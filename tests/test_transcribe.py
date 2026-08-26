@@ -100,7 +100,10 @@ def test_transcribe_audio(monkeypatch, tmp_path):
     assert "-af" in ffmpeg and ffmpeg[ffmpeg.index("-af") + 1] == t._ENHANCE_FILTER
     assert "-c:a" in ffmpeg and "flac" in ffmpeg
     assert "-ar" in ffmpeg and "16000" in ffmpeg
-    assert ffmpeg[-1] == str(clean)
+    # ffmpeg targets a temp sibling that is atomically moved into place.
+    assert Path(ffmpeg[-1]).parent == clean.parent
+    assert ffmpeg[-1] != str(clean)
+    assert clean.exists()
     whisper = calls[1]
     assert whisper[0] == t.AUDIO_MLX_WHISPER_BIN
     assert whisper[1] == str(clean)

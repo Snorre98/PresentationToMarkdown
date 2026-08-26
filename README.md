@@ -430,6 +430,15 @@ If transcription fails (missing `ffmpeg`/`mlx_whisper`, server down), it degrade
 to a warning. Every segment is recorded to `ptm.sqlite` (`transcript_segments`
 table, keyed by the Markdown path).
 
+Transcription streams live progress to stderr (ffmpeg + mlx-whisper output and
+phase lines), with a `still working … (elapsed …)` heartbeat when a phase goes
+quiet (e.g. the first-run model download). Only one `ptm-transcribe` may run at a
+time — it holds an exclusive `flock` on
+`<PTM_STATE_DIR or ~/.local/state/ptm>/transcribe.lock` and a second invocation
+fails fast with exit `3` (`another instance is already running (PID …)`). Output
+files are written atomically, and Ctrl-C kills the child, cleans temp files, and
+releases the lock. See [docs/runbook.md](docs/runbook.md).
+
 | Var | Default | Purpose |
 | --- | --- | --- |
 | `AUDIO_ENABLED` | *(unset = off)* | Master switch |
@@ -437,6 +446,7 @@ table, keyed by the Markdown path).
 | `AUDIO_MLX_WHISPER_BIN` | `mlx_whisper` | mlx-whisper CLI |
 | `AUDIO_FFMPEG_BIN` | `ffmpeg` | ffmpeg binary |
 | `AUDIO_LANGUAGE` | *(unset = auto-detect)* | Whisper language hint |
+| `AUDIO_HEARTBEAT_SECONDS` | `20` | Quiet-interval before a `still working …` heartbeat line |
 | `AUDIO_DIARIZE_ENABLED` | *(unset = off)* | Enable speaker labelling |
 | `AUDIO_DIARIZE_BASE_URL` | `http://127.0.0.1:8083/v1` | Diarization service base URL |
 

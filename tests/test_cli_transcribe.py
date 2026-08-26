@@ -64,7 +64,7 @@ def test_collect_targets_dedupes(tmp_path):
 
 
 def _fake_attach(calls):
-    def attach(md, warnings, audio_path=None):
+    def attach(md, warnings, audio_path=None, **kw):
         calls.append(("attach", md, audio_path))
         return [{"start": 0.0, "end": 1.0, "text": "hi"}]
 
@@ -93,7 +93,7 @@ def test_main_standalone(tmp_path, monkeypatch, capsys):
     calls = []
     monkeypatch.setattr(
         "converter.transcribe.transcribe_to_markdown",
-        lambda a, w=None: calls.append(("standalone", a)) or (tmp_path / "week-2.transcript.md"),
+        lambda a, w=None, **kw: calls.append(("standalone", a)) or (tmp_path / "week-2.transcript.md"),
     )
 
     code = ct.main([str(audio)])
@@ -153,7 +153,7 @@ def test_main_prompt_standalone_when_none(tmp_path, monkeypatch, capsys):
     standalone_calls = []
     monkeypatch.setattr(
         "converter.transcribe.transcribe_to_markdown",
-        lambda a, w=None: standalone_calls.append(a) or (tmp_path / "lecture.transcript.md"),
+        lambda a, w=None, **kw: standalone_calls.append(a) or (tmp_path / "lecture.transcript.md"),
     )
     monkeypatch.setattr(ct, "_pick_lecture", lambda a, cands: None)
 
@@ -208,6 +208,51 @@ def test_main_end_to_end_standalone(tmp_path, monkeypatch, capsys):
     assert code == 0
     assert "[OK]" in out
     assert (tmp_path / "week-2.transcript.md").exists()
+
+
+def test_main_end_to_end_streams_progress(tmp_path, monkeypatch, capsys):
+    audio = tmp_path / "week-2.mp3"
+    audio.write_bytes(b"audio")
+
+    monkeypatch.setattr("converter.transcribe.AUDIO_ENABLED", True)
+    monkeypatch.setattr("converter.transcribe.AUDIO_DIARIZE_ENABLED", False)
+    monkeypatch.setattr("converter.transcribe.record_segment", lambda **kw: None)
+
+    def fake_transcribe(p, cp, **kw):
+        on_line = kw.get("on_line")
+        if on_line:
+            on_line("  50%|█████    | 5/10\n")
+            on_line("  100%|████████| 10/10\n")
+        return [{"start": 0.0, "end": 2.0, "text": "hello"}]
+
+    monkeypatch.setattr("converter.transcribe.transcribe_audio", fake_transcribe)
+
+    code = ct.main([str(audio)])
+    captured = capsys.readouterr()
+    assert code == 0
+    assert "transcribing week-2.mp3" in captured.err
+    assert "10/10" in captured.err
+    assert "[OK]" in captured.out
+    assert "Done: 1 of 1 transcribed." in captured.out
+    assert (tmp_path / "week-2.transcript.md").exists()
+
+
+def test_main_exits_3_when_locked(tmp_path, monkeypatch, capsys):
+    import lock
+
+    audio = tmp_path / "week-2.mp3"
+    audio.write_bytes(b"audio")
+
+    holder = lock.acquire_transcribe_lock()
+    assert holder.held
+    try:
+        code = ct.main([str(audio)])
+    finally:
+        holder.release()
+
+    captured = capsys.readouterr()
+    assert code == 3
+    assert "another instance is already running" in captured.err
 
 
 if __name__ == "__main__":

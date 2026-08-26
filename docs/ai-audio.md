@@ -74,6 +74,14 @@ Reference servers ship in `scripts/` — `audio_server.py` (real) and
 If the server is down, transcription still succeeds — enhancement degrades to
 the deterministic ffmpeg chain and speaker labels are dropped.
 
+`ptm-transcribe` streams live progress to stderr (ffmpeg/mlx-whisper output plus
+short phase lines), with a `still working … (elapsed …)` heartbeat during quiet
+phases such as the first-run model download. Only one `ptm-transcribe` runs at a
+time: it holds an exclusive `flock` on
+`<PTM_STATE_DIR or ~/.local/state/ptm>/transcribe.lock`, and a second invocation
+exits fast with code `3`. Output files are written atomically, and Ctrl-C
+terminates the child, cleans temp files, and releases the lock.
+
 ### 3. Enable the pass
 
 Transcription is decoupled from conversion (ADR-0009) and runs as its own
@@ -99,6 +107,7 @@ ptm-transcribe lecture.mp3 --to deck.md           # attach lecture.mp3 to deck.m
 | `AUDIO_MLX_WHISPER_BIN` | `mlx_whisper` | mlx-whisper CLI |
 | `AUDIO_FFMPEG_BIN` | `ffmpeg` | ffmpeg binary |
 | `AUDIO_LANGUAGE` | *(unset = auto-detect)* | Whisper language hint (e.g. `no`, `en`) |
+| `AUDIO_HEARTBEAT_SECONDS` | `20` | Quiet-interval before a `still working …` heartbeat line |
 | `AUDIO_PREPROCESS` | `1` | Deterministic ffmpeg enhancement chain (hum/hiss/noise/level) |
 | `AUDIO_ENHANCE_ENABLED` | `1` | DeepFilterNet denoise+dereverb via the audio server |
 | `AUDIO_ENHANCE_BASE_URL` | `AUDIO_DIARIZE_BASE_URL` | Enhancement endpoint |

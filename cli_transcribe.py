@@ -15,11 +15,17 @@ an interactive prompt lets you pick one. Env vars are set *before* importing
 from __future__ import annotations
 
 import argparse
+import atexit
 import os
+import signal
 import sys
 from pathlib import Path
+from typing import Callable
 
 MD_SUFFIX = ".md"
+
+# Exit code when another ``ptm-transcribe`` already holds the lock.
+EXIT_LOCKED = 3
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -157,15 +163,69 @@ def _report(warnings: list[str], name: str) -> None:
         print(f"[WARN] {name}: {warning}")
 
 
+def _make_progress_printer() -> Callable[[str], None]:
+    """Return an ``on_line`` printer that streams progress to stderr.
+
+    On a TTY, every line (including mlx-whisper/ffmpeg carriage-return progress
+    bars) is forwarded verbatim. When stderr is piped, carriage-return bars are
+    suppressed so only start / heartbeat / phase / result lines appear.
+    """
+    tty = sys.stderr.isatty()
+
+    def printer(line: str) -> None:
+        if not tty and "\r" in line:
+            return
+        text = line if line.endswith("\n") else line + "\n"
+        sys.stderr.write(text)
+        sys.stderr.flush()
+
+    return printer
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     _apply_env(args)
 
-    from converter.transcribe import (
-        attach_transcript,
-        find_audio_for,
-        transcribe_to_markdown,
-    )
+    import lock
+
+    lock_handle = lock.acquire_transcribe_lock()
+    if not lock_handle.held:
+        pid = lock_handle.pid
+        if pid is not None:
+            print(
+                f"ptm-transcribe: another instance is already running (PID {pid})",
+                file=sys.stderr,
+            )
+        else:
+            print("ptm-transcribe: another instance is already running", file=sys.stderr)
+        return EXIT_LOCKED
+    atexit.register(lock_handle.release)
+
+    from converter.transcribe import terminate_active_child
+
+    printer = _make_progress_printer()
+
+    def _handle(signum, _frame):
+        terminate_active_child()
+        if signum == signal.SIGINT:
+            raise KeyboardInterrupt
+        raise SystemExit(143)
+
+    prev_int = signal.signal(signal.SIGINT, _handle)
+    prev_term = signal.signal(signal.SIGTERM, _handle)
+
+    try:
+        return _run_targets(args, printer)
+    except KeyboardInterrupt:
+        return 130
+    finally:
+        signal.signal(signal.SIGINT, prev_int)
+        signal.signal(signal.SIGTERM, prev_term)
+        lock_handle.release()
+
+
+def _run_targets(args: argparse.Namespace, printer: Callable[[str], None]) -> int:
+    from converter.transcribe import attach_transcript, find_audio_for, transcribe_to_markdown
 
     raw_targets = list(args.targets)
     if args.audio_file:
@@ -196,8 +256,9 @@ def main(argv: list[str] | None = None) -> int:
         if audio is None:
             print(f"[WARN] {md.name}: no audio found (pass an audio file or --to)")
             continue
+        print(f"attaching transcript to {md.name} …", file=sys.stderr)
         warnings: list[str] = []
-        segments = attach_transcript(md, warnings, audio_path=audio)
+        segments = attach_transcript(md, warnings, audio_path=audio, on_line=printer)
         _report(warnings, md.name)
         if segments is None:
             if not warnings:
@@ -224,7 +285,8 @@ def main(argv: list[str] | None = None) -> int:
             if not md.exists():
                 print(f"[WARN] {audio.name}: target Markdown does not exist: {md}")
                 continue
-            segments = attach_transcript(md, warnings, audio_path=audio)
+            print(f"attaching transcript to {md.name} …", file=sys.stderr)
+            segments = attach_transcript(md, warnings, audio_path=audio, on_line=printer)
             _report(warnings, md.name)
             if segments is None:
                 if not warnings:
@@ -233,7 +295,8 @@ def main(argv: list[str] | None = None) -> int:
             ok += 1
             print(f"[OK]  {md.name} <- {audio.name}")
         else:
-            out = transcribe_to_markdown(audio, warnings)
+            print(f"transcribing {audio.name} …", file=sys.stderr)
+            out = transcribe_to_markdown(audio, warnings, on_line=printer)
             _report(warnings, audio.name)
             if out is None:
                 if not warnings:

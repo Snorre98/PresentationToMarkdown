@@ -24,7 +24,7 @@ ptm-transcribe = "cli_transcribe:main"
 
 [tool.setuptools]
 packages = ["converter"]
-py-modules = ["cli", "cli_common", "cli_transcribe", "start", "gui"]
+py-modules = ["cli", "cli_common", "cli_transcribe", "lock", "start", "gui"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

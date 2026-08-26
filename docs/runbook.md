@@ -204,6 +204,28 @@ scripts/ptm-transcribe.sh /path/to/week-2.mp3
    `ptm-transcribe` asks which lecture it belongs to (`[0]` = standalone).
 5. Nothing found → a `[WARN]`, or a standalone `<stem>.transcript.md`.
 
+### Progress output & the single-instance guard
+
+While a file is transcribing, `ptm-transcribe` streams live progress to stderr —
+ffmpeg and mlx-whisper output (including the first-run ~1.6 GB model download)
+appears in real time, with short phase lines (`ffmpeg` / `enhancing` /
+`transcribing` / `diarizing`). If a phase goes quiet (e.g. the model download),
+a `still working … (elapsed …)` heartbeat is printed every
+`AUDIO_HEARTBEAT_SECONDS` seconds (default `20`). When stderr is piped
+(CI/scripts), carriage-return progress bars are suppressed and only the start /
+heartbeat / phase / result lines are emitted.
+
+Only one `ptm-transcribe` may run at a time. It holds an exclusive `flock` on
+`<PTM_STATE_DIR or ~/.local/state/ptm>/transcribe.lock` (writing its PID into
+it); a second invocation fails fast with exit code `3` and
+`ptm-transcribe: another instance is already running (PID …)`, so two runs never
+clobber each other's `.clean.flac` / `.md` / `.srt`. The lock is released on
+normal exit and on `SIGINT`/`SIGTERM`, and the OS drops it automatically if the
+process is killed. Ctrl-C mid-transcription terminates the child subprocess,
+cleans up the per-run temp dir, removes partial temp output, and releases the
+lock (exit `130`). Output files are written atomically (temp file + `os.replace`),
+so an interrupt never leaves a truncated `.md` / `.srt` / `.clean.flac`.
+
 ## 4. Verify the output
 
 ```bash
@@ -273,3 +295,4 @@ PTM_RUN_AUDIO_INTEGRATION=1 ./.venv/bin/python -m pytest tests/test_transcribe_i
 | No `# Transcript` appears | No same-stem audio found → pass `--audio-file` or `--to` |
 | Wrong language / gibberish | Set `AUDIO_LANGUAGE`, or upgrade to `large-v3-mlx` |
 | Long silence / music transcribed | Whisper hallucination → trim the recording |
+| `ptm-transcribe: another instance is already running (PID …)` (exit 3) | Another transcription is active — wait for it, or stop that PID (the `flock` releases on process death) |
