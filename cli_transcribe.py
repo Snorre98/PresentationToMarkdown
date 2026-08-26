@@ -55,6 +55,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="enable speaker diarization via the audio server",
     )
     parser.add_argument(
+        "--isolate",
+        action="store_true",
+        help="attempt to isolate the dominant voice (SepFormer via the audio server)",
+    )
+    parser.add_argument(
         "--language",
         metavar="LANG",
         help="Whisper language hint (e.g. 'no', 'en')",
@@ -82,6 +87,8 @@ def _apply_env(args: argparse.Namespace) -> dict[str, str]:
     env: dict[str, str] = {"AUDIO_ENABLED": "1"}
     if getattr(args, "diarize", False):
         env["AUDIO_DIARIZE_ENABLED"] = "1"
+    if getattr(args, "isolate", False):
+        env["AUDIO_ISOLATE_ENABLED"] = "1"
     if getattr(args, "language", None):
         env["AUDIO_LANGUAGE"] = args.language
     for item in getattr(args, "env", None) or []:

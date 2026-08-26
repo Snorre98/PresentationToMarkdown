@@ -93,6 +93,7 @@ def test_transcribe_audio(monkeypatch, tmp_path):
 
     monkeypatch.setattr(t, "_run", fake_run)
     monkeypatch.setattr(t, "AUDIO_ENHANCE_ENABLED", False)
+    monkeypatch.setattr(t, "AUDIO_DEREVERB_ENABLED", False)
     clean = tmp_path / "x.clean.flac"
     segs = t.transcribe_audio(tmp_path / "x.mp3", clean)
 
@@ -131,6 +132,7 @@ def test_transcribe_audio_condition_on_previous_text_opt_in(monkeypatch, tmp_pat
 
     monkeypatch.setattr(t, "_run", fake_run)
     monkeypatch.setattr(t, "AUDIO_ENHANCE_ENABLED", False)
+    monkeypatch.setattr(t, "AUDIO_DEREVERB_ENABLED", False)
     monkeypatch.setattr(t, "AUDIO_CONDITION_ON_PREVIOUS_TEXT", True)
     t.transcribe_audio(tmp_path / "x.mp3", tmp_path / "x.clean.flac")
     assert "--condition-on-previous-text" not in calls[1]
@@ -144,6 +146,7 @@ def test_transcribe_audio_silent_failure_surfaces_output(monkeypatch, tmp_path):
 
     monkeypatch.setattr(t, "_run", fake_run)
     monkeypatch.setattr(t, "AUDIO_ENHANCE_ENABLED", False)
+    monkeypatch.setattr(t, "AUDIO_DEREVERB_ENABLED", False)
     with pytest.raises(RuntimeError, match="Skipping"):
         t.transcribe_audio(tmp_path / "x.mp3", tmp_path / "x.clean.flac")
 
@@ -164,6 +167,7 @@ def test_transcribe_audio_preprocess_disabled(monkeypatch, tmp_path):
 
     monkeypatch.setattr(t, "_run", fake_run)
     monkeypatch.setattr(t, "AUDIO_ENHANCE_ENABLED", False)
+    monkeypatch.setattr(t, "AUDIO_DEREVERB_ENABLED", False)
     monkeypatch.setattr(t, "AUDIO_PREPROCESS", False)
     t.transcribe_audio(tmp_path / "x.mp3", tmp_path / "x.clean.flac")
     assert "-af" not in calls[0]
@@ -184,6 +188,7 @@ def test_transcribe_audio_calls_enhance_when_enabled(monkeypatch, tmp_path):
 
     monkeypatch.setattr(t, "_run", fake_run)
     monkeypatch.setattr(t, "AUDIO_ENHANCE_ENABLED", True)
+    monkeypatch.setattr(t, "AUDIO_DEREVERB_ENABLED", False)
     monkeypatch.setattr(t, "enhance", lambda p, o, **kw: enhanced.append((p, o)))
     clean = tmp_path / "x.clean.flac"
     t.transcribe_audio(tmp_path / "x.mp3", clean)
@@ -206,6 +211,7 @@ def test_transcribe_audio_bad_length_enhance_discarded(monkeypatch, tmp_path):
 
     monkeypatch.setattr(t, "_run", fake_run)
     monkeypatch.setattr(t, "AUDIO_ENHANCE_ENABLED", True)
+    monkeypatch.setattr(t, "AUDIO_DEREVERB_ENABLED", False)
     monkeypatch.setattr(t, "enhance", lambda p, o, **kw: None)
     # source (clean) reports 10s, the enhanced temp reports 30s -> mismatch.
     monkeypatch.setattr(t, "_audio_duration", lambda p: 30.0 if ".enhanced." in p.name else 10.0)
@@ -231,11 +237,152 @@ def test_transcribe_audio_enhance_failure_warns(monkeypatch, tmp_path):
 
     monkeypatch.setattr(t, "_run", fake_run)
     monkeypatch.setattr(t, "AUDIO_ENHANCE_ENABLED", True)
+    monkeypatch.setattr(t, "AUDIO_DEREVERB_ENABLED", False)
     monkeypatch.setattr(t, "enhance", lambda p, o, **kw: (_ for _ in ()).throw(RuntimeError("down")))
     warnings: list[str] = []
     segs = t.transcribe_audio(tmp_path / "x.mp3", tmp_path / "x.clean.flac", warnings=warnings)
     assert segs == []
     assert any("Audio enhancement failed" in w for w in warnings)
+
+
+def test_transcribe_audio_dereverb_enhance_isolate_order(monkeypatch, tmp_path):
+    order: list[str] = []
+    whisper_input: dict[str, str] = {}
+
+    def fake_run(cmd, timeout=3600.0, **kw):
+        if cmd[0] == t.AUDIO_FFMPEG_BIN:
+            Path(cmd[-1]).write_bytes(b"clean")
+            return ""
+        whisper_input["path"] = cmd[1]
+        idx = cmd.index("--output-dir")
+        outdir = Path(cmd[idx + 1])
+        (outdir / (Path(cmd[1]).stem + ".json")).write_text(
+            json.dumps({"segments": []}), encoding="utf-8"
+        )
+        return ""
+
+    def dereverb_(p, o, **kw):
+        order.append("dereverb")
+        Path(o).write_bytes(b"dereverbed")
+
+    def enhance_(p, o, **kw):
+        order.append("enhance")
+        Path(o).write_bytes(b"enhanced")
+
+    def isolate_(p, o, **kw):
+        order.append("isolate")
+        Path(o).write_bytes(b"isolated")
+
+    monkeypatch.setattr(t, "_run", fake_run)
+    monkeypatch.setattr(t, "_audio_duration", lambda p: 10.0)
+    monkeypatch.setattr(t, "AUDIO_DEREVERB_ENABLED", True)
+    monkeypatch.setattr(t, "AUDIO_ENHANCE_ENABLED", True)
+    monkeypatch.setattr(t, "AUDIO_ISOLATE_ENABLED", True)
+    monkeypatch.setattr(t, "dereverb", dereverb_)
+    monkeypatch.setattr(t, "enhance", enhance_)
+    monkeypatch.setattr(t, "isolate", isolate_)
+
+    clean = tmp_path / "x.clean.flac"
+    t.transcribe_audio(tmp_path / "x.mp3", clean)
+
+    assert order == ["dereverb", "enhance", "isolate"]
+    isolated = tmp_path / "x.isolated.flac"
+    assert isolated.exists()
+    assert isolated.read_bytes() == b"isolated"
+    assert whisper_input["path"] == str(isolated)
+
+
+def test_transcribe_audio_isolate_bad_length_falls_back(monkeypatch, tmp_path):
+    whisper_input: dict[str, str] = {}
+
+    def fake_run(cmd, timeout=3600.0, **kw):
+        if cmd[0] == t.AUDIO_FFMPEG_BIN:
+            Path(cmd[-1]).write_bytes(b"clean")
+            return ""
+        whisper_input["path"] = cmd[1]
+        idx = cmd.index("--output-dir")
+        outdir = Path(cmd[idx + 1])
+        (outdir / (Path(cmd[1]).stem + ".json")).write_text(
+            json.dumps({"segments": []}), encoding="utf-8"
+        )
+        return ""
+
+    monkeypatch.setattr(t, "_run", fake_run)
+    monkeypatch.setattr(t, "AUDIO_DEREVERB_ENABLED", False)
+    monkeypatch.setattr(t, "AUDIO_ENHANCE_ENABLED", False)
+    monkeypatch.setattr(t, "AUDIO_ISOLATE_ENABLED", True)
+    monkeypatch.setattr(t, "isolate", lambda p, o, **kw: Path(o).write_bytes(b"isolated"))
+    # source (clean) reports 10s, the isolated temp reports 30s -> mismatch.
+    monkeypatch.setattr(
+        t, "_audio_duration", lambda p: 30.0 if ".isolated." in p.name else 10.0
+    )
+
+    clean = tmp_path / "x.clean.flac"
+    warnings: list[str] = []
+    t.transcribe_audio(tmp_path / "x.mp3", clean, warnings=warnings)
+
+    assert any("bad-length" in w for w in warnings)
+    assert not (tmp_path / "x.isolated.flac").exists()
+    assert whisper_input["path"] == str(clean)
+
+
+def test_transcribe_audio_isolate_failure_warns(monkeypatch, tmp_path):
+    whisper_input: dict[str, str] = {}
+
+    def fake_run(cmd, timeout=3600.0, **kw):
+        if cmd[0] == t.AUDIO_FFMPEG_BIN:
+            return ""
+        whisper_input["path"] = cmd[1]
+        idx = cmd.index("--output-dir")
+        outdir = Path(cmd[idx + 1])
+        (outdir / (Path(cmd[1]).stem + ".json")).write_text(
+            json.dumps({"segments": []}), encoding="utf-8"
+        )
+        return ""
+
+    monkeypatch.setattr(t, "_run", fake_run)
+    monkeypatch.setattr(t, "AUDIO_DEREVERB_ENABLED", False)
+    monkeypatch.setattr(t, "AUDIO_ENHANCE_ENABLED", False)
+    monkeypatch.setattr(t, "AUDIO_ISOLATE_ENABLED", True)
+    monkeypatch.setattr(
+        t, "isolate", lambda p, o, **kw: (_ for _ in ()).throw(RuntimeError("down"))
+    )
+    clean = tmp_path / "x.clean.flac"
+    warnings: list[str] = []
+    segs = t.transcribe_audio(tmp_path / "x.mp3", clean, warnings=warnings)
+
+    assert segs == []
+    assert any("Voice isolation failed" in w for w in warnings)
+    assert whisper_input["path"] == str(clean)
+
+
+def test_transcribe_audio_isolated_versioned_naming(monkeypatch, tmp_path):
+    whisper_input: dict[str, str] = {}
+
+    def fake_run(cmd, timeout=3600.0, **kw):
+        if cmd[0] == t.AUDIO_FFMPEG_BIN:
+            return ""
+        whisper_input["path"] = cmd[1]
+        idx = cmd.index("--output-dir")
+        outdir = Path(cmd[idx + 1])
+        (outdir / (Path(cmd[1]).stem + ".json")).write_text(
+            json.dumps({"segments": []}), encoding="utf-8"
+        )
+        return ""
+
+    monkeypatch.setattr(t, "_run", fake_run)
+    monkeypatch.setattr(t, "_audio_duration", lambda p: 10.0)
+    monkeypatch.setattr(t, "AUDIO_DEREVERB_ENABLED", False)
+    monkeypatch.setattr(t, "AUDIO_ENHANCE_ENABLED", False)
+    monkeypatch.setattr(t, "AUDIO_ISOLATE_ENABLED", True)
+    monkeypatch.setattr(t, "isolate", lambda p, o, **kw: Path(o).write_bytes(b"isolated"))
+
+    clean = tmp_path / "week-2.clean.1.flac"
+    t.transcribe_audio(tmp_path / "week-2.mp3", clean)
+
+    isolated = tmp_path / "week-2.isolated.1.flac"
+    assert isolated.exists()
+    assert whisper_input["path"] == str(isolated)
 
 
 def test_attach_transcript_disabled_noop(tmp_path, monkeypatch):

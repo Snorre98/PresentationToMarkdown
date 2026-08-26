@@ -25,6 +25,12 @@ def test_apply_env_diarize_and_language():
     assert env["AUDIO_LANGUAGE"] == "no"
 
 
+def test_apply_env_isolate():
+    env = ct._apply_env(parse(["--isolate"]))
+    assert env["AUDIO_ENABLED"] == "1"
+    assert env["AUDIO_ISOLATE_ENABLED"] == "1"
+
+
 def test_apply_env_passthrough_overrides():
     env = ct._apply_env(parse(["--env", "AUDIO_MODEL=foo", "--env", "AUDIO_ENABLED=0"]))
     assert env["AUDIO_MODEL"] == "foo"

@@ -24,6 +24,8 @@ Configuration (environment variables):
 - ``AUDIO_HEARTBEAT_SECONDS`` — quiet-interval before a ``still working …`` line
   is emitted while streaming subprocess output, default ``20``.
 - ``AUDIO_PREPROCESS`` — deterministic ffmpeg enhancement chain. Default on.
+- ``AUDIO_DEREVERB_ENABLED`` — WPE dereverberation (via the audio server). Default on.
+- ``AUDIO_ISOLATE_ENABLED`` — voice isolation (SepFormer, via the audio server). Default off.
 """
 from __future__ import annotations
 
@@ -39,11 +41,15 @@ from pathlib import Path
 from typing import Callable
 
 from converter.audio import (
+    AUDIO_DEREVERB_ENABLED,
     AUDIO_DIARIZE_ENABLED,
     AUDIO_ENHANCE_ENABLED,
+    AUDIO_ISOLATE_ENABLED,
     assign_speakers,
+    dereverb,
     diarize,
     enhance,
+    isolate,
 )
 from converter.logstore import record_segment
 
@@ -376,6 +382,79 @@ def _enhance_audio(clean_path: Path, warnings: list[str] | None) -> None:
             pass
 
 
+def _dereverb_audio(clean_path: Path, warnings: list[str] | None) -> None:
+    """Dereverberate ``clean_path`` in place (WPE), validating the result.
+
+    Mirrors :func:`_enhance_audio`: the dereverberated audio is written to a temp
+    ``.flac`` and only swapped in if its duration matches the source (within 5%).
+    """
+    src_duration = _audio_duration(clean_path)
+    fd, tmp = tempfile.mkstemp(
+        prefix=clean_path.stem + ".dereverb.", suffix=".flac", dir=clean_path.parent
+    )
+    os.close(fd)
+    try:
+        dereverb(str(clean_path.resolve()), tmp)
+        out_duration = _audio_duration(Path(tmp))
+        if (
+            src_duration is not None
+            and out_duration is not None
+            and src_duration > 0
+            and abs(out_duration - src_duration) / src_duration >= 0.05
+        ):
+            if warnings is not None:
+                warnings.append(
+                    "Audio dereverberation produced a bad-length file "
+                    f"({out_duration:.1f}s vs {src_duration:.1f}s); using reverberant audio"
+                )
+            return
+        os.replace(tmp, clean_path)
+    finally:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+
+
+def _isolate_audio(
+    clean_path: Path, isolated_path: Path, warnings: list[str] | None
+) -> bool:
+    """Isolate the dominant voice into ``isolated_path``; return success.
+
+    Mirrors :func:`_enhance_audio`'s temp + duration-validation dance, but writes
+    to a *separate* ``isolated_path`` rather than replacing ``clean_path``. On a
+    bad-length result (or failure) the temp is discarded, a warning is appended
+    and ``False`` is returned so the caller falls back to the unisolated audio.
+    """
+    src_duration = _audio_duration(clean_path)
+    fd, tmp = tempfile.mkstemp(
+        prefix=isolated_path.stem + ".", suffix=".flac", dir=isolated_path.parent
+    )
+    os.close(fd)
+    try:
+        isolate(str(clean_path.resolve()), tmp)
+        out_duration = _audio_duration(Path(tmp))
+        if (
+            src_duration is not None
+            and out_duration is not None
+            and src_duration > 0
+            and abs(out_duration - src_duration) / src_duration >= 0.05
+        ):
+            if warnings is not None:
+                warnings.append(
+                    "Voice isolation produced a bad-length file "
+                    f"({out_duration:.1f}s vs {src_duration:.1f}s); using unisolated audio"
+                )
+            return False
+        os.replace(tmp, isolated_path)
+        return True
+    finally:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+
+
 def transcribe_audio(
     audio_path: Path,
     clean_path: Path,
@@ -391,8 +470,10 @@ def transcribe_audio(
     """Enhance ``audio_path``, persist it as a FLAC, and transcribe it.
 
     The cleaned audio is written to ``clean_path`` (16 kHz mono FLAC) — first by
-    the deterministic ffmpeg chain, then upgraded in place by DeepFilterNet when
-    ``AUDIO_ENHANCE_ENABLED`` and the server is up (a failure only warns).
+    the deterministic ffmpeg chain, then dereverberated (WPE) and upgraded by
+    DeepFilterNet when those steps are enabled and the server is up. With
+    ``AUDIO_ISOLATE_ENABLED``, a voice-isolated ``<stem>.isolated.flac`` is also
+    produced and that is what Whisper transcribes (each failure only warns).
 
     ``on_line`` (optional) receives raw subprocess output plus short phase lines
     as they happen; ``heartbeat`` overrides the quiet-interval before a
@@ -426,6 +507,15 @@ def transcribe_audio(
             pass
         raise
 
+    if AUDIO_DEREVERB_ENABLED:
+        if on_line is not None:
+            on_line("dereverberating audio …\n")
+        try:
+            _dereverb_audio(clean_path, warnings)
+        except Exception as exc:  # noqa: BLE001 - degrade to reverberant audio
+            if warnings is not None:
+                warnings.append(f"Audio dereverberation failed: {exc}; using reverberant audio")
+
     if AUDIO_ENHANCE_ENABLED:
         if on_line is not None:
             on_line("enhancing audio …\n")
@@ -435,6 +525,18 @@ def transcribe_audio(
             if warnings is not None:
                 warnings.append(f"Audio enhancement failed: {exc}; using preprocessed audio")
 
+    target = clean_path
+    if AUDIO_ISOLATE_ENABLED:
+        if on_line is not None:
+            on_line("isolating voice …\n")
+        isolated_path = clean_path.with_name(clean_path.name.replace(".clean.", ".isolated."))
+        try:
+            if _isolate_audio(clean_path, isolated_path, warnings):
+                target = isolated_path
+        except Exception as exc:  # noqa: BLE001 - degrade to unisolated audio
+            if warnings is not None:
+                warnings.append(f"Voice isolation failed: {exc}; using unisolated audio")
+
     if on_line is not None:
         on_line(f"transcribing with {mlx_bin or AUDIO_MLX_WHISPER_BIN} …\n")
 
@@ -442,7 +544,7 @@ def transcribe_audio(
         tmpdir = Path(tmp)
         cmd = [
             mlx_bin or AUDIO_MLX_WHISPER_BIN,
-            str(clean_path),
+            str(target),
             "--model", model or AUDIO_MODEL,
             "--output-format", "json",
             "--output-dir", str(tmpdir),
@@ -464,7 +566,7 @@ def transcribe_audio(
             tail = [ln.strip() for ln in (whisper_out or "").splitlines() if ln.strip()][-15:]
             detail = "\n  ".join(tail) if tail else "(no output captured)"
             raise RuntimeError(
-                f"{AUDIO_MLX_WHISPER_BIN} produced no output for {clean_path.name} "
+                f"{AUDIO_MLX_WHISPER_BIN} produced no output for {target.name} "
                 f"(it likely failed and exited 0):\n  {detail}"
             )
         data = json.loads(json_files[0].read_text(encoding="utf-8"))

@@ -12,9 +12,13 @@
 #   were removed in torchaudio 2.11 — hence torch/torchaudio 2.5.x.
 # - huggingface-hub 1.x dropped the use_auth_token argument that pyannote.audio
 #   3.x still passes to hf_hub_download — hence huggingface-hub <1.0.
+# - speechbrain is pinned to a torch-2.5-compatible 1.x (SepFormer voice
+#   isolation); nara_wpe is pure NumPy (WPE dereverberation). Both are ungated.
 
 torch==2.5.1
 torchaudio==2.5.1
 pyannote.audio==3.4.0
 deepfilternet==0.5.6
 huggingface-hub==0.36.2
+nara_wpe==0.0.11
+speechbrain==1.0.2

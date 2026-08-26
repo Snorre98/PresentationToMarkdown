@@ -14,3 +14,4 @@ Index of architectural decisions for PresentationToMarkdown, in
 | [0007](0007-transcript-to-markdown-relation.md) | Relate the transcript to the Markdown as a companion section | Accepted |
 | [0008](0008-audio-enhancement.md) | Enhance lecture-hall audio before ASR and persist a cleaned FLAC | Accepted |
 | [0009](0009-decouple-transcription-from-conversion.md) | Decouple transcription from conversion into a `ptm-transcribe` command | Accepted |
+| [0010](0010-dereverb-voice-isolation.md) | Dereverberation (WPE) and voice isolation (SepFormer) in the audio server | Accepted |

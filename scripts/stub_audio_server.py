@@ -1,10 +1,11 @@
-"""Stub audio-model service (diarization + enhancement) for testing the audio pass.
+"""Stub audio-model service (diarization + enhancement + dereverb + isolate) for testing.
 
-Implements the same ``POST /v1/diarize`` and ``POST /v1/enhance`` contracts as
-the real service (``scripts/audio_server.py``) without PyTorch, so both paths can
-be exercised end-to-end. Diarization fabricates alternating speaker turns
-spanning the audio duration (via ``ffprobe``); enhancement copies the input to
-the output.
+Implements the same ``POST /v1/diarize``, ``POST /v1/enhance``,
+``POST /v1/dereverb`` and ``POST /v1/isolate`` contracts as the real service
+(``scripts/audio_server.py``) without PyTorch, so all paths can be exercised
+end-to-end. Diarization fabricates alternating speaker turns spanning the audio
+duration (via ``ffprobe``); enhancement/dereverb/isolation copy the input to the
+output.
 
 Usage::
 
@@ -80,6 +81,10 @@ class _Handler(BaseHTTPRequestHandler):
             self._handle_diarize()
         elif route == "/v1/enhance":
             self._handle_enhance()
+        elif route == "/v1/dereverb":
+            self._handle_copy()
+        elif route == "/v1/isolate":
+            self._handle_copy()
         else:
             self._send(404, {"error": "not found"})
 
@@ -97,6 +102,23 @@ class _Handler(BaseHTTPRequestHandler):
         self._send(200, turns)
 
     def _handle_enhance(self):
+        req = self._read_json()
+        if req is None:
+            return
+        path = req.get("path")
+        output = req.get("output")
+        if not path or not output:
+            self._send(400, {"error": "missing 'path' or 'output'"})
+            return
+        try:
+            shutil.copyfile(path, output)
+        except Exception as exc:  # noqa: BLE001
+            self._send(500, {"error": str(exc)})
+            return
+        self._send(200, {"ok": True})
+
+    def _handle_copy(self):
+        # ``/v1/dereverb`` and ``/v1/isolate`` share the same copy semantics.
         req = self._read_json()
         if req is None:
             return
@@ -133,7 +155,7 @@ def main() -> None:
     args = parser.parse_args()
 
     httpd = ThreadingHTTPServer((args.host, args.port), _Handler)
-    print(f"stub audio server on http://{args.host}:{args.port}/v1/{{diarize,enhance}}")
+    print(f"stub audio server on http://{args.host}:{args.port}/v1/{{diarize,enhance,dereverb,isolate}}")
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

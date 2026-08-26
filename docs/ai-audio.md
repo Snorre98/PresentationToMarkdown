@@ -60,19 +60,24 @@ operational runbook.
 > create a **Read** token — see
 > [the runbook's "Hugging Face setup" section](runbook.md#21-hugging-face-setup-only-for---diarize--speaker-labels).
 
-The service exposes two endpoints:
+The service exposes four endpoints:
 
 - `POST /v1/diarize` — `{"path": "<audio>", "min_speakers": n, "max_speakers": n}`
   → `[{"start": f, "end": f, "speaker": "SPEAKER_00"}, …]`.
 - `POST /v1/enhance` — `{"path": "<in>", "output": "<out>"}` → `{"ok": true}`
-  (DeepFilterNet denoise+dereverb, 48 kHz enhance → 16 kHz save).
+  (DeepFilterNet denoise, 48 kHz enhance → 16 kHz save).
+- `POST /v1/dereverb` — `{"path": "<in>", "output": "<out>"}` → `{"ok": true}`
+  (WPE dereverberation, pure NumPy, 16 kHz in/out).
+- `POST /v1/isolate` — `{"path": "<in>", "output": "<out>"}` → `{"ok": true}`
+  (SepFormer voice isolation, 8 kHz in → 16 kHz out).
 
 Reference servers ship in `scripts/` — `audio_server.py` (real) and
 `stub_audio_server.py` (no-PyTorch stand-in for testing). See
 [docs/runbook.md](runbook.md) for the full operational runbook.
 
-If the server is down, transcription still succeeds — enhancement degrades to
-the deterministic ffmpeg chain and speaker labels are dropped.
+If the server is down, transcription still succeeds — dereverberation/enhancement
+degrades to the deterministic ffmpeg chain, isolation is skipped, and speaker
+labels are dropped.
 
 `ptm-transcribe` streams live progress to stderr (ffmpeg/mlx-whisper output plus
 short phase lines), with a `still working … (elapsed …)` heartbeat during quiet
@@ -91,12 +96,19 @@ Transcription is decoupled from conversion (ADR-0009) and runs as its own
 # attach to existing Markdown (discover same-stem audio beside it)
 ptm-transcribe deck.md
 ptm-transcribe --diarize deck.md
+ptm-transcribe --isolate deck.md                 # + isolate the dominant voice
 
 # no Markdown yet — transcribe straight to a transcript file
 ptm-transcribe week-2.mp3
 ptm-transcribe --audio-file lecture.mp3 deck.md   # explicit audio for deck.md
 ptm-transcribe lecture.mp3 --to deck.md           # attach lecture.mp3 to deck.md
 ```
+
+The audio pipeline is `ffmpeg clean → WPE dereverb → DeepFilterNet enhance →
+[SepFormer isolate] → mlx-whisper`. WPE dereverberation and enhancement both run
+whenever the server is up (default on); voice isolation is opt-in (`--isolate`)
+and, when enabled, writes a `<stem>.isolated.<N>.flac` that Whisper transcribes
+instead of the cleaned file.
 
 ## Configuration
 
@@ -110,7 +122,9 @@ ptm-transcribe lecture.mp3 --to deck.md           # attach lecture.mp3 to deck.m
 | `AUDIO_HEARTBEAT_SECONDS` | `20` | Quiet-interval before a `still working …` heartbeat line |
 | `AUDIO_CONDITION_ON_PREVIOUS_TEXT` | *(unset = off)* | Feed prior output back as a prompt (off avoids the "log log log" repetition loop on long recordings) |
 | `AUDIO_PREPROCESS` | `1` | Deterministic ffmpeg enhancement chain (hum/hiss/noise/level) |
-| `AUDIO_ENHANCE_ENABLED` | `1` | DeepFilterNet denoise+dereverb via the audio server |
+| `AUDIO_DEREVERB_ENABLED` | `1` | WPE dereverberation via the audio server |
+| `AUDIO_ENHANCE_ENABLED` | `1` | DeepFilterNet denoise via the audio server |
+| `AUDIO_ISOLATE_ENABLED` | *(unset = off)* | Voice isolation (SepFormer) via the audio server |
 | `AUDIO_ENHANCE_BASE_URL` | `AUDIO_DIARIZE_BASE_URL` | Enhancement endpoint |
 | `AUDIO_DIARIZE_ENABLED` | *(unset = off)* | Enable speaker labelling via the diarization server |
 | `AUDIO_DIARIZE_BASE_URL` | `http://127.0.0.1:8083/v1` | Audio server base URL |
@@ -141,7 +155,8 @@ Given `deck.md` + `deck.mp3`:
 ```text
 deck.md                    # slides + appended "# Transcript" section
 deck.transcript.srt        # SubRip sidecar (timestamps + speaker cues)
-deck.clean.flac            # persisted cleaned audio (denoised/dereverbed, 16 kHz)
+deck.clean.flac            # persisted cleaned audio (dereverbed + denoised, 16 kHz)
+deck.isolated.flac         # voice-isolated stream (only with --isolate)
 ```
 
 Transcript Markdown (speaker omitted when diarization is off):
@@ -159,7 +174,8 @@ Transcript Markdown (speaker omitted when diarization is off):
 ```
 
 The cleaned `.clean.flac` is the exact audio Whisper transcribed, so its
-timestamps match the transcript. The source recording is never modified.
+timestamps match the transcript (with `--isolate`, that is `.isolated.flac`
+instead). The source recording is never modified.
 
 Every segment is also recorded to `ptm.sqlite` (`transcript_segments` table) so
 the transcript is searchable and inspectable:
@@ -189,3 +205,9 @@ AUDIO_PREPROCESS=0 AUDIO_ENHANCE_ENABLED=0 ptm-transcribe deck.md   # raw audio
   consider `AUDIO_LANGUAGE` to avoid mis-detection on short clips.
 - DeepFilterNet runs at 48 kHz and is resampled to 16 kHz for Whisper — a slight
   quality loss vs. transcribing at 48 kHz, traded for a smaller artifact.
+- WPE dereverberation is single-channel, so its effect on very reverberant mono
+  recordings is real but bounded; the multi-channel case improves much more.
+- Voice isolation (`--isolate`) is **best-effort**: SepFormer splits into two
+  unordered streams and we keep the higher-energy one, so a dominant second
+  speaker or very similar voices may be picked incorrectly — it degrades to the
+  unisolated audio rather than failing.

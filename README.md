@@ -419,6 +419,7 @@ ptm-transcribe week-2.mp3                 # -> week-2.transcript.md (+ .srt, .cl
 # explicit pairing / speaker labels
 ptm-transcribe week-2.mp3 --to deck.md    # attach week-2's audio to deck.md
 ptm-transcribe --diarize deck.md          # + speaker labels
+ptm-transcribe --isolate deck.md          # + isolate the dominant voice
 ptm-transcribe --language no week-2.mp3   # language hint
 ```
 
@@ -433,6 +434,12 @@ overwriting — pass `--overwrite` to replace the base file instead. Attaching t
 If transcription fails (missing `ffmpeg`/`mlx_whisper`, server down), it degrades
 to a warning. Every segment is recorded to `ptm.sqlite` (`transcript_segments`
 table, keyed by the Markdown path).
+
+The audio pipeline is `ffmpeg clean → WPE dereverb → DeepFilterNet enhance →
+[SepFormer isolate] → mlx-whisper`. Reverb removal (WPE) and denoising
+(DeepFilterNet) run automatically whenever the audio server is up; voice
+isolation is opt-in via `--isolate` and writes a `<stem>.isolated.flac` that
+Whisper transcribes instead of the cleaned file.
 
 Transcription streams live progress to stderr (ffmpeg + mlx-whisper output and
 phase lines), with a `still working … (elapsed …)` heartbeat when a phase goes
@@ -452,6 +459,9 @@ releases the lock. See [docs/runbook.md](docs/runbook.md).
 | `AUDIO_LANGUAGE` | *(unset = auto-detect)* | Whisper language hint |
 | `AUDIO_HEARTBEAT_SECONDS` | `20` | Quiet-interval before a `still working …` heartbeat line |
 | `AUDIO_CONDITION_ON_PREVIOUS_TEXT` | *(unset = off)* | Feed prior output back as a prompt (off avoids the "log log log" repetition loop on long recordings) |
+| `AUDIO_DEREVERB_ENABLED` | `1` | WPE dereverberation via the audio server |
+| `AUDIO_ENHANCE_ENABLED` | `1` | DeepFilterNet denoise via the audio server |
+| `AUDIO_ISOLATE_ENABLED` | *(unset = off)* | Voice isolation (SepFormer) via the audio server |
 | `AUDIO_DIARIZE_ENABLED` | *(unset = off)* | Enable speaker labelling |
 | `AUDIO_DIARIZE_BASE_URL` | `http://127.0.0.1:8083/v1` | Diarization service base URL |
 

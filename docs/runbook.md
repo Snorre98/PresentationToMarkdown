@@ -25,19 +25,27 @@ Verify: `mlx_whisper --help` and `ffmpeg -version` both return.
 ## 2. The audio-model server (diarization + enhancement)
 
 Both speaker labels and deep denoise/dereverb run in one PyTorch service on
-`:8083`. Two endpoints:
+`:8083`. Four endpoints:
 
 ```json
 // POST /v1/diarize — who spoke when
 {"path": "/abs/path/lecture.flac", "min_speakers": 1, "max_speakers": 4}
 -> [{"start": 0.0, "end": 9.2, "speaker": "SPEAKER_00"}, ...]
 
-// POST /v1/enhance — denoise + dereverb, write a cleaned file
+// POST /v1/enhance — denoise (DeepFilterNet), write a cleaned file
 {"path": "/abs/path/lecture.flac", "output": "/abs/path/lecture.clean.flac"}
+-> {"ok": true}
+
+// POST /v1/dereverb — dereverberate (WPE), write a de-echoed file
+{"path": "/abs/path/lecture.clean.flac", "output": "/abs/path/lecture.clean.flac"}
+-> {"ok": true}
+
+// POST /v1/isolate — isolate the dominant voice (SepFormer)
+{"path": "/abs/path/lecture.clean.flac", "output": "/abs/path/lecture.isolated.flac"}
 -> {"ok": true}
 ```
 
-Both are managed by one script, `scripts/audio_serve.sh` (start/stop/status +
+All four are managed by one script, `scripts/audio_serve.sh` (start/stop/status +
 install + optional launchd always-on — the same lifecycle the vision models get
 from `macos-dev-config/tools/serve.sh`).
 
@@ -68,17 +76,21 @@ scripts/audio_serve.sh stop
 falls back to `python3.11 -m venv` / `pip` when `uv` is absent. It is idempotent.
 
 > The pinned versions in `requirements-audio.txt` (Python 3.11, torch 2.5.1,
-> torchaudio 2.5.1, pyannote 3.4.0, deepfilternet 0.5.6, huggingface-hub <1.0)
-> are interdependent and are what the server was tested against. See the header
-> comment in that file for the rationale.
+> torchaudio 2.5.1, pyannote 3.4.0, deepfilternet 0.5.6, huggingface-hub <1.0,
+> nara_wpe 0.0.11, speechbrain 1.0.2) are interdependent and are what the server
+> was tested against. See the header comment in that file for the rationale.
 
 Only the **diarization** model is gated behind Hugging Face; **enhancement
-(DeepFilterNet) needs no HF account at all.** So:
+(DeepFilterNet), dereverberation (WPE) and isolation (SepFormer) need no HF
+account at all.** So:
 
-- If you only want enhancement (no speaker labels), just `start` the server — no
-  Hugging Face setup.
+- If you only want enhancement/dereverb (no speaker labels), just `start` the
+  server — no Hugging Face setup.
 - If you want speaker labels too, complete **§2.1 (Hugging Face setup)** first,
   then `start` it.
+
+> SepFormer (voice isolation) downloads its weights on the first `/v1/isolate`
+> request (~100–200 MB, ungated). WPE is pure NumPy — no model, no download.
 
 `start` reads `HF_TOKEN` from the environment, or from a git-ignored `.env` in
 the repo root (see §2.1, Step 4). State lives in `~/.local/state/ptm`
@@ -177,15 +189,16 @@ ptm-transcribe week-2.mp3 --overwrite           # force-replace the base transcr
 ptm-transcribe week-2.mp3 --to deck.md          # attach week-2's audio to deck.md
 ptm-transcribe --audio-file lecture.m4a deck.md # explicit audio for deck.md
 ptm-transcribe --diarize deck.md                # + speaker labels
+ptm-transcribe --isolate deck.md                # attempt to isolate the dominant voice
 ptm-transcribe --language no week-2.mp3         # language hint
 
 # folders are scanned recursively for .md and audio files
 ptm-transcribe lectures/                        # pair by stem; prompt on ambiguity
 ```
 
-`ptm-transcribe` sets `AUDIO_ENABLED=1` (and `--diarize`/`--language` as given)
-itself, so no `--audio` flag is needed — and `ptm`/`ptm-start` no longer accept
-one. The raw-env equivalent:
+`ptm-transcribe` sets `AUDIO_ENABLED=1` (and `--diarize`/`--isolate`/`--language`
+as given) itself, so no `--audio` flag is needed — and `ptm`/`ptm-start` no
+longer accept one. The raw-env equivalent:
 
 ```bash
 AUDIO_ENABLED=1 ./.venv/bin/python -m cli_transcribe deck.md
@@ -213,14 +226,20 @@ Standalone transcripts are **append-only**: re-running the same audio writes
 so past transcripts
 are kept for A/B comparison. Use `--overwrite` to replace the base file instead.
 
+The audio pipeline is `ffmpeg clean → WPE dereverb → DeepFilterNet enhance →
+[SepFormer isolate] → mlx-whisper`. WPE dereverberation and enhancement run
+whenever the server is up (both default on, degrade to a `[WARN]` if it is
+down); voice isolation runs only with `--isolate` and writes a
+`<stem>.isolated.<N>.flac` that Whisper transcribes instead of the cleaned file.
+
 ### Progress output & the single-instance guard
 
 While a file is transcribing, `ptm-transcribe` streams live progress to stderr —
 ffmpeg and mlx-whisper output (including the first-run ~1.6 GB model download)
-appears in real time, with short phase lines (`ffmpeg` / `enhancing` /
-`transcribing` / `diarizing`). If a phase goes quiet (e.g. the model download),
-a `still working … (elapsed …)` heartbeat is printed every
-`AUDIO_HEARTBEAT_SECONDS` seconds (default `20`). When stderr is piped
+appears in real time, with short phase lines (`ffmpeg` / `dereverberating` /
+`enhancing` / `isolating` / `transcribing` / `diarizing`). If a phase goes quiet
+(e.g. the model download), a `still working … (elapsed …)` heartbeat is printed
+every `AUDIO_HEARTBEAT_SECONDS` seconds (default `20`). When stderr is piped
 (CI/scripts), carriage-return progress bars are suppressed and only the start /
 heartbeat / phase / result lines are emitted.
 
@@ -248,7 +267,9 @@ sqlite3 ptm.sqlite \
 ```
 
 `deck.clean.flac` is the exact cleaned audio Whisper transcribed, so its
-timestamps match the transcript. The source recording is never modified.
+timestamps match the transcript. With `--isolate`, Whisper transcribes
+`deck.isolated.flac` instead (the voice-isolated stream). The source recording
+is never modified.
 
 Expected Markdown:
 
@@ -289,6 +310,8 @@ PTM_RUN_AUDIO_INTEGRATION=1 ./.venv/bin/python -m pytest tests/test_transcribe_i
 | Max ASR quality | `AUDIO_MODEL=mlx-community/whisper-large-v3-mlx` (or `--env AUDIO_MODEL=…`) |
 | Norwegian (avoid mis-detect on short clips) | `AUDIO_LANGUAGE=no` |
 | Skip enhancement (A/B check) | `AUDIO_PREPROCESS=0 AUDIO_ENHANCE_ENABLED=0` |
+| Skip dereverberation (very dry audio) | `AUDIO_DEREVERB_ENABLED=0` |
+| Isolate voice from music/chatter | `--isolate` (or `AUDIO_ISOLATE_ENABLED=1`) |
 | Enhancement only, no speaker labels | run the server, leave `--diarize` off |
 | Default | `mlx-community/whisper-large-v3-turbo` |
 
@@ -299,6 +322,8 @@ PTM_RUN_AUDIO_INTEGRATION=1 ./.venv/bin/python -m pytest tests/test_transcribe_i
 | `[WARN] Audio transcription failed: mlx_whisper not found` | `uv tool install mlx-whisper`, or set `AUDIO_MLX_WHISPER_BIN` |
 | `[WARN] … ffmpeg not found` | `brew install ffmpeg` |
 | `[WARN] Audio enhancement failed: …` | Server down → start `scripts/audio_server.py`, or set `AUDIO_ENHANCE_ENABLED=0` |
+| `[WARN] Audio dereverberation failed: …` | Server down → start it, or set `AUDIO_DEREVERB_ENABLED=0` |
+| `[WARN] Voice isolation failed: …` | Server down or SepFormer not installed → start it / install `speechbrain`, or drop `--isolate` |
 | `[WARN] Diarization failed: …` | Server down → start it, or drop `--diarize` |
 | Server logs a 401/403 "gated repo" on startup | Re-do §2.1: accept both model licenses + create a **Read** token |
 | No `# Transcript` appears | No same-stem audio found → pass `--audio-file` or `--to` |

@@ -1,15 +1,24 @@
-"""Client for the isolated audio-model server (diarization + enhancement).
+"""Client for the isolated audio-model server (diarization + enhancement + dereverb + isolate).
 
 PyTorch models (``pyannote-audio`` for speaker diarization, ``deepfilternet`` for
-denoise/dereverb) are deliberately kept out of ``converter`` (ADR-0006, ADR-0008).
-A dedicated server process (``scripts/audio_server.py``) serves them, and this
-module is only a thin client:
+denoise/dereverb, ``speechbrain`` SepFormer for voice isolation) are deliberately
+kept out of ``converter`` (ADR-0006, ADR-0008, ADR-0010). A dedicated server
+process (``scripts/audio_server.py``) serves them, and this module is only a thin
+client:
 
     POST {base}/diarize
     {"path": "<audio>", "min_speakers": n, "max_speakers": n}
     -> [{"start": float, "end": float, "speaker": "SPEAKER_00"}, ...]
 
     POST {base}/enhance
+    {"path": "<in.flac>", "output": "<out.flac>"}
+    -> {"ok": true}
+
+    POST {base}/dereverb
+    {"path": "<in.flac>", "output": "<out.flac>"}
+    -> {"ok": true}
+
+    POST {base}/isolate
     {"path": "<in.flac>", "output": "<out.flac>"}
     -> {"ok": true}
 
@@ -21,6 +30,8 @@ Configuration (environment variables):
 - ``AUDIO_ENHANCE_ENABLED`` — enhancement master switch. Default on.
 - ``AUDIO_ENHANCE_BASE_URL`` — enhancement base URL, defaults to ``AUDIO_DIARIZE_BASE_URL``.
 - ``AUDIO_ENHANCE_API_KEY`` — optional bearer token, defaults to ``AUDIO_DIARIZE_API_KEY``.
+- ``AUDIO_DEREVERB_ENABLED`` — WPE dereverberation master switch. Default on.
+- ``AUDIO_ISOLATE_ENABLED`` — voice isolation master switch. Default off.
 """
 from __future__ import annotations
 
@@ -47,8 +58,23 @@ AUDIO_ENHANCE_ENABLED = os.environ.get("AUDIO_ENHANCE_ENABLED", "1").strip().low
 AUDIO_ENHANCE_BASE_URL = os.environ.get("AUDIO_ENHANCE_BASE_URL", AUDIO_DIARIZE_BASE_URL)
 AUDIO_ENHANCE_API_KEY = os.environ.get("AUDIO_ENHANCE_API_KEY") or AUDIO_DIARIZE_API_KEY
 
+AUDIO_DEREVERB_ENABLED = os.environ.get("AUDIO_DEREVERB_ENABLED", "1").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+AUDIO_ISOLATE_ENABLED = os.environ.get("AUDIO_ISOLATE_ENABLED", "").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+
 _DIARIZE_TIMEOUT = 1800.0
 _ENHANCE_TIMEOUT = 1800.0
+_DEREVERB_TIMEOUT = 1800.0
+_ISOLATE_TIMEOUT = 1800.0
 
 
 def _post_json(req: urllib.request.Request, timeout: float, what: str):
@@ -121,8 +147,50 @@ def enhance(
     Raises on any network/HTTP error so callers can degrade to the
     non-enhanced audio.
     """
+    _post_audio("enhance", audio_path, output_path, base_url, api_key, timeout, "enhancement")
+
+
+def dereverb(
+    audio_path: str,
+    output_path: str,
+    base_url: str | None = None,
+    api_key: str | None = None,
+    timeout: float = _DEREVERB_TIMEOUT,
+) -> None:
+    """Dereverberate ``audio_path`` (WPE) and write it to ``output_path``.
+
+    Raises on any network/HTTP error so callers can degrade to the reverberant
+    audio.
+    """
+    _post_audio("dereverb", audio_path, output_path, base_url, api_key, timeout, "dereverberation")
+
+
+def isolate(
+    audio_path: str,
+    output_path: str,
+    base_url: str | None = None,
+    api_key: str | None = None,
+    timeout: float = _ISOLATE_TIMEOUT,
+) -> None:
+    """Isolate the dominant voice in ``audio_path`` and write it to ``output_path``.
+
+    Raises on any network/HTTP error so callers can degrade to the unisolated
+    audio.
+    """
+    _post_audio("isolate", audio_path, output_path, base_url, api_key, timeout, "voice isolation")
+
+
+def _post_audio(
+    endpoint: str,
+    audio_path: str,
+    output_path: str,
+    base_url: str | None,
+    api_key: str | None,
+    timeout: float,
+    what: str,
+) -> None:
     payload = {"path": str(audio_path), "output": str(output_path)}
-    url = (base_url or AUDIO_ENHANCE_BASE_URL).rstrip("/") + "/enhance"
+    url = (base_url or AUDIO_ENHANCE_BASE_URL).rstrip("/") + "/" + endpoint
     data = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
         url, data=data, headers={"Content-Type": "application/json"}
@@ -130,9 +198,9 @@ def enhance(
     key = api_key or AUDIO_ENHANCE_API_KEY
     if key:
         req.add_header("Authorization", f"Bearer {key}")
-    body = _post_json(req, timeout, "enhancement")
+    body = _post_json(req, timeout, what)
     if isinstance(body, dict) and body.get("ok") is False:
-        raise RuntimeError(body.get("error") or "enhancement failed")
+        raise RuntimeError(body.get("error") or f"{what} failed")
 
 
 def assign_speakers(segments: list[dict], turns: list[dict]) -> list[dict]:

@@ -1,6 +1,7 @@
 """Integration tests for the audio pass.
 
-- ``test_diarize_client_against_stub`` / ``test_enhance_client_against_stub`` run
+- ``test_diarize_client_against_stub`` / ``test_enhance_client_against_stub`` /
+  ``test_dereverb_client_against_stub`` / ``test_isolate_client_against_stub`` run
   the stub audio server and the real ``converter.audio`` clients against it — no
   model, no binaries.
 - ``test_transcribe_audio_writes_clean_flac`` runs the *real* ffmpeg to produce
@@ -23,7 +24,7 @@ from pathlib import Path
 import pytest
 
 from converter import transcribe as t
-from converter.audio import diarize, enhance
+from converter.audio import dereverb, diarize, enhance, isolate
 
 
 def _make_tone_wav(path: Path, seconds: float = 1.0, rate: int = 16000) -> None:
@@ -73,6 +74,38 @@ def test_enhance_client_against_stub(tmp_path):
     dst = tmp_path / "talk.clean.flac"
     try:
         enhance(str(src), str(dst), base_url=f"http://127.0.0.1:{port}/v1")
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        thread.join(timeout=5)
+
+    assert dst.exists()
+    assert dst.read_bytes() == src.read_bytes()
+
+
+def test_dereverb_client_against_stub(tmp_path):
+    httpd, port, thread = _start_stub()
+    src = tmp_path / "talk.wav"
+    _make_tone_wav(src, seconds=1.0)
+    dst = tmp_path / "talk.dereverb.flac"
+    try:
+        dereverb(str(src), str(dst), base_url=f"http://127.0.0.1:{port}/v1")
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        thread.join(timeout=5)
+
+    assert dst.exists()
+    assert dst.read_bytes() == src.read_bytes()
+
+
+def test_isolate_client_against_stub(tmp_path):
+    httpd, port, thread = _start_stub()
+    src = tmp_path / "talk.wav"
+    _make_tone_wav(src, seconds=1.0)
+    dst = tmp_path / "talk.isolated.flac"
+    try:
+        isolate(str(src), str(dst), base_url=f"http://127.0.0.1:{port}/v1")
     finally:
         httpd.shutdown()
         httpd.server_close()
@@ -135,6 +168,7 @@ def test_transcribe_audio_writes_clean_flac(tmp_path, monkeypatch):
 
     monkeypatch.setattr(t, "_run", fake_run)
     monkeypatch.setattr(t, "AUDIO_ENHANCE_ENABLED", False)
+    monkeypatch.setattr(t, "AUDIO_DEREVERB_ENABLED", False)
     t.transcribe_audio(audio, clean)
 
     assert clean.exists()
