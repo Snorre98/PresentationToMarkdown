@@ -21,10 +21,17 @@ MLX/GGUF "lanes", SSD storage layout, and LAN serving. In short:
 Serve it (OpenAI-compatible API on `:8081`):
 
 ```sh
+# on-demand via macos-dev-config (see its inference-readme.md):
+tools/serve.sh start transcriber
+
+# or the underlying command:
 mlx_vlm.server --model mlx-community/Qwen2.5-VL-7B-Instruct-4bit --port 8081
 ```
 
-Add `--host 0.0.0.0` only if you need to reach it from another device on the LAN.
+`tools/serve.sh reach transcriber` prints the exact base URL for `VISION_BASE_URL`.
+Add `SERVE_HOST=0.0.0.0` (or `--host 0.0.0.0`) only if you need to reach it from
+another device on the LAN. For a server that must be up at boot with no manual
+step, use the always-on `launchd/` agents in `macos-dev-config` instead.
 
 > Qwen2.5-VL-7B is the *default*, not the only option — override it with
 > `VISION_MODEL`, and see [Improving the vision model](#improving-the-vision-model)
@@ -186,6 +193,7 @@ classifier (:8082) ───────┼─ DIAGRAM ─────▶ high-l
 Serve it on its own port (mlx-vlm runs one chat model per process):
 
 ```sh
+tools/serve.sh start classifier                 # on-demand, or:
 mlx_vlm.server --model mlx-community/Qwen2.5-VL-3B-Instruct-4bit --port 8082
 ```
 
@@ -375,4 +383,5 @@ FROM vision_events WHERE image_digest = ? ORDER BY id;
 ## Reference
 
 - Serving, model formats, and storage: **`macos-dev-config/inference-readme.md`**
+- On-demand serving: **`macos-dev-config/tools/serve.sh`** (`serve.sh start transcriber classifier`)
 - Ollama daemon tuning: **`macos-dev-config/ollama/README.md`**
