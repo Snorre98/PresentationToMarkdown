@@ -3,3 +3,6 @@ __pycache__/
 .venv/
 ptm.sqlite
 ptm.sqlite-*
+*.egg-info/
+build/
+dist/

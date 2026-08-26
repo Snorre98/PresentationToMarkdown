@@ -62,6 +62,49 @@ occurrences become a text hyperlink to the same asset instead of a repeated imag
    - `[ERR] broken.pdf: ...` on failure
    - `[WARN] ...` for non-fatal issues (e.g. skipped charts)
 
+### CLI
+
+Two console commands (`pip install -e .` puts them on `PATH`):
+
+```bash
+# convert files/folders headlessly — same behavior as the GUI's Convert button
+ptm deck.pptx handout.pdf
+ptm --output out/ --vision --format .
+ptm --all --quiet folder_of_slides/
+
+# launch the GUI, enabling AI passes via flags
+ptm-start --vision
+ptm-start --all
+```
+
+**`ptm`** — headless batch conversion, mirroring the GUI: folders are scanned
+recursively for `.pptx`/`.pdf`, the output folder defaults to
+`<source>/markdown`, progress and per-file results are logged as
+`[N/M]` / `[OK]` / `[ERR]` / `[WARN]` lines, and converted files are recorded
+in the recent list.
+
+```
+ptm [AI flags] [-o DIR] [--no-recursive] [--no-recent] [-q] PATH...
+```
+
+**`ptm-start`** — the same GUI as `./python main.py`, with AI capabilities toggled
+by flags instead of env vars.
+
+Both accept the same AI flags (default: all off):
+
+| Flag | Enables |
+| --- | --- |
+| `--vision` | Vision transcription post-pass |
+| `--classify` | Classifier gate (implies `--vision`) |
+| `--format` | LLM markdown-restructure pass |
+| `--summary` | Per-presentation RAG summary pass |
+| `--all` | Everything above |
+| `--env KEY=VALUE` | Set any other env var (repeatable) — model ids, URLs, log DB |
+
+`--env` is the escape hatch for anything the flags don't cover, e.g.
+`ptm --vision --env VISION_MODEL=... --env VISION_LOG_DB=/tmp/ptm.sqlite deck.pptx`.
+See the [ADR index](docs/adr/README.md) for the rationale.
+
 ### Library
 
 ```python
@@ -149,10 +192,20 @@ python3 -m venv .venv
 ./.venv/bin/pip install -r requirements.txt
 ```
 
-### 3. Run it
+### 3. (Optional) Install the CLI commands
 
 ```bash
-./.venv/bin/python main.py
+./.venv/bin/pip install -e .
+```
+
+This puts `ptm` (headless convert) and `ptm-start` (GUI launcher) on the venv's
+`PATH`. Skip it if you only want the GUI/library.
+
+### 4. Run it
+
+```bash
+./.venv/bin/python main.py     # GUI (or: ptm-start)
+ptm deck.pptx                  # headless conversion (if step 3 was run)
 ```
 
 All other commands in this document use the venv interpreter (`.venv/bin/python`);
@@ -215,8 +268,12 @@ The model weights live on the external SSD under `HF_HOME` (see
   - `logstore.py` — SQLite log of classifier/transcription decisions (`ptm.sqlite`)
   - `summary.py` — per-presentation RAG index (sqlite-vec) + standardized summary header
 - `docs/ai-vision.md` — how to serve the vision model and enable the AI pass
+- `docs/adr/` — architecture decision records for the CLI entry points
 - `gui.py` — PySide6 interface (file list, output folder, progress, log)
 - `main.py` — entry point
+- `cli.py` — `ptm` headless batch converter (GUI parity)
+- `start.py` — `ptm-start` GUI launcher with AI flags
+- `cli_common.py` — shared AI flag parser + env mapping
 - `tests/make_test_deck.py` — generates a synthetic deck covering all features
 - `tests/make_test_pdf.py` — generates a synthetic PDF for testing
 - `tests/test_converters.py` — pytest smoke tests for both converters
@@ -329,6 +386,13 @@ To enable every pass — vision transcription + classifier gate, markdown restru
 and the RAG summary — in one command:
 
 ```bash
+# GUI
+ptm-start --all
+
+# headless
+ptm --all deck.pptx
+
+# or, the underlying env vars directly:
 VISION_ENABLED=1 VISION_CLASSIFY_ENABLED=1 FORMAT_ENABLED=1 SUMMARY_ENABLED=1 \
   ./.venv/bin/python main.py
 ```
