@@ -26,16 +26,17 @@ which stage (dereverb, enhance, isolate, diarize, ASR) changes the transcript.
   > `torch==2.5.1`/`huggingface-hub==0.36.2` yet — run `install` **before** relying
   > on `--isolate`. If `speechbrain 1.0.2` conflicts, try another `1.x` pin.
 
-- A shorthand for the CLI (pick whichever works for you):
+- The `ptm-transcribe` entry point. Every command below uses its **full path**, so
+  they copy-paste cleanly into any terminal (no shell variable to set first):
 
   ```bash
-  PTM=/Users/snorresaether/Documents/Liv/Projects/PresentationToMarkdown/.venv/bin/ptm-transcribe
-  # or, from the repo root, no venv activation needed:
-  PTM=/Users/snorresaether/Documents/Liv/Projects/PresentationToMarkdown/scripts/ptm-transcribe.sh
+  /Users/snorresaether/Documents/Liv/Projects/PresentationToMarkdown/scripts/ptm-transcribe.sh
   ```
 
-All commands below use `week-2.mp3` as the example and assume you run them from the
-folder that contains it.
+  This wrapper resolves `.venv/bin/ptm-transcribe` (and bootstraps it with
+  `pip install -e .` if missing), so it works from any folder with no venv
+  activation. All commands use `week-2.mp3` as the example and assume you run
+  them from the folder that contains it.
 
 ---
 
@@ -74,7 +75,7 @@ transcripts you can diff (see §6).
 ### L0 — fully fledged (all six stages)
 
 ```bash
-$PTM --diarize --isolate week-2.mp3
+/Users/snorresaether/Documents/Liv/Projects/PresentationToMarkdown/scripts/ptm-transcribe.sh --diarize --isolate week-2.mp3
 ```
 
 - Active: ffmpeg → dereverb → enhance → isolate → ASR → diarize.
@@ -85,7 +86,7 @@ $PTM --diarize --isolate week-2.mp3
 ### L1 — everything except speaker labels
 
 ```bash
-$PTM --isolate week-2.mp3
+/Users/snorresaether/Documents/Liv/Projects/PresentationToMarkdown/scripts/ptm-transcribe.sh --isolate week-2.mp3
 ```
 
 - Same as L0 minus diarize. Verifies isolation doesn't depend on diarization.
@@ -93,7 +94,7 @@ $PTM --isolate week-2.mp3
 ### L2 — default (dereverb + enhance)
 
 ```bash
-$PTM week-2.mp3
+/Users/snorresaether/Documents/Liv/Projects/PresentationToMarkdown/scripts/ptm-transcribe.sh week-2.mp3
 ```
 
 - Active: ffmpeg → dereverb → enhance → ASR. This is the normal run.
@@ -103,7 +104,7 @@ $PTM week-2.mp3
 ### L3 — no dereverberation (enhance only)
 
 ```bash
-$PTM --env AUDIO_DEREVERB_ENABLED=0 week-2.mp3
+/Users/snorresaether/Documents/Liv/Projects/PresentationToMarkdown/scripts/ptm-transcribe.sh --env AUDIO_DEREVERB_ENABLED=0 week-2.mp3
 ```
 
 - Skips WPE; DeepFilterNet still runs. Useful on already-dry audio.
@@ -111,7 +112,7 @@ $PTM --env AUDIO_DEREVERB_ENABLED=0 week-2.mp3
 ### L4 — no enhancement (dereverb only)
 
 ```bash
-$PTM --env AUDIO_ENHANCE_ENABLED=0 week-2.mp3
+/Users/snorresaether/Documents/Liv/Projects/PresentationToMarkdown/scripts/ptm-transcribe.sh --env AUDIO_ENHANCE_ENABLED=0 week-2.mp3
 ```
 
 - Skips DeepFilterNet; WPE still runs. Isolates the dereverb contribution.
@@ -119,7 +120,7 @@ $PTM --env AUDIO_ENHANCE_ENABLED=0 week-2.mp3
 ### L5 — no server processing (ffmpeg filter chain only)
 
 ```bash
-$PTM --env AUDIO_DEREVERB_ENABLED=0 AUDIO_ENHANCE_ENABLED=0 week-2.mp3
+/Users/snorresaether/Documents/Liv/Projects/PresentationToMarkdown/scripts/ptm-transcribe.sh --env AUDIO_DEREVERB_ENABLED=0 AUDIO_ENHANCE_ENABLED=0 week-2.mp3
 ```
 
 - Only the deterministic ffmpeg chain + ASR. No server calls at all (no `[WARN]`
@@ -128,7 +129,7 @@ $PTM --env AUDIO_DEREVERB_ENABLED=0 AUDIO_ENHANCE_ENABLED=0 week-2.mp3
 ### L6 — raw transcode (no filters at all)
 
 ```bash
-$PTM --env AUDIO_PREPROCESS=0 AUDIO_DEREVERB_ENABLED=0 AUDIO_ENHANCE_ENABLED=0 week-2.mp3
+/Users/snorresaether/Documents/Liv/Projects/PresentationToMarkdown/scripts/ptm-transcribe.sh --env AUDIO_PREPROCESS=0 AUDIO_DEREVERB_ENABLED=0 AUDIO_ENHANCE_ENABLED=0 week-2.mp3
 ```
 
 - ffmpeg only transcodes to 16 kHz mono, then ASR. The closest you get to "raw
@@ -143,7 +144,7 @@ server stage degrades to a warning and you still get a transcript:
 
 ```bash
 scripts/audio_serve.sh stop
-$PTM week-2.mp3
+/Users/snorresaether/Documents/Liv/Projects/PresentationToMarkdown/scripts/ptm-transcribe.sh week-2.mp3
 ```
 
 Expected output:

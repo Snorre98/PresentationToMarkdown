@@ -27,6 +27,13 @@ audio as a new file** rather than a throwaway intermediate:
    `highpass=f=80, lowpass=f=8000, afftdn=nf=-30, loudnorm=I=-16:TP=-1.5:LRA=11`
    — removes hum/hiss, reduces stationary noise, and normalises level for
    distant speech. Controlled by `AUDIO_PREPROCESS` (default `1`).
+
+   > **Revised 2026-08-26:** the `afftdn` + `loudnorm` stages were removed after
+   > field testing showed they over-suppressed already-clean recordings (a
+   > ~15 dB level drop) and pushed Whisper into repetitive-hallucination loops
+   > ("No? No? …", "she's a queen …"). The chain is now the gentle
+   > `highpass=f=80, lowpass=f=8000` baseline only; denoise/dereverb remain the
+   > server's job (`AUDIO_ENHANCE_ENABLED` / `AUDIO_DEREVERB_ENABLED`).
 2. **DeepFilterNet denoise + dereverb** (on by default, degrades gracefully) in
    the same isolated PyTorch server as diarization, via a new `POST /v1/enhance`
    endpoint. Controlled by `AUDIO_ENHANCE_ENABLED` (default `1`) /

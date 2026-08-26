@@ -95,7 +95,8 @@ account at all.** So:
 `start` reads `HF_TOKEN` from the environment, or from a git-ignored `.env` in
 the repo root (see §2.1, Step 4). State lives in `~/.local/state/ptm`
 (`audio.pid` / `audio.log`); override with `PTM_STATE_DIR`, the port with
-`PTM_AUDIO_PORT` or `--port N`.
+`PTM_AUDIO_PORT` or `--port N`, and DeepFilterNet's noise-attenuation limit with
+`AUDIO_ENHANCE_ATTEN_DB` (server-side; default `12.0` dB, `0` = full suppression).
 
 **Always-on (survive reboot):**
 

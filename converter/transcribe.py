@@ -82,9 +82,13 @@ AUDIO_CONDITION_ON_PREVIOUS_TEXT = os.environ.get(
     "AUDIO_CONDITION_ON_PREVIOUS_TEXT", "0"
 ).strip().lower() in {"1", "true", "yes", "on"}
 
-# Deterministic speech-enhancement chain for lecture-hall audio (ADR-0008):
-# remove hum/rumble, cut hiss, reduce stationary noise, normalise loudness.
-_ENHANCE_FILTER = "highpass=f=80,lowpass=f=8000,afftdn=nf=-30,loudnorm=I=-16:TP=-1.5:LRA=11"
+# Deterministic speech-enhancement chain for lecture-hall audio (ADR-0008).
+# Kept deliberately gentle: only DC/rumble removal + band-limiting. The old
+# chain (afftdn + loudnorm) over-suppressed already-clean recordings, cutting
+# ~15 dB of level and pushing Whisper into repetitive-hallucination loops
+# ("No? No? …" / "she's a queen …"). Denoise/dereverb are the server's job
+# (DeepFilterNet / WPE) and are also available via `AUDIO_ENHANCE_ENABLED`.
+_ENHANCE_FILTER = "highpass=f=80,lowpass=f=8000"
 
 AUDIO_EXTENSIONS = {
     ".mp3", ".m4a", ".wav", ".flac", ".ogg", ".aac", ".m4b", ".mp4",

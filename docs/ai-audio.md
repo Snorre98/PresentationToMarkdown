@@ -6,7 +6,7 @@ writes a standalone `<stem>.transcript.md` when none exists yet). It runs as its
 own `ptm-transcribe` command, decoupled from conversion (ADR-0009). It is
 strictly a *companion*: the deterministic text extraction always runs first, and
 the transcript is appended as a `# Transcript` section (plus a `.srt` sidecar).
-Along the way the audio is **cleaned** (denoise + dereverb + loudness) and the
+Along the way the audio is **cleaned** (denoise + dereverb) and the
 cleaned audio is **persisted** as a `.clean.flac`.
 
 > Transcription runs **locally** — no audio leaves the machine. This document
@@ -49,8 +49,10 @@ scripts/audio_serve.sh stop
 scripts/audio_serve.sh stub-start    # no-PyTorch stand-in for testing
 ```
 
-`install` uses `uv` (falls back to `python3.11 -m venv`/`pip`). For reboot
-persistence, `scripts/audio_serve.sh launchd-install` installs a `RunAtLoad` +
+`install` uses `uv` (falls back to `python3.11 -m venv`/`pip`). The server reads
+`AUDIO_ENHANCE_ATTEN_DB` (DeepFilterNet noise-attenuation limit in dB; default
+`12.0`, `0` = full suppression) — set it where the server starts, e.g. in `./.env`.
+For reboot persistence, `scripts/audio_serve.sh launchd-install` installs a `RunAtLoad` +
 `KeepAlive` LaunchAgent. See [docs/runbook.md](runbook.md) for the full
 operational runbook.
 
@@ -121,7 +123,7 @@ instead of the cleaned file.
 | `AUDIO_LANGUAGE` | *(unset = auto-detect)* | Whisper language hint (e.g. `no`, `en`) |
 | `AUDIO_HEARTBEAT_SECONDS` | `20` | Quiet-interval before a `still working …` heartbeat line |
 | `AUDIO_CONDITION_ON_PREVIOUS_TEXT` | *(unset = off)* | Feed prior output back as a prompt (off avoids the "log log log" repetition loop on long recordings) |
-| `AUDIO_PREPROCESS` | `1` | Deterministic ffmpeg enhancement chain (hum/hiss/noise/level) |
+| `AUDIO_PREPROCESS` | `1` | Gentle ffmpeg chain (DC/rumble removal + band-limit) — denoise/dereverb live in the server |
 | `AUDIO_DEREVERB_ENABLED` | `1` | WPE dereverberation via the audio server |
 | `AUDIO_ENHANCE_ENABLED` | `1` | DeepFilterNet denoise via the audio server |
 | `AUDIO_ISOLATE_ENABLED` | *(unset = off)* | Voice isolation (SepFormer) via the audio server |
