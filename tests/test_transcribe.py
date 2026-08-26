@@ -187,7 +187,35 @@ def test_transcribe_audio_calls_enhance_when_enabled(monkeypatch, tmp_path):
     monkeypatch.setattr(t, "enhance", lambda p, o, **kw: enhanced.append((p, o)))
     clean = tmp_path / "x.clean.flac"
     t.transcribe_audio(tmp_path / "x.mp3", clean)
-    assert enhanced == [(str(clean), str(clean))]
+    assert len(enhanced) == 1
+    assert enhanced[0][0] == str(clean)
+    assert enhanced[0][1] != str(clean) and enhanced[0][1].endswith(".flac")
+
+
+def test_transcribe_audio_bad_length_enhance_discarded(monkeypatch, tmp_path):
+    def fake_run(cmd, timeout=3600.0):
+        if cmd[0] == t.AUDIO_FFMPEG_BIN:
+            Path(cmd[-1]).write_bytes(b"preprocessed")
+            return ""
+        idx = cmd.index("--output-dir")
+        outdir = Path(cmd[idx + 1])
+        (outdir / (Path(cmd[1]).stem + ".json")).write_text(
+            json.dumps({"segments": []}), encoding="utf-8"
+        )
+        return ""
+
+    monkeypatch.setattr(t, "_run", fake_run)
+    monkeypatch.setattr(t, "AUDIO_ENHANCE_ENABLED", True)
+    monkeypatch.setattr(t, "enhance", lambda p, o, **kw: None)
+    # source (clean) reports 10s, the enhanced temp reports 30s -> mismatch.
+    monkeypatch.setattr(t, "_audio_duration", lambda p: 30.0 if ".enhanced." in p.name else 10.0)
+
+    clean = tmp_path / "x.clean.flac"
+    warnings: list[str] = []
+    t.transcribe_audio(tmp_path / "x.mp3", clean, warnings=warnings)
+
+    assert any("bad-length" in w for w in warnings)
+    assert clean.read_bytes() == b"preprocessed"
 
 
 def test_transcribe_audio_enhance_failure_warns(monkeypatch, tmp_path):
@@ -307,13 +335,19 @@ def test_transcribe_to_markdown_missing_audio(tmp_path):
     assert any("Audio file not found" in w for w in warnings)
 
 
-def test_next_free_version(tmp_path):
-    base = tmp_path / "week-2.transcript.md"
-    assert t._next_free_version(base) == base
-    base.write_text("x", encoding="utf-8")
-    assert t._next_free_version(base) == tmp_path / "week-2.transcript.1.md"
+def test_paired_version(tmp_path):
+    md = tmp_path / "week-2.transcript.md"
+    clean = tmp_path / "week-2.clean.flac"
+    assert t._paired_version(md, clean) == 0
+
+    md.write_text("x", encoding="utf-8")
+    assert t._paired_version(md, clean) == 1
+
+    clean.write_text("x", encoding="utf-8")  # clean base now also taken
+    assert t._paired_version(md, clean) == 1
+
     (tmp_path / "week-2.transcript.1.md").write_text("x", encoding="utf-8")
-    assert t._next_free_version(base) == tmp_path / "week-2.transcript.2.md"
+    assert t._paired_version(md, clean) == 2
 
 
 def test_transcribe_to_markdown_versions(tmp_path, monkeypatch):
@@ -321,11 +355,12 @@ def test_transcribe_to_markdown_versions(tmp_path, monkeypatch):
     audio.write_bytes(b"fake audio")
     monkeypatch.setattr(t, "AUDIO_DIARIZE_ENABLED", False)
     monkeypatch.setattr(t, "record_segment", lambda **kw: None)
-    monkeypatch.setattr(
-        t,
-        "transcribe_audio",
-        lambda p, cp, **kw: [{"start": 0.0, "end": 5.0, "text": "hello"}],
-    )
+
+    def fake_transcribe(audio_path, clean_path, **kw):
+        clean_path.write_bytes(b"cleaned")  # simulate ffmpeg writing the clean file
+        return [{"start": 0.0, "end": 5.0, "text": "hello"}]
+
+    monkeypatch.setattr(t, "transcribe_audio", fake_transcribe)
 
     first = t.transcribe_to_markdown(audio, [])
     second = t.transcribe_to_markdown(audio, [])
@@ -337,6 +372,10 @@ def test_transcribe_to_markdown_versions(tmp_path, monkeypatch):
     assert (tmp_path / "week-2.transcript.srt").exists()
     assert (tmp_path / "week-2.transcript.1.srt").exists()
     assert (tmp_path / "week-2.transcript.2.srt").exists()
+    # cleaned audio is versioned and paired with the transcript number.
+    assert (tmp_path / "week-2.clean.flac").exists()
+    assert (tmp_path / "week-2.clean.1.flac").exists()
+    assert (tmp_path / "week-2.clean.2.flac").exists()
     assert first.read_text(encoding="utf-8").startswith("# Transcript")
 
 

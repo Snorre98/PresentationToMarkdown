@@ -82,11 +82,16 @@ def _run_diarization(path: str, min_speakers, max_speakers) -> list[dict]:
 
 def _run_enhance(path: str, output: str) -> None:
     model, df_state, df_enhance, load_audio, save_audio = _get_enhancer()
-    # DeepFilterNet is full-band (48 kHz); upsample in, downsample out for ASR.
-    # ``load_audio`` returns ``(tensor, metadata)``.
+    from df.io import resample
+
+    # DeepFilterNet is full-band (48 kHz); upsample in, resample out for ASR.
+    # ``load_audio`` returns ``(tensor, metadata)`` and ``save_audio`` does *not*
+    # resample (it only writes the given ``sr`` into the header), so we must
+    # resample back down explicitly — otherwise a 48 kHz tensor written under a
+    # 16 kHz header comes out 3x the correct length.
     audio, _ = load_audio(path, sr=48000)
     enhanced = df_enhance(model, df_state, audio)
-    save_audio(output, enhanced, sr=16000)
+    save_audio(output, resample(enhanced, 48000, 16000), sr=16000)
 
 
 class _Handler(BaseHTTPRequestHandler):

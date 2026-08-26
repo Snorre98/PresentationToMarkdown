@@ -130,8 +130,9 @@ ptm-transcribe lecture.mp3 --to deck.md           # attach lecture.mp3 to deck.m
    standalone `<stem>.transcript.md`.
 
 Standalone transcripts are **append-only**: re-running the same audio writes
-`<stem>.transcript.1.md`, `.2.md`, … (with a matching `.srt`) so past transcripts
-are preserved for A/B comparison. Use `--overwrite` to replace the base file.
+`<stem>.transcript.1.md`, `.2.md`, … (with a matching `.srt` **and**
+`.clean.<N>.flac`) so past transcripts are preserved for A/B comparison. Use
+`--overwrite` to replace the base file.
 
 ## Output
 

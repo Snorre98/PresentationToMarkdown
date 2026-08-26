@@ -209,7 +209,8 @@ scripts/ptm-transcribe.sh /path/to/week-2.mp3
 5. Nothing found → a `[WARN]`, or a standalone `<stem>.transcript.md`.
 
 Standalone transcripts are **append-only**: re-running the same audio writes
-`<stem>.transcript.1.md`, `.2.md`, … (with a matching `.srt`) so past transcripts
+`<stem>.transcript.1.md`, `.2.md`, … (with a matching `.srt` **and** `.clean.<N>.flac`)
+so past transcripts
 are kept for A/B comparison. Use `--overwrite` to replace the base file instead.
 
 ### Progress output & the single-instance guard

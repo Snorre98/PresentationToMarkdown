@@ -62,6 +62,7 @@ AUDIO_PREPROCESS = os.environ.get("AUDIO_PREPROCESS", "1").strip().lower() in {
 AUDIO_MODEL = os.environ.get("AUDIO_MODEL", "mlx-community/whisper-large-v3-turbo")
 AUDIO_MLX_WHISPER_BIN = os.environ.get("AUDIO_MLX_WHISPER_BIN", "mlx_whisper")
 AUDIO_FFMPEG_BIN = os.environ.get("AUDIO_FFMPEG_BIN", "ffmpeg")
+AUDIO_FFPROBE_BIN = os.environ.get("AUDIO_FFPROBE_BIN", "ffprobe")
 AUDIO_LANGUAGE = os.environ.get("AUDIO_LANGUAGE") or None
 AUDIO_TIMEOUT = float(os.environ.get("AUDIO_TIMEOUT", "3600"))
 AUDIO_HEARTBEAT_SECONDS = float(os.environ.get("AUDIO_HEARTBEAT_SECONDS", "20"))
@@ -270,20 +271,21 @@ def _temp_sibling(path: Path) -> str:
     return tmp
 
 
-def _next_free_version(base: Path) -> Path:
-    """Return ``base`` if free, else the first free ``<stem>.<N><suffix>``.
+def _paired_version(md_base: Path, clean_base: Path) -> int:
+    """Return the first ``N >= 0`` where *neither* transcript ``N`` nor clean ``N`` exists.
 
-    Keeps every transcript instead of overwriting the previous one: ``a.md`` →
-    ``a.1.md`` → ``a.2.md`` … (the ``.md`` stays the last suffix, so Markdown
-    editors keep rendering it).
+    Version numbers are shared across the transcript (``.md``/``.srt``) and the
+    cleaned audio (``.clean.flac``) so every run's three artifacts stay paired:
+    ``a.transcript.md`` ↔ ``a.clean.flac``, ``a.transcript.1.md`` ↔ ``a.clean.1.flac``,
+    … Checking both files means a failed run can never leave a gap that would let
+    a later run overwrite a previous clean file.
     """
-    if not base.exists():
-        return base
-    n = 1
+    n = 0
     while True:
-        candidate = base.with_name(f"{base.stem}.{n}{base.suffix}")
-        if not candidate.exists():
-            return candidate
+        md = md_base if n == 0 else md_base.with_name(f"{md_base.stem}.{n}{md_base.suffix}")
+        clean = clean_base if n == 0 else clean_base.with_name(f"{clean_base.stem}.{n}{clean_base.suffix}")
+        if not md.exists() and not clean.exists():
+            return n
         n += 1
 
 
@@ -307,6 +309,71 @@ def find_audio_for(source_path: Path) -> Path | None:
         return None
     candidates.sort(key=lambda p: _AUDIO_PRIORITY.get(p.suffix.lower(), 99))
     return candidates[0]
+
+
+def _audio_duration(path: Path) -> float | None:
+    """Return ``path``'s duration in seconds via ffprobe, or ``None`` on failure.
+
+    ``ffprobe`` ships with ``ffmpeg``; if it's missing this degrades to ``None``
+    (callers treat it as "cannot validate").
+    """
+    try:
+        proc = subprocess.run(
+            [
+                AUDIO_FFPROBE_BIN,
+                "-v", "error",
+                "-show_entries", "format=duration",
+                "-of", "default=noprint_wrappers=1:nokey=1",
+                str(path),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode != 0:
+        return None
+    try:
+        return float(proc.stdout.strip())
+    except ValueError:
+        return None
+
+
+def _enhance_audio(clean_path: Path, warnings: list[str] | None) -> None:
+    """Enhance ``clean_path`` via DeepFilterNet, validating the result.
+
+    The enhanced audio is written to a temp ``.flac`` beside ``clean_path`` and
+    only swapped in if its duration matches the source (within 5%); otherwise the
+    temp is discarded and a warning appended. A misbehaving/buggy server therefore
+    can never corrupt the cleaned file.
+    """
+    src_duration = _audio_duration(clean_path)
+    fd, enhanced_tmp = tempfile.mkstemp(
+        prefix=clean_path.stem + ".enhanced.", suffix=".flac", dir=clean_path.parent
+    )
+    os.close(fd)
+    try:
+        enhance(str(clean_path.resolve()), enhanced_tmp)
+        out_duration = _audio_duration(Path(enhanced_tmp))
+        if (
+            src_duration is not None
+            and out_duration is not None
+            and src_duration > 0
+            and abs(out_duration - src_duration) / src_duration >= 0.05
+        ):
+            if warnings is not None:
+                warnings.append(
+                    "Audio enhancement produced a bad-length file "
+                    f"({out_duration:.1f}s vs {src_duration:.1f}s); using preprocessed audio"
+                )
+            return
+        os.replace(enhanced_tmp, clean_path)
+    finally:
+        try:
+            os.unlink(enhanced_tmp)
+        except OSError:
+            pass
 
 
 def transcribe_audio(
@@ -363,7 +430,7 @@ def transcribe_audio(
         if on_line is not None:
             on_line("enhancing audio …\n")
         try:
-            enhance(str(clean_path.resolve()), str(clean_path.resolve()))
+            _enhance_audio(clean_path, warnings)
         except Exception as exc:  # noqa: BLE001 - degrade to preprocessed audio
             if warnings is not None:
                 warnings.append(f"Audio enhancement failed: {exc}; using preprocessed audio")
@@ -571,8 +638,9 @@ def transcribe_to_markdown(
 
     By default the transcript is **append-only**: when ``<stem>.transcript.md``
     already exists, the new one is written as ``<stem>.transcript.<N>.md`` (with a
-    matching ``.srt``) so prior transcripts are preserved for comparison. Pass
-    ``overwrite=True`` to replace the base (un-numbered) file instead.
+    matching ``.srt`` **and** ``.clean.<N>.flac``, sharing the same number) so prior
+    transcripts *and* cleaned audio are preserved for comparison. Pass
+    ``overwrite=True`` to replace the base (un-numbered) files instead.
     """
     warnings = warnings if warnings is not None else []
     audio = Path(audio_path)
@@ -581,8 +649,10 @@ def transcribe_to_markdown(
         return None
     try:
         base_md = audio.with_name(audio.stem + ".transcript.md")
-        md_path = base_md if overwrite else _next_free_version(base_md)
-        clean_path = audio.with_name(audio.stem + ".clean.flac")
+        base_clean = audio.with_name(audio.stem + ".clean.flac")
+        n = 0 if overwrite else _paired_version(base_md, base_clean)
+        md_path = base_md if n == 0 else base_md.with_name(f"{base_md.stem}.{n}{base_md.suffix}")
+        clean_path = base_clean if n == 0 else base_clean.with_name(f"{base_clean.stem}.{n}{base_clean.suffix}")
         segments = _transcribe(
             audio, clean_path, str(md_path), warnings, on_line=on_line, heartbeat=heartbeat
         )
