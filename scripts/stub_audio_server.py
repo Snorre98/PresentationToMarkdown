@@ -1,24 +1,20 @@
-"""Stub speaker-diarization service for testing the audio pass.
+"""Stub audio-model service (diarization + enhancement) for testing the audio pass.
 
-Implements the same ``POST /v1/diarize`` contract as the real pyannote service
-(``scripts/diarize_server.py``) without PyTorch, so the ``--diarize`` path can be
-exercised end-to-end. It fabricates alternating speaker turns spanning the audio
-file's duration (detected with ``ffprobe``; defaults to 120 s when unavailable).
+Implements the same ``POST /v1/diarize`` and ``POST /v1/enhance`` contracts as
+the real service (``scripts/audio_server.py``) without PyTorch, so both paths can
+be exercised end-to-end. Diarization fabricates alternating speaker turns
+spanning the audio duration (via ``ffprobe``); enhancement copies the input to
+the output.
 
 Usage::
 
-    ./.venv/bin/python scripts/stub_diarize_server.py --port 8083
-
-Request/response contract (matches ``converter.audio.diarize``)::
-
-    POST /v1/diarize
-    {"path": "/abs/lecture.mp3", "min_speakers": 1, "max_speakers": 2}
-    -> [{"start": 0.0, "end": 8.0, "speaker": "SPEAKER_00"}, ...]
+    ./.venv/bin/python scripts/stub_audio_server.py --port 8083
 """
 from __future__ import annotations
 
 import argparse
 import json
+import shutil
 import subprocess
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -69,27 +65,52 @@ class _Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def do_POST(self):  # noqa: N802 - stdlib handler method name
-        if self.path.rstrip("/") != "/v1/diarize":
-            self._send(404, {"error": "not found"})
-            return
+    def _read_json(self):
         length = int(self.headers.get("Content-Length", 0))
         raw = self.rfile.read(length) if length else b"{}"
         try:
-            req = json.loads(raw.decode("utf-8"))
+            return json.loads(raw.decode("utf-8"))
         except json.JSONDecodeError as exc:
             self._send(400, {"error": f"invalid JSON: {exc}"})
+            return None
+
+    def do_POST(self):  # noqa: N802 - stdlib handler method name
+        route = self.path.rstrip("/")
+        if route == "/v1/diarize":
+            self._handle_diarize()
+        elif route == "/v1/enhance":
+            self._handle_enhance()
+        else:
+            self._send(404, {"error": "not found"})
+
+    def _handle_diarize(self):
+        req = self._read_json()
+        if req is None:
             return
         path = req.get("path")
         if not path:
             self._send(400, {"error": "missing 'path'"})
             return
         turns = _speaker_turns(
-            _audio_duration(path),
-            req.get("min_speakers"),
-            req.get("max_speakers"),
+            _audio_duration(path), req.get("min_speakers"), req.get("max_speakers")
         )
         self._send(200, turns)
+
+    def _handle_enhance(self):
+        req = self._read_json()
+        if req is None:
+            return
+        path = req.get("path")
+        output = req.get("output")
+        if not path or not output:
+            self._send(400, {"error": "missing 'path' or 'output'"})
+            return
+        try:
+            shutil.copyfile(path, output)
+        except Exception as exc:  # noqa: BLE001
+            self._send(500, {"error": str(exc)})
+            return
+        self._send(200, {"ok": True})
 
     def log_message(self, fmt, *args):  # noqa: N802 - quiet the default logging
         pass
@@ -106,13 +127,13 @@ def make_server(port: int = 0) -> ThreadingHTTPServer:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Stub diarization server for testing.")
+    parser = argparse.ArgumentParser(description="Stub audio-model server for testing.")
     parser.add_argument("--port", type=int, default=8083)
     parser.add_argument("--host", default="127.0.0.1")
     args = parser.parse_args()
 
     httpd = ThreadingHTTPServer((args.host, args.port), _Handler)
-    print(f"stub diarization server on http://{args.host}:{args.port}/v1/diarize")
+    print(f"stub audio server on http://{args.host}:{args.port}/v1/{{diarize,enhance}}")
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

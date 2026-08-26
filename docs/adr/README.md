@@ -12,3 +12,4 @@ Index of architectural decisions for PresentationToMarkdown, in
 | [0005](0005-asr-engine-and-model.md) | Use mlx-whisper (large-v3-turbo / large-v3) as the ASR engine | Accepted |
 | [0006](0006-diarization-isolated-server.md) | Run speaker diarization in a dedicated PyTorch server | Accepted |
 | [0007](0007-transcript-to-markdown-relation.md) | Relate the transcript to the Markdown as a companion section | Accepted |
+| [0008](0008-audio-enhancement.md) | Enhance lecture-hall audio before ASR and persist a cleaned FLAC | Accepted |

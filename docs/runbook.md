@@ -1,10 +1,10 @@
 # Audio Transcription Runbook
 
 Local audio→text for the Presentation-to-Markdown converter. Transcribes a
-lecture recording and attaches a timestamped, speaker-labelled `# Transcript`
-to the PDF's Markdown.
+lecture recording, attaches a timestamped, speaker-labelled `# Transcript` to
+the PDF's Markdown, and saves a **cleaned** copy of the audio (`.clean.flac`).
 
-**Hardware:** Apple M4, 32 GB · **ASR:** `mlx-whisper` · **Diarization:** pyannote (isolated server)
+**Hardware:** Apple M4, 32 GB · **ASR:** `mlx-whisper` · **Enhancement:** DeepFilterNet · **Diarization:** pyannote
 
 ## 1. Prerequisites (one-time)
 
@@ -20,39 +20,114 @@ Verify: `mlx_whisper --help` and `ffmpeg -version` both return.
 > (~1.6 GB) to `HF_HOME` (your SSD). The converter never downloads models
 > itself.
 
-## 2. Serving the diarizer (only for `--diarize`)
+## 2. The audio-model server (diarization + enhancement)
 
-Two options, both exposing `POST /v1/diarize` on `:8083`:
+Both speaker labels and deep denoise/dereverb run in one PyTorch service on
+`:8083`. Two endpoints:
 
 ```json
-// request
-{"path": "/abs/path/lecture.mp3", "min_speakers": 1, "max_speakers": 4}
-// response
-[{"start": 0.0, "end": 9.2, "speaker": "SPEAKER_00"}, ...]
+// POST /v1/diarize — who spoke when
+{"path": "/abs/path/lecture.flac", "min_speakers": 1, "max_speakers": 4}
+-> [{"start": 0.0, "end": 9.2, "speaker": "SPEAKER_00"}, ...]
+
+// POST /v1/enhance — denoise + dereverb, write a cleaned file
+{"path": "/abs/path/lecture.flac", "output": "/abs/path/lecture.clean.flac"}
+-> {"ok": true}
 ```
 
-**Option A — Stub (for testing, no PyTorch):**
+### Option A — Stub (for testing, no PyTorch, no Hugging Face)
 
 ```bash
-./.venv/bin/python scripts/stub_diarize_server.py --port 8083
+./.venv/bin/python scripts/stub_audio_server.py --port 8083
 ```
 
-Fabricates alternating speaker turns spanning the audio duration (via
-`ffprobe`), so the `--diarize` → labels path works end-to-end.
+Fakes speaker turns and copies audio, so the whole pipeline runs end-to-end
+without installing PyTorch or touching Hugging Face.
 
-**Option B — Real pyannote (isolated venv):**
+### Option B — Real server (isolated venv)
 
 ```bash
-python3.12 -m venv ~/tools/diarize-env
-~/tools/diarize-env/bin/pip install pyannote.audio torch torchaudio
-# accept the gated terms, then export a read token:
-#   https://hf.co/pyannote/speaker-diarization-3.1  +  pyannote/segmentation-3.0
-#   https://huggingface.co/settings/tokens
-HF_TOKEN=hf_... ~/tools/diarize-env/bin/python scripts/diarize_server.py --port 8083
+uv venv ~/tools/audio-env --python 3.11
+uv pip install --python ~/tools/audio-env/bin/python -r requirements-audio.txt
 ```
+
+> The pinned versions in `requirements-audio.txt` (Python 3.11, torch 2.5.1,
+> torchaudio 2.5.1, pyannote 3.4.0, deepfilternet 0.5.6, huggingface-hub <1.0)
+> are interdependent and are what the server was tested against. See the header
+> comment in that file for the rationale.
+
+Only the **diarization** model is gated behind Hugging Face; **enhancement
+(DeepFilterNet) needs no HF account at all.** So:
+
+- If you only want enhancement (no speaker labels), just start the server — no
+  Hugging Face setup.
+- If you want speaker labels too, complete **§2.1 (Hugging Face setup)** first,
+  then start it.
+
+```bash
+HF_TOKEN=hf_... ~/tools/audio-env/bin/python scripts/audio_server.py --port 8083
+```
+
+### 2.1 Hugging Face setup (only for `--diarize` / speaker labels)
+
+The `pyannote/speaker-diarization-3.1` model is **gated**: Hugging Face will
+refuse to serve it unless you (a) have an account, (b) accepted its license
+terms, and (c) authenticate with a token. This is a one-time, ~2-minute task.
+
+**Step 1 — Create an account (skip if you have one).**
+
+Go to <https://huggingface.co/join>, sign up (free), and stay signed in.
+
+**Step 2 — Accept the license on TWO model pages.**
+
+Open each of these URLs, signed in, and click **"Agree and access repository"**
+(you won't see the button unless you're logged in). Do this for **both**:
+
+1. <https://huggingface.co/pyannote/speaker-diarization-3.1>
+2. <https://huggingface.co/pyannote/segmentation-3.0>
+
+> `speaker-diarization-3.1` pulls `segmentation-3.0` in as a dependency, so both
+> gates must be accepted or the download will fail with a 401/403.
+
+**Step 3 — Create a read token.**
+
+1. Go to <https://huggingface.co/settings/tokens>.
+2. Click **"New token"** (or "Create new token").
+3. **Name** — anything, e.g. `ptm-diarize`.
+4. **Token type** — choose **"Read"** (not "Write", not "Fine-grained").
+5. Click **"Create token"**.
+6. **Copy** the token — it looks like `hf_XXXXXXXXXXXXXXXXXXXX`. This is your
+   only chance to copy it; Hugging Face shows it once.
+
+**Step 4 — Give it to the server.**
+
+Set the token as the `HF_TOKEN` environment variable, then start the server —
+any of these three work:
+
+```bash
+# inline (one command)
+HF_TOKEN=hf_XXXXXXXXXXXXXXXXXXXX \
+  ~/tools/audio-env/bin/python scripts/audio_server.py --port 8083
+
+# export for the session
+export HF_TOKEN=hf_XXXXXXXXXXXXXXXXXXXX
+~/tools/audio-env/bin/python scripts/audio_server.py --port 8083
+
+# permanent (adds it to your shell profile)
+echo 'export HF_TOKEN=hf_XXXXXXXXXXXXXXXXXXXX' >> ~/.zshrc && source ~/.zshrc
+~/tools/audio-env/bin/python scripts/audio_server.py --port 8083
+```
+
+The token is only used to download the weights on the first run (cached in
+`~/.cache/huggingface/` after that); no audio is ever sent to Hugging Face.
+
+**How to check it worked:** after starting the server, its first request should
+download the model and return speaker turns. If you instead see a 401/403
+"gated repo" error, you're missing Step 2 (accept the license) or Step 3 (token).
 
 > If no server is running, `--diarize` logs `[WARN] Diarization failed: …` and
-> still produces an **unlabelled** transcript. Never fatal.
+> still produces an **unlabelled** transcript; enhancement degrades to the
+> built-in ffmpeg chain. Never fatal.
 
 ## 3. Running transcription
 
@@ -80,13 +155,17 @@ AUDIO_ENABLED=1 AUDIO_DIARIZE_ENABLED=1 ./.venv/bin/python main.py
 ## 4. Verify the output
 
 ```bash
-ls out/                          # deck.md, deck.transcript.srt
+ls out/                          # deck.md, deck.transcript.srt, deck.clean.flac
 tail -40 out/deck.md             # "# Transcript" section at the end
 cat out/deck.transcript.srt      # SubRip timestamps + speaker cues
+afinfo out/deck.clean.flac       # the cleaned audio (or: afplay to listen)
 
 sqlite3 ptm.sqlite \
   "SELECT start,end,speaker,text FROM transcript_segments WHERE source LIKE '%deck.pdf' ORDER BY start;"
 ```
+
+`deck.clean.flac` is the exact cleaned audio Whisper transcribed, so its
+timestamps match the transcript. The source recording is never modified.
 
 Expected Markdown:
 
@@ -107,7 +186,7 @@ Expected Markdown:
 # fast unit tests (no model/binary needed)
 ./.venv/bin/python -m pytest tests/test_transcribe.py -v
 
-# diarization client vs the stub server (no model/binary needed)
+# client vs the stub server (no model/binary needed)
 ./.venv/bin/python -m pytest tests/test_transcribe_integration.py -v
 
 # full suite
@@ -121,8 +200,10 @@ PTM_RUN_AUDIO_INTEGRATION=1 ./.venv/bin/python -m pytest tests/test_transcribe_i
 
 | Goal | Setting |
 | --- | --- |
-| Max quality | `AUDIO_MODEL=mlx-community/whisper-large-v3-mlx` (or `--env AUDIO_MODEL=…`) |
+| Max ASR quality | `AUDIO_MODEL=mlx-community/whisper-large-v3-mlx` (or `--env AUDIO_MODEL=…`) |
 | Norwegian (avoid mis-detect on short clips) | `AUDIO_LANGUAGE=no` |
+| Skip enhancement (A/B check) | `AUDIO_PREPROCESS=0 AUDIO_ENHANCE_ENABLED=0` |
+| Enhancement only, no speaker labels | run the server, leave `--diarize` off |
 | Default | `mlx-community/whisper-large-v3-turbo` |
 
 ## 7. Troubleshooting
@@ -131,7 +212,9 @@ PTM_RUN_AUDIO_INTEGRATION=1 ./.venv/bin/python -m pytest tests/test_transcribe_i
 | --- | --- |
 | `[WARN] Audio transcription failed: mlx_whisper not found` | `uv tool install mlx-whisper`, or set `AUDIO_MLX_WHISPER_BIN` |
 | `[WARN] … ffmpeg not found` | `brew install ffmpeg` |
+| `[WARN] Audio enhancement failed: …` | Server down → start `scripts/audio_server.py`, or set `AUDIO_ENHANCE_ENABLED=0` |
 | `[WARN] Diarization failed: …` | Server down → start it, or drop `--diarize` |
+| Server logs a 401/403 "gated repo" on startup | Re-do §2.1: accept both model licenses + create a **Read** token |
 | No `# Transcript` appears | `AUDIO_ENABLED` off, or no same-stem audio file found → pass `--audio-file` |
 | Wrong language / gibberish | Set `AUDIO_LANGUAGE`, or upgrade to `large-v3-mlx` |
 | Long silence / music transcribed | Whisper hallucination → trim the recording |

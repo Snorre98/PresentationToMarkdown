@@ -2,9 +2,10 @@
 
 Turns a lecture recording into a timestamped, speaker-labelled transcript and
 attaches it to the Markdown converted from a PDF/PPTX. Local only: the audio is
-transcoded with ``ffmpeg`` to 16 kHz mono and transcribed by **mlx-whisper** run
+cleaned (deterministic ffmpeg chain + optional DeepFilterNet denoise/dereverb)
+and persisted as a ``<stem>.clean.flac``, then transcribed by **mlx-whisper** run
 as a subprocess, so ``converter`` stays free of MLX. Speaker labelling (optional)
-comes from a separate diarization service (see ``converter.audio``, ADR-0006).
+comes from a separate diarization service (see ``converter.audio``, ADR-0006/0008).
 
 Configuration (environment variables):
 
@@ -15,6 +16,7 @@ Configuration (environment variables):
 - ``AUDIO_FFMPEG_BIN`` — ffmpeg binary, default ``ffmpeg``.
 - ``AUDIO_LANGUAGE`` — optional Whisper language hint (e.g. ``no``, ``en``).
 - ``AUDIO_TIMEOUT`` — per-file subprocess timeout in seconds, default ``3600``.
+- ``AUDIO_PREPROCESS`` — deterministic ffmpeg enhancement chain. Default on.
 """
 from __future__ import annotations
 
@@ -24,10 +26,22 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from converter.audio import AUDIO_DIARIZE_ENABLED, assign_speakers, diarize
+from converter.audio import (
+    AUDIO_DIARIZE_ENABLED,
+    AUDIO_ENHANCE_ENABLED,
+    assign_speakers,
+    diarize,
+    enhance,
+)
 from converter.logstore import record_segment
 
 AUDIO_ENABLED = os.environ.get("AUDIO_ENABLED", "").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+AUDIO_PREPROCESS = os.environ.get("AUDIO_PREPROCESS", "1").strip().lower() in {
     "1",
     "true",
     "yes",
@@ -38,6 +52,10 @@ AUDIO_MLX_WHISPER_BIN = os.environ.get("AUDIO_MLX_WHISPER_BIN", "mlx_whisper")
 AUDIO_FFMPEG_BIN = os.environ.get("AUDIO_FFMPEG_BIN", "ffmpeg")
 AUDIO_LANGUAGE = os.environ.get("AUDIO_LANGUAGE") or None
 AUDIO_TIMEOUT = float(os.environ.get("AUDIO_TIMEOUT", "3600"))
+
+# Deterministic speech-enhancement chain for lecture-hall audio (ADR-0008):
+# remove hum/rumble, cut hiss, reduce stationary noise, normalise loudness.
+_ENHANCE_FILTER = "highpass=f=80,lowpass=f=8000,afftdn=nf=-30,loudnorm=I=-16:TP=-1.5:LRA=11"
 
 AUDIO_EXTENSIONS = {
     ".mp3", ".m4a", ".wav", ".flac", ".ogg", ".aac", ".m4b", ".mp4",
@@ -84,29 +102,44 @@ def find_audio_for_source(source_path: Path) -> Path | None:
 
 def transcribe_audio(
     audio_path: Path,
+    clean_path: Path,
     model: str | None = None,
     language: str | None = None,
     mlx_bin: str | None = None,
     ffmpeg_bin: str | None = None,
     timeout: float = AUDIO_TIMEOUT,
+    warnings: list[str] | None = None,
 ) -> list[dict]:
-    """Transcribe an audio file to timestamped segments via mlx-whisper.
+    """Enhance ``audio_path``, persist it as a FLAC, and transcribe it.
 
-    Returns ``[{start, end, text}, ...]`` (seconds, verbatim text). Raises on
-    any subprocess failure so callers can degrade gracefully.
+    The cleaned audio is written to ``clean_path`` (16 kHz mono FLAC) — first by
+    the deterministic ffmpeg chain, then upgraded in place by DeepFilterNet when
+    ``AUDIO_ENHANCE_ENABLED`` and the server is up (a failure only warns).
+
+    Returns ``[{start, end, text}, ...]`` (seconds, verbatim text). Raises on any
+    fatal subprocess failure so callers can degrade gracefully.
     """
+    ffmpeg_cmd = [
+        ffmpeg_bin or AUDIO_FFMPEG_BIN,
+        "-y", "-i", str(audio_path),
+    ]
+    if AUDIO_PREPROCESS:
+        ffmpeg_cmd += ["-af", _ENHANCE_FILTER]
+    ffmpeg_cmd += ["-ar", "16000", "-ac", "1", "-c:a", "flac", str(clean_path)]
+    _run(ffmpeg_cmd, timeout=timeout)
+
+    if AUDIO_ENHANCE_ENABLED:
+        try:
+            enhance(str(clean_path), str(clean_path))
+        except Exception as exc:  # noqa: BLE001 - degrade to preprocessed audio
+            if warnings is not None:
+                warnings.append(f"Audio enhancement failed: {exc}; using preprocessed audio")
+
     with tempfile.TemporaryDirectory(prefix="ptm-audio-") as tmp:
         tmpdir = Path(tmp)
-        wav = tmpdir / "audio.wav"
-        _run([
-            ffmpeg_bin or AUDIO_FFMPEG_BIN,
-            "-y", "-i", str(audio_path),
-            "-ac", "1", "-ar", "16000",
-            str(wav),
-        ], timeout=timeout)
         cmd = [
             mlx_bin or AUDIO_MLX_WHISPER_BIN,
-            str(wav),
+            str(clean_path),
             "--model", model or AUDIO_MODEL,
             "--output-format", "json",
             "--output-dir", str(tmpdir),
@@ -115,7 +148,7 @@ def transcribe_audio(
         if lang:
             cmd += ["--language", lang]
         _run(cmd, timeout=timeout)
-        data = json.loads((tmpdir / "audio.json").read_text(encoding="utf-8"))
+        data = json.loads((tmpdir / (clean_path.stem + ".json")).read_text(encoding="utf-8"))
 
     segments: list[dict] = []
     for seg in data.get("segments", []):
@@ -182,9 +215,10 @@ def attach_transcript(
 ) -> None:
     """Transcribe the source's audio and attach it to ``md_path``.
 
-    No-op unless ``AUDIO_ENABLED``; never raises. The transcript is appended as a
-    ``# Transcript`` section and written to a ``<stem>.transcript.srt`` sidecar,
-    and every segment is recorded to ``ptm.sqlite``.
+    No-op unless ``AUDIO_ENABLED``; never raises. The cleaned audio is persisted
+    as ``<stem>.clean.flac``, the transcript is appended as a ``# Transcript``
+    section and written to a ``<stem>.transcript.srt`` sidecar, and every
+    segment is recorded to ``ptm.sqlite``.
     """
     if not AUDIO_ENABLED:
         return
@@ -192,12 +226,13 @@ def attach_transcript(
         audio = Path(audio_path) if audio_path else find_audio_for_source(source_path)
         if audio is None or not audio.exists():
             return
-        segments = transcribe_audio(audio)
+        clean_path = md_path.with_name(md_path.stem + ".clean.flac")
+        segments = transcribe_audio(audio, clean_path, warnings=warnings)
         if not segments:
             return
         if AUDIO_DIARIZE_ENABLED:
             try:
-                turns = diarize(str(audio))
+                turns = diarize(str(clean_path))
                 assign_speakers(segments, turns)
             except Exception as exc:  # noqa: BLE001 - degrade to unlabelled transcript
                 warnings.append(f"Diarization failed: {exc}; keeping unlabelled transcript")

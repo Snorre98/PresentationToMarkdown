@@ -1,0 +1,20 @@
+# Audio-model server dependencies (diarization + enhancement).
+#
+# Install into an isolated Python 3.11 venv:
+#   uv venv ~/tools/audio-env --python 3.11
+#   uv pip install --python ~/tools/audio-env/bin/python -r requirements-audio.txt
+#
+# The pins are deliberate and interdependent — see docs/runbook.md §2:
+# - deepfilternet's Rust core (deepfilterlib) ships prebuilt macOS arm64 wheels
+#   only up to Python 3.11 (no cp312 wheel) — hence Python 3.11.
+# - deepfilternet and pyannote.audio 3.x import torchaudio APIs
+#   (torchaudio.backend.common.AudioMetaData / torchaudio.AudioMetaData) that
+#   were removed in torchaudio 2.11 — hence torch/torchaudio 2.5.x.
+# - huggingface-hub 1.x dropped the use_auth_token argument that pyannote.audio
+#   3.x still passes to hf_hub_download — hence huggingface-hub <1.0.
+
+torch==2.5.1
+torchaudio==2.5.1
+pyannote.audio==3.4.0
+deepfilternet==0.5.6
+huggingface-hub==0.36.2

@@ -4,11 +4,12 @@ A local **audio-to-text transcription** post-pass that turns a lecture recording
 into a timestamped, speaker-labelled transcript and attaches it to the Markdown
 converted from a PDF. It is strictly a *companion*: the deterministic text
 extraction always runs first, and the transcript is appended as a `# Transcript`
-section (plus a `.srt` sidecar).
+section (plus a `.srt` sidecar). Along the way the audio is **cleaned** (denoise
++ dereverb + loudness) and the cleaned audio is **persisted** as a `.clean.flac`.
 
 > Transcription runs **locally** — no audio leaves the machine. This document
 > covers how to serve the models and enable the pass. See the
-> [ADR index](adr/README.md) (0004–0007) for the rationale.
+> [ADR index](adr/README.md) (0004–0008) for the rationale.
 
 ## Models and runtime
 
@@ -16,6 +17,7 @@ section (plus a `.srt` sidecar).
 | --- | --- | --- | --- |
 | ASR (default) | `mlx-community/whisper-large-v3-turbo` | `mlx-whisper` (MLX) | 809M params, ~4–5× realtime on Apple Silicon |
 | ASR (max quality) | `mlx-community/whisper-large-v3-mlx` | `mlx-whisper` (MLX) | 1.55B params, ~1× realtime |
+| Enhancement | DeepFilterNet (denoise + dereverb) | PyTorch server (`:8083`) | optional, ~8 MB, no gating |
 | Diarization | `pyannote/speaker-diarization-3.1` | PyTorch server (`:8083`) | optional, gated HF model |
 
 ### 1. Install the ASR toolchain
@@ -31,29 +33,37 @@ uv tool install mlx-whisper --python 3.12
 `macos-dev-config/inference-readme.md`). The converter never downloads models
 itself — it invokes `mlx_whisper` as a subprocess.
 
-### 2. (Optional) Serve the diarizer
+### 2. (Optional) Serve the audio-model server
 
-Speaker labels need a PyTorch service (its own venv, on `:8083`), because
-`pyannote-audio` is gated and PyTorch-based and is deliberately kept out of
-`converter` (ADR-0006):
+Speaker labels and deep enhancement run in a single PyTorch service (its own
+venv, on `:8083`), because `pyannote-audio` and `deepfilternet` are deliberately
+kept out of `converter` (ADR-0006, ADR-0008):
 
 ```bash
-# one-time setup: accept the gated model terms, then
-#   https://huggingface.co/settings/tokens  -> a read token
-# (see macos-dev-config for a reusable serve.sh wrapper)
-python -m pip install pyannote.audio torch torchaudio
+uv venv ~/tools/audio-env --python 3.11
+uv pip install --python ~/tools/audio-env/bin/python -r requirements-audio.txt
+HF_TOKEN=hf_... ~/tools/audio-env/bin/python scripts/audio_server.py --port 8083
 ```
 
-The service exposes a single endpoint, `POST /v1/diarize`, accepting
-`{"path": "<audio>", "min_speakers": n, "max_speakers": n}` and returning
-`[{"start": f, "end": f, "speaker": "SPEAKER_00"}, …]`.
+> Only **diarization** needs Hugging Face; enhancement (DeepFilterNet) does not.
+> For the exact Hugging Face steps — accept the licenses on
+> `pyannote/speaker-diarization-3.1` **and** `pyannote/segmentation-3.0`, then
+> create a **Read** token — see
+> [the runbook's "Hugging Face setup" section](runbook.md#21-hugging-face-setup-only-for---diarize--speaker-labels).
 
-Reference servers ship in `scripts/` — `diarize_server.py` (real pyannote) and
-`stub_diarize_server.py` (no-PyTorch stand-in for testing). See
+The service exposes two endpoints:
+
+- `POST /v1/diarize` — `{"path": "<audio>", "min_speakers": n, "max_speakers": n}`
+  → `[{"start": f, "end": f, "speaker": "SPEAKER_00"}, …]`.
+- `POST /v1/enhance` — `{"path": "<in>", "output": "<out>"}` → `{"ok": true}`
+  (DeepFilterNet denoise+dereverb, 48 kHz enhance → 16 kHz save).
+
+Reference servers ship in `scripts/` — `audio_server.py` (real) and
+`stub_audio_server.py` (no-PyTorch stand-in for testing). See
 [docs/runbook.md](runbook.md) for the full operational runbook.
 
-If the server is down, transcription still succeeds — just without speaker
-labels.
+If the server is down, transcription still succeeds — enhancement degrades to
+the deterministic ffmpeg chain and speaker labels are dropped.
 
 ### 3. Enable the pass
 
@@ -76,8 +86,11 @@ ptm --audio --diarize --audio-file lecture.mp3 deck.pdf
 | `AUDIO_MLX_WHISPER_BIN` | `mlx_whisper` | mlx-whisper CLI |
 | `AUDIO_FFMPEG_BIN` | `ffmpeg` | ffmpeg binary |
 | `AUDIO_LANGUAGE` | *(unset = auto-detect)* | Whisper language hint (e.g. `no`, `en`) |
+| `AUDIO_PREPROCESS` | `1` | Deterministic ffmpeg enhancement chain (hum/hiss/noise/level) |
+| `AUDIO_ENHANCE_ENABLED` | `1` | DeepFilterNet denoise+dereverb via the audio server |
+| `AUDIO_ENHANCE_BASE_URL` | `AUDIO_DIARIZE_BASE_URL` | Enhancement endpoint |
 | `AUDIO_DIARIZE_ENABLED` | *(unset = off)* | Enable speaker labelling via the diarization server |
-| `AUDIO_DIARIZE_BASE_URL` | `http://127.0.0.1:8083/v1` | Diarization service base URL |
+| `AUDIO_DIARIZE_BASE_URL` | `http://127.0.0.1:8083/v1` | Audio server base URL |
 | `AUDIO_DIARIZE_API_KEY` | *(unset)* | Optional bearer token |
 
 ## How the audio is found
@@ -96,6 +109,7 @@ Given `deck.pdf` + `deck.mp3`:
 ```text
 deck.md                    # slides + appended "# Transcript" section
 deck.transcript.srt        # SubRip sidecar (timestamps + speaker cues)
+deck.clean.flac            # persisted cleaned audio (denoised/dereverbed, 16 kHz)
 ```
 
 Transcript Markdown (speaker omitted when diarization is off):
@@ -112,12 +126,25 @@ Transcript Markdown (speaker omitted when diarization is off):
 </details>
 ```
 
+The cleaned `.clean.flac` is the exact audio Whisper transcribed, so its
+timestamps match the transcript. The source recording is never modified.
+
 Every segment is also recorded to `ptm.sqlite` (`transcript_segments` table) so
 the transcript is searchable and inspectable:
 
 ```sql
 SELECT start, end, speaker, text
 FROM transcript_segments WHERE source = ? ORDER BY start;
+```
+
+## A/B checking enhancement
+
+Enhancement is on by default but can occasionally hurt already-clean audio. To
+compare, run the same file twice and diff the transcripts:
+
+```bash
+ptm --audio deck.pdf                                        # enhancement on
+AUDIO_PREPROCESS=0 AUDIO_ENHANCE_ENABLED=0 ptm --audio deck.pdf   # raw audio
 ```
 
 ## Limitations
@@ -128,3 +155,5 @@ FROM transcript_segments WHERE source = ? ORDER BY start;
   under matching slides (ADR-0007).
 - Whisper can hallucinate on long silence/music; keep recordings clean, and
   consider `AUDIO_LANGUAGE` to avoid mis-detection on short clips.
+- DeepFilterNet runs at 48 kHz and is resampled to 16 kHz for Whisper — a slight
+  quality loss vs. transcribing at 48 kHz, traded for a smaller artifact.

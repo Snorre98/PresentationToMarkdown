@@ -70,7 +70,8 @@ def test_transcribe_audio(monkeypatch, tmp_path):
             return ""
         idx = cmd.index("--output-dir")
         outdir = Path(cmd[idx + 1])
-        (outdir / "audio.json").write_text(
+        input_stem = Path(cmd[1]).stem
+        (outdir / (input_stem + ".json")).write_text(
             json.dumps(
                 {
                     "text": "hello world",
@@ -82,13 +83,83 @@ def test_transcribe_audio(monkeypatch, tmp_path):
         return ""
 
     monkeypatch.setattr(t, "_run", fake_run)
-    segs = t.transcribe_audio(tmp_path / "x.mp3")
+    monkeypatch.setattr(t, "AUDIO_ENHANCE_ENABLED", False)
+    clean = tmp_path / "x.clean.flac"
+    segs = t.transcribe_audio(tmp_path / "x.mp3", clean)
 
     assert segs == [{"start": 0.0, "end": 2.5, "text": "hello world"}]
-    assert calls[0][0] == t.AUDIO_FFMPEG_BIN
-    assert "-ar" in calls[0] and "16000" in calls[0]
-    assert calls[1][0] == t.AUDIO_MLX_WHISPER_BIN
-    assert calls[1][calls[1].index("--model") + 1] == t.AUDIO_MODEL
+    ffmpeg = calls[0]
+    assert ffmpeg[0] == t.AUDIO_FFMPEG_BIN
+    assert "-af" in ffmpeg and ffmpeg[ffmpeg.index("-af") + 1] == t._ENHANCE_FILTER
+    assert "-c:a" in ffmpeg and "flac" in ffmpeg
+    assert "-ar" in ffmpeg and "16000" in ffmpeg
+    assert ffmpeg[-1] == str(clean)
+    whisper = calls[1]
+    assert whisper[0] == t.AUDIO_MLX_WHISPER_BIN
+    assert whisper[1] == str(clean)
+    assert whisper[whisper.index("--model") + 1] == t.AUDIO_MODEL
+
+
+def test_transcribe_audio_preprocess_disabled(monkeypatch, tmp_path):
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, timeout=3600.0):
+        calls.append(list(cmd))
+        if cmd[0] == t.AUDIO_FFMPEG_BIN:
+            return ""
+        idx = cmd.index("--output-dir")
+        outdir = Path(cmd[idx + 1])
+        (outdir / (Path(cmd[1]).stem + ".json")).write_text(
+            json.dumps({"segments": []}), encoding="utf-8"
+        )
+        return ""
+
+    monkeypatch.setattr(t, "_run", fake_run)
+    monkeypatch.setattr(t, "AUDIO_ENHANCE_ENABLED", False)
+    monkeypatch.setattr(t, "AUDIO_PREPROCESS", False)
+    t.transcribe_audio(tmp_path / "x.mp3", tmp_path / "x.clean.flac")
+    assert "-af" not in calls[0]
+
+
+def test_transcribe_audio_calls_enhance_when_enabled(monkeypatch, tmp_path):
+    enhanced: list[tuple[str, str]] = []
+
+    def fake_run(cmd, timeout=3600.0):
+        if cmd[0] == t.AUDIO_FFMPEG_BIN:
+            return ""
+        idx = cmd.index("--output-dir")
+        outdir = Path(cmd[idx + 1])
+        (outdir / (Path(cmd[1]).stem + ".json")).write_text(
+            json.dumps({"segments": []}), encoding="utf-8"
+        )
+        return ""
+
+    monkeypatch.setattr(t, "_run", fake_run)
+    monkeypatch.setattr(t, "AUDIO_ENHANCE_ENABLED", True)
+    monkeypatch.setattr(t, "enhance", lambda p, o, **kw: enhanced.append((p, o)))
+    clean = tmp_path / "x.clean.flac"
+    t.transcribe_audio(tmp_path / "x.mp3", clean)
+    assert enhanced == [(str(clean), str(clean))]
+
+
+def test_transcribe_audio_enhance_failure_warns(monkeypatch, tmp_path):
+    def fake_run(cmd, timeout=3600.0):
+        if cmd[0] == t.AUDIO_FFMPEG_BIN:
+            return ""
+        idx = cmd.index("--output-dir")
+        outdir = Path(cmd[idx + 1])
+        (outdir / (Path(cmd[1]).stem + ".json")).write_text(
+            json.dumps({"segments": []}), encoding="utf-8"
+        )
+        return ""
+
+    monkeypatch.setattr(t, "_run", fake_run)
+    monkeypatch.setattr(t, "AUDIO_ENHANCE_ENABLED", True)
+    monkeypatch.setattr(t, "enhance", lambda p, o, **kw: (_ for _ in ()).throw(RuntimeError("down")))
+    warnings: list[str] = []
+    segs = t.transcribe_audio(tmp_path / "x.mp3", tmp_path / "x.clean.flac", warnings=warnings)
+    assert segs == []
+    assert any("Audio enhancement failed" in w for w in warnings)
 
 
 def test_attach_transcript_disabled_noop(tmp_path, monkeypatch):
@@ -106,7 +177,9 @@ def test_attach_transcript_appends(tmp_path, monkeypatch):
     monkeypatch.setattr(t, "AUDIO_ENABLED", True)
     monkeypatch.setattr(t, "AUDIO_DIARIZE_ENABLED", False)
     monkeypatch.setattr(
-        t, "transcribe_audio", lambda p: [{"start": 0.0, "end": 5.0, "text": "hello"}]
+        t,
+        "transcribe_audio",
+        lambda p, cp, **kw: [{"start": 0.0, "end": 5.0, "text": "hello"}],
     )
     recorded: list[dict] = []
     monkeypatch.setattr(t, "record_segment", lambda **kw: recorded.append(kw))
@@ -126,7 +199,7 @@ def test_attach_transcript_missing_audio_noop(tmp_path, monkeypatch):
     md = tmp_path / "deck.md"
     md.write_text("# Deck\n", encoding="utf-8")
     monkeypatch.setattr(t, "AUDIO_ENABLED", True)
-    monkeypatch.setattr(t, "transcribe_audio", lambda p: (_ for _ in ()).throw(AssertionError()))
+    monkeypatch.setattr(t, "transcribe_audio", lambda *a, **kw: (_ for _ in ()).throw(AssertionError()))
     warnings: list[str] = []
     t.attach_transcript(md, tmp_path / "deck.pdf", warnings)
     assert "# Transcript" not in md.read_text(encoding="utf-8")
