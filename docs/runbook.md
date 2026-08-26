@@ -168,7 +168,8 @@ ptm --audio --diarize deck.pdf                 # + speaker labels
 ptm --all --audio --diarize deck.pdf           # every slide pass + audio
 
 # GUI
-ptm-start --audio --diarize
+ptm-start --audio --diarize            # venv activated (pip install -e .)
+scripts/ptm-start.sh --audio --diarize # or: wrapper, no activation needed
 
 # raw env (equivalent)
 AUDIO_ENABLED=1 AUDIO_DIARIZE_ENABLED=1 ./.venv/bin/python main.py

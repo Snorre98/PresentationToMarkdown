@@ -201,7 +201,9 @@ python3 -m venv .venv
 ```
 
 This puts `ptm` (headless convert) and `ptm-start` (GUI launcher) on the venv's
-`PATH`. Skip it if you only want the GUI/library.
+`PATH`. Skip it if you only want the GUI/library. If you'd rather not activate
+the venv, `scripts/ptm-start.sh` resolves `.venv/bin/ptm-start` for you (and
+bootstraps it with `pip install -e .` if missing).
 
 ### 4. Run it
 
