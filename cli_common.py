@@ -12,20 +12,19 @@ from __future__ import annotations
 import argparse
 import os
 
-# Map a flag -> (env var, value). ``--classify`` implies ``--vision`` and
-# ``--diarize`` implies ``--audio``, so ``apply_ai_env`` sets the prerequisite
-# env var whenever the dependent flag is given.
+# Map a flag -> (env var, value). ``--classify`` implies ``--vision``, so
+# ``apply_ai_env`` sets the prerequisite env var whenever the dependent flag is
+# given.
 AI_FLAGS: dict[str, tuple[str, str]] = {
     "vision": ("VISION_ENABLED", "1"),
     "classify": ("VISION_CLASSIFY_ENABLED", "1"),
     "format": ("FORMAT_ENABLED", "1"),
     "summary": ("SUMMARY_ENABLED", "1"),
-    "audio": ("AUDIO_ENABLED", "1"),
-    "diarize": ("AUDIO_DIARIZE_ENABLED", "1"),
 }
 
-# ``--all`` enables the core slide passes only — not audio, which needs an audio
-# file to exist and adds soft runtime requirements (ffmpeg + mlx-whisper).
+# ``--all`` enables the core slide passes only — not audio transcription, which
+# is a separate command (``ptm-transcribe``) and needs an audio file to exist
+# plus the ffmpeg/mlx-whisper toolchain.
 _ALL_FLAGS = ("vision", "classify", "format", "summary")
 
 
@@ -51,16 +50,6 @@ def add_ai_flags(parser: argparse.ArgumentParser) -> None:
         "--summary",
         action="store_true",
         help="enable the per-presentation RAG summary pass",
-    )
-    group.add_argument(
-        "--audio",
-        action="store_true",
-        help="enable the local audio-to-text transcription pass",
-    )
-    group.add_argument(
-        "--diarize",
-        action="store_true",
-        help="enable speaker diarization (implies --audio)",
     )
     group.add_argument(
         "--all",
@@ -92,8 +81,6 @@ def ai_env_vars(args: argparse.Namespace) -> dict[str, str]:
 
     if "classify" in enabled:
         enabled.add("vision")
-    if "diarize" in enabled:
-        enabled.add("audio")
 
     for flag in enabled:
         key, value = AI_FLAGS[flag]

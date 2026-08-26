@@ -46,6 +46,14 @@ def test_all_enables_every_pass():
     }
 
 
+def test_audio_flags_removed():
+    with pytest.raises(SystemExit):
+        parse(["--audio"])
+    with pytest.raises(SystemExit):
+        parse(["--diarize"])
+    assert "audio" not in ai_env_vars(parse([]))
+
+
 def test_env_passthrough():
     env = ai_env_vars(parse(["--vision", "--env", "VISION_MODEL=foo", "--env", "VISION_LOG_DB=/tmp/x.sqlite"]))
     assert env["VISION_ENABLED"] == "1"

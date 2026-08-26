@@ -42,12 +42,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="do not record converted files in the recent-files list",
     )
     parser.add_argument(
-        "--audio-file",
-        metavar="PATH",
-        help="audio file to transcribe (with --audio), paired by stem to an "
-        "input file; default: discover a same-stem audio file beside the source",
-    )
-    parser.add_argument(
         "-q",
         "--quiet",
         action="store_true",
@@ -96,24 +90,6 @@ def main(argv: list[str] | None = None) -> int:
         print("ptm: no supported .pptx/.pdf files found.", file=sys.stderr)
         return 2
 
-    audio_paths: dict[str, str] = {}
-    if args.audio_file:
-        audio = Path(args.audio_file)
-        matches = [f for f in files if f.stem == audio.stem]
-        target = matches[0] if matches else (files[0] if len(files) == 1 else None)
-        if target is None:
-            print(
-                f"ptm: cannot pair --audio-file {audio.name} with an input file "
-                "(use a matching stem, or a single input).",
-                file=sys.stderr,
-            )
-            return 2
-        audio_paths[str(target)] = str(audio)
-        try:
-            audio_paths[str(target.resolve())] = str(audio)
-        except OSError:
-            pass
-
     output_dir = Path(args.output) if args.output else None
     if output_dir is not None:
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -128,7 +104,6 @@ def main(argv: list[str] | None = None) -> int:
         files,
         output_dir,
         progress_callback=None if args.quiet else _progress,
-        audio_paths=audio_paths or None,
     )
 
     if not args.no_recent:

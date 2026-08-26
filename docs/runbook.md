@@ -1,8 +1,10 @@
 # Audio Transcription Runbook
 
-Local audio→text for the Presentation-to-Markdown converter. Transcribes a
-lecture recording, attaches a timestamped, speaker-labelled `# Transcript` to
-the PDF's Markdown, and saves a **cleaned** copy of the audio (`.clean.flac`).
+Local audio→text via the standalone **`ptm-transcribe`** command. Transcribes a
+lecture recording, attaches a timestamped, speaker-labelled `# Transcript` to an
+existing Markdown file (or writes a standalone `<stem>.transcript.md`), and saves
+a **cleaned** copy of the audio (`.clean.flac`). Transcription is decoupled from
+conversion (ADR-0009): `ptm`/`ptm-start` never transcribe.
 
 **Hardware:** Apple M4, 32 GB · **ASR:** `mlx-whisper` · **Enhancement:** DeepFilterNet · **Diarization:** pyannote
 
@@ -161,26 +163,46 @@ download the model and return speaker turns. If you instead see a 401/403
 ## 3. Running transcription
 
 ```bash
-# headless (pip install -e . exposes ptm)
-ptm --audio lecture.pdf                        # discover lecture.mp3/m4a/wav beside the PDF
-ptm --audio --audio-file lecture.m4a deck.pdf  # explicit pairing
-ptm --audio --diarize deck.pdf                 # + speaker labels
-ptm --all --audio --diarize deck.pdf           # every slide pass + audio
+# with existing Markdown: discover same-stem audio beside the .md and attach
+ptm-transcribe deck.md                          # deck.mp3/m4a/wav beside deck.md
 
-# GUI
-ptm-start --audio --diarize            # venv activated (pip install -e .)
-scripts/ptm-start.sh --audio --diarize # or: wrapper, no activation needed
+# without Markdown: transcribe straight to a transcript file
+ptm-transcribe week-2.mp3                       # -> week-2.transcript.md
 
-# raw env (equivalent)
-AUDIO_ENABLED=1 AUDIO_DIARIZE_ENABLED=1 ./.venv/bin/python main.py
+# explicit pairing / picking a lecture
+ptm-transcribe week-2.mp3 --to deck.md          # attach week-2's audio to deck.md
+ptm-transcribe --audio-file lecture.m4a deck.md # explicit audio for deck.md
+ptm-transcribe --diarize deck.md                # + speaker labels
+ptm-transcribe --language no week-2.mp3         # language hint
+
+# folders are scanned recursively for .md and audio files
+ptm-transcribe lectures/                        # pair by stem; prompt on ambiguity
+```
+
+`ptm-transcribe` sets `AUDIO_ENABLED=1` (and `--diarize`/`--language` as given)
+itself, so no `--audio` flag is needed — and `ptm`/`ptm-start` no longer accept
+one. The raw-env equivalent:
+
+```bash
+AUDIO_ENABLED=1 ./.venv/bin/python -m cli_transcribe deck.md
+```
+
+No venv activated? Run the wrapper from the repo root — it bootstraps the venv
+(`pip install -e .`) on first use:
+
+```bash
+scripts/ptm-transcribe.sh /path/to/week-2.mp3
 ```
 
 **Audio pairing rules (in order):**
 
-1. Explicit `--audio-file PATH` (paired by stem to an input, or the sole input).
-2. Convention: same folder, same stem — `lecture.pdf` + `lecture.mp3`
+1. Explicit `--to MARKDOWN.md` — attach to that file.
+2. Explicit `--audio-file PATH` — paired by stem to a `.md`, or the sole target.
+3. Convention: same folder, same stem — `deck.md` + `deck.mp3`
    (priority `.wav > .m4a > .mp3 > …`).
-3. Nothing found → silent no-op (the feature is opportunistic).
+4. Interactive prompt — when an audio file matches no `.md` and candidates exist,
+   `ptm-transcribe` asks which lecture it belongs to (`[0]` = standalone).
+5. Nothing found → a `[WARN]`, or a standalone `<stem>.transcript.md`.
 
 ## 4. Verify the output
 
@@ -191,7 +213,7 @@ cat out/deck.transcript.srt      # SubRip timestamps + speaker cues
 afinfo out/deck.clean.flac       # the cleaned audio (or: afplay to listen)
 
 sqlite3 ptm.sqlite \
-  "SELECT start,end,speaker,text FROM transcript_segments WHERE source LIKE '%deck.pdf' ORDER BY start;"
+  "SELECT start,end,speaker,text FROM transcript_segments WHERE source LIKE '%deck.md' ORDER BY start;"
 ```
 
 `deck.clean.flac` is the exact cleaned audio Whisper transcribed, so its
@@ -215,6 +237,9 @@ Expected Markdown:
 ```bash
 # fast unit tests (no model/binary needed)
 ./.venv/bin/python -m pytest tests/test_transcribe.py -v
+
+# the ptm-transcribe CLI (parser, pairing, end-to-end with faked subprocess)
+./.venv/bin/python -m pytest tests/test_cli_transcribe.py -v
 
 # client vs the stub server (no model/binary needed)
 ./.venv/bin/python -m pytest tests/test_transcribe_integration.py -v
@@ -245,6 +270,6 @@ PTM_RUN_AUDIO_INTEGRATION=1 ./.venv/bin/python -m pytest tests/test_transcribe_i
 | `[WARN] Audio enhancement failed: …` | Server down → start `scripts/audio_server.py`, or set `AUDIO_ENHANCE_ENABLED=0` |
 | `[WARN] Diarization failed: …` | Server down → start it, or drop `--diarize` |
 | Server logs a 401/403 "gated repo" on startup | Re-do §2.1: accept both model licenses + create a **Read** token |
-| No `# Transcript` appears | `AUDIO_ENABLED` off, or no same-stem audio file found → pass `--audio-file` |
+| No `# Transcript` appears | No same-stem audio found → pass `--audio-file` or `--to` |
 | Wrong language / gibberish | Set `AUDIO_LANGUAGE`, or upgrade to `large-v3-mlx` |
 | Long silence / music transcribed | Whisper hallucination → trim the recording |

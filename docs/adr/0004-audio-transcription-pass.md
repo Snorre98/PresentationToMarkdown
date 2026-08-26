@@ -74,4 +74,4 @@ deterministic output untouched.
 - **A dedicated `ptm-transcribe` command instead of a post-pass** — decoupled but
   requires the user to run a second step and manually link output; the post-pass
   folds transcription into the existing "convert this lecture" workflow.
-  Rejected for v1 (can be layered on later).
+  Rejected for v1 (can be layered on later). **Adopted in ADR-0009.**

@@ -64,7 +64,7 @@ occurrences become a text hyperlink to the same asset instead of a repeated imag
 
 ### CLI
 
-Two console commands (`pip install -e .` puts them on `PATH`):
+Three console commands (`pip install -e .` puts them on `PATH`):
 
 ```bash
 # convert files/folders headlessly — same behavior as the GUI's Convert button
@@ -75,6 +75,10 @@ ptm --all --quiet folder_of_slides/
 # launch the GUI, enabling AI passes via flags
 ptm-start --vision
 ptm-start --all
+
+# transcribe lecture audio to Markdown (decoupled from conversion)
+ptm-transcribe deck.md          # attach to existing Markdown
+ptm-transcribe week-2.mp3       # write week-2.transcript.md (no Markdown needed)
 ```
 
 **`ptm`** — headless batch conversion, mirroring the GUI: folders are scanned
@@ -90,6 +94,11 @@ ptm [AI flags] [-o DIR] [--no-recursive] [--no-recent] [-q] PATH...
 **`ptm-start`** — the same GUI as `./python main.py`, with AI capabilities toggled
 by flags instead of env vars.
 
+**`ptm-transcribe`** — local audio→text, decoupled from conversion. Give it a
+`.md` to attach a transcript to, an audio file to produce a standalone
+`<stem>.transcript.md`, or a folder to scan both. See
+[Audio transcription](#audio-transcription-pass-optional).
+
 Both accept the same AI flags (default: all off):
 
 | Flag | Enables |
@@ -98,10 +107,11 @@ Both accept the same AI flags (default: all off):
 | `--classify` | Classifier gate (implies `--vision`) |
 | `--format` | LLM markdown-restructure pass |
 | `--summary` | Per-presentation RAG summary pass |
-| `--audio` | Local audio-to-text transcription pass |
-| `--diarize` | Speaker diarization (implies `--audio`) |
 | `--all` | The four slide passes above (vision + classify + format + summary) |
 | `--env KEY=VALUE` | Set any other env var (repeatable) — model ids, URLs, log DB |
+
+Audio transcription is **not** an AI flag on `ptm`/`ptm-start` — it is its own
+command, `ptm-transcribe` (see [Audio transcription](#audio-transcription-pass-optional)).
 
 `--env` is the escape hatch for anything the flags don't cover, e.g.
 `ptm --vision --env VISION_MODEL=... --env VISION_LOG_DB=/tmp/ptm.sqlite deck.pptx`.
@@ -200,10 +210,12 @@ python3 -m venv .venv
 ./.venv/bin/pip install -e .
 ```
 
-This puts `ptm` (headless convert) and `ptm-start` (GUI launcher) on the venv's
+This puts `ptm` (headless convert), `ptm-start` (GUI launcher), and
+`ptm-transcribe` (audio→Markdown transcription) on the venv's
 `PATH`. Skip it if you only want the GUI/library. If you'd rather not activate
-the venv, `scripts/ptm-start.sh` resolves `.venv/bin/ptm-start` for you (and
-bootstraps it with `pip install -e .` if missing).
+the venv, `scripts/ptm-start.sh` and `scripts/ptm-transcribe.sh` resolve
+`.venv/bin/ptm-start` / `.venv/bin/ptm-transcribe` for you (each bootstraps with
+`pip install -e .` if the binary is missing).
 
 ### 4. Run it
 
@@ -271,7 +283,7 @@ The model weights live on the external SSD under `HF_HOME` (see
   - `render.py` — LibreOffice + PyMuPDF rendering for PPTX charts
   - `logstore.py` — SQLite log of classifier/transcription decisions (`ptm.sqlite`)
   - `summary.py` — per-presentation RAG index (sqlite-vec) + standardized summary header
-  - `transcribe.py` — optional local audio→text pass (ffmpeg + mlx-whisper subprocess)
+  - `transcribe.py` — standalone local audio→text (ffmpeg + mlx-whisper subprocess)
   - `audio.py` — speaker-diarization client (isolated PyTorch server)
 - `docs/ai-vision.md` — how to serve the vision model and enable the AI pass
 - `docs/ai-audio.md` — how to serve the ASR/diarization models and enable the audio pass
@@ -279,6 +291,7 @@ The model weights live on the external SSD under `HF_HOME` (see
 - `gui.py` — PySide6 interface (file list, output folder, progress, log)
 - `main.py` — entry point
 - `cli.py` — `ptm` headless batch converter (GUI parity)
+- `cli_transcribe.py` — `ptm-transcribe` standalone audio→Markdown transcription
 - `start.py` — `ptm-start` GUI launcher with AI flags
 - `cli_common.py` — shared AI flag parser + env mapping
 - `tests/make_test_deck.py` — generates a synthetic deck covering all features
@@ -388,27 +401,34 @@ to point at a dedicated model if you prefer.
 
 ## Audio transcription pass (optional)
 
-Optionally, a lecture recording can be transcribed **locally** and attached to
-the Markdown as a timestamped, speaker-labelled `# Transcript` section (plus a
-`.srt` sidecar). Transcription runs via **mlx-whisper** (`mlx-community/whisper-large-v3-turbo`
-by default), invoked as a subprocess so `converter` stays MLX-free. Speaker
-diarization (optional) is served by a separate PyTorch server. See
-**[docs/ai-audio.md](docs/ai-audio.md)** for setup.
-
-Enable it with `AUDIO_ENABLED=1` (or `--audio`):
+A lecture recording can be transcribed **locally** into a timestamped,
+speaker-labelled transcript. Transcription is **decoupled from conversion**
+(ADR-0009): it runs as its own `ptm-transcribe` command, which works *with or
+without* an existing Markdown file. It runs via **mlx-whisper**
+(`mlx-community/whisper-large-v3-turbo` by default), invoked as a subprocess so
+`converter` stays MLX-free. Speaker diarization (optional) is served by a
+separate PyTorch server. See **[docs/ai-audio.md](docs/ai-audio.md)** for setup.
 
 ```bash
-ptm --audio deck.pdf                 # discover deck.mp3/deck.m4a/… beside the PDF
-ptm --audio --audio-file lecture.m4a deck.pdf   # explicit pairing
-ptm --audio --diarize deck.pdf       # + speaker labels
+# with existing Markdown: discover same-stem audio beside it and attach
+ptm-transcribe deck.md                    # deck.md + deck.mp3 -> "# Transcript" section
+
+# without Markdown: transcribe straight to a transcript file
+ptm-transcribe week-2.mp3                 # -> week-2.transcript.md (+ .srt, .clean.flac)
+
+# explicit pairing / speaker labels
+ptm-transcribe week-2.mp3 --to deck.md    # attach week-2's audio to deck.md
+ptm-transcribe --diarize deck.md          # + speaker labels
+ptm-transcribe --language no week-2.mp3   # language hint
 ```
 
-The audio file is paired to a source by **convention** (same stem, same folder)
-or explicitly (`--audio-file`, or the `audio_path` argument on
-`convert_file`/`convert_files`). If no audio file is found, the pass is a silent
-no-op; if transcription fails (missing `ffmpeg`/`mlx_whisper`, server down), it
-degrades to a warning. Every segment is recorded to `ptm.sqlite`
-(`transcript_segments` table).
+The audio file is paired to a Markdown file by **convention** (same stem, same
+folder) or explicitly (`--audio-file`, `--to MARKDOWN.md`); when neither settles
+it, `ptm-transcribe` prompts to pick the lecture (`[0]` = standalone). Re-running
+is idempotent — an existing `# Transcript` section is replaced, not duplicated.
+If transcription fails (missing `ffmpeg`/`mlx_whisper`, server down), it degrades
+to a warning. Every segment is recorded to `ptm.sqlite` (`transcript_segments`
+table, keyed by the Markdown path).
 
 | Var | Default | Purpose |
 | --- | --- | --- |
@@ -441,12 +461,9 @@ VISION_ENABLED=1 VISION_CLASSIFY_ENABLED=1 FORMAT_ENABLED=1 SUMMARY_ENABLED=1 \
 This uses only what's already running: the vision transcriber (`:8081`), the
 classifier (`:8082`), and Ollama for embeddings (`embeddinggemma`).
 
-Audio transcription is deliberately **excluded from `--all`** (it needs an audio
-file and the mlx-whisper/ffmpeg toolchain), but composes with it:
-
-```bash
-ptm --all --audio --diarize deck.pdf
-```
+Audio transcription is deliberately **not part of `--all`** (it needs an audio
+file and the mlx-whisper/ffmpeg toolchain, and is a separate step anyway). Run
+it before or after conversion with `ptm-transcribe`:
 
 The RAG index lives in the same `ptm.sqlite` as the vision log (`deck_documents`,
 `deck_chunks`, and a `deck_chunk_vec` sqlite-vec table). `sqlite-vec` is an added

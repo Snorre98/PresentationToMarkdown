@@ -46,19 +46,26 @@ def test_assign_speakers():
     assert segs[2]["speaker"] is None
 
 
-def test_find_audio_for_source(tmp_path):
+def test_find_audio_for(tmp_path):
     src = tmp_path / "lecture.pdf"
     src.write_text("x")
     (tmp_path / "lecture.mp3").write_text("a")
     (tmp_path / "lecture.wav").write_text("b")
     (tmp_path / "other.m4a").write_text("c")
-    assert t.find_audio_for_source(src) == tmp_path / "lecture.wav"
+    assert t.find_audio_for(src) == tmp_path / "lecture.wav"
 
 
-def test_find_audio_for_source_none(tmp_path):
+def test_find_audio_for_markdown(tmp_path):
+    md = tmp_path / "deck.md"
+    md.write_text("# Deck\n")
+    (tmp_path / "deck.mp3").write_text("a")
+    assert t.find_audio_for(md) == tmp_path / "deck.mp3"
+
+
+def test_find_audio_for_none(tmp_path):
     src = tmp_path / "lecture.pdf"
     src.write_text("x")
-    assert t.find_audio_for_source(src) is None
+    assert t.find_audio_for(src) is None
 
 
 def test_transcribe_audio(monkeypatch, tmp_path):
@@ -166,7 +173,8 @@ def test_attach_transcript_disabled_noop(tmp_path, monkeypatch):
     md = tmp_path / "deck.md"
     md.write_text("# Deck\n", encoding="utf-8")
     monkeypatch.setattr(t, "AUDIO_ENABLED", False)
-    t.attach_transcript(md, tmp_path / "deck.pdf", [])
+    result = t.attach_transcript(md, [])
+    assert result is None
     assert md.read_text(encoding="utf-8") == "# Deck\n"
     assert not (tmp_path / "deck.transcript.srt").exists()
 
@@ -185,14 +193,38 @@ def test_attach_transcript_appends(tmp_path, monkeypatch):
     monkeypatch.setattr(t, "record_segment", lambda **kw: recorded.append(kw))
 
     (tmp_path / "deck.mp3").write_bytes(b"fake audio")
-    t.attach_transcript(md, tmp_path / "deck.pdf", [], audio_path=tmp_path / "deck.mp3")
+    segments = t.attach_transcript(md, [], audio_path=tmp_path / "deck.mp3")
 
     text = md.read_text(encoding="utf-8")
+    assert segments == [{"start": 0.0, "end": 5.0, "text": "hello"}]
     assert text.startswith("# Deck — Slide 1")
     assert "# Transcript" in text
     assert "[00:00:00] hello" in text
     assert (tmp_path / "deck.transcript.srt").exists()
     assert recorded and recorded[0]["text"] == "hello"
+    assert recorded[0]["source"] == str(md)
+
+
+def test_attach_transcript_idempotent(tmp_path, monkeypatch):
+    md = tmp_path / "deck.md"
+    md.write_text("# Deck\n\ncontent\n", encoding="utf-8")
+    monkeypatch.setattr(t, "AUDIO_ENABLED", True)
+    monkeypatch.setattr(t, "AUDIO_DIARIZE_ENABLED", False)
+    monkeypatch.setattr(
+        t,
+        "transcribe_audio",
+        lambda p, cp, **kw: [{"start": 0.0, "end": 5.0, "text": "hello"}],
+    )
+    monkeypatch.setattr(t, "record_segment", lambda **kw: None)
+
+    (tmp_path / "deck.mp3").write_bytes(b"fake audio")
+    t.attach_transcript(md, [], audio_path=tmp_path / "deck.mp3")
+    t.attach_transcript(md, [], audio_path=tmp_path / "deck.mp3")
+
+    text = md.read_text(encoding="utf-8")
+    assert text.count("# Transcript") == 1
+    assert text.rstrip("\n").endswith("</details>")
+    assert text.strip().startswith("# Deck")
 
 
 def test_attach_transcript_missing_audio_noop(tmp_path, monkeypatch):
@@ -201,8 +233,37 @@ def test_attach_transcript_missing_audio_noop(tmp_path, monkeypatch):
     monkeypatch.setattr(t, "AUDIO_ENABLED", True)
     monkeypatch.setattr(t, "transcribe_audio", lambda *a, **kw: (_ for _ in ()).throw(AssertionError()))
     warnings: list[str] = []
-    t.attach_transcript(md, tmp_path / "deck.pdf", warnings)
+    result = t.attach_transcript(md, warnings)
+    assert result is None
     assert "# Transcript" not in md.read_text(encoding="utf-8")
+
+
+def test_transcribe_to_markdown(tmp_path, monkeypatch):
+    audio = tmp_path / "week-2.mp3"
+    audio.write_bytes(b"fake audio")
+    monkeypatch.setattr(t, "AUDIO_DIARIZE_ENABLED", False)
+    monkeypatch.setattr(
+        t,
+        "transcribe_audio",
+        lambda p, cp, **kw: [{"start": 0.0, "end": 5.0, "text": "hello"}],
+    )
+    recorded: list[dict] = []
+    monkeypatch.setattr(t, "record_segment", lambda **kw: recorded.append(kw))
+
+    out = t.transcribe_to_markdown(audio, [])
+
+    assert out == tmp_path / "week-2.transcript.md"
+    assert out.exists()
+    assert out.read_text(encoding="utf-8").startswith("# Transcript")
+    assert (tmp_path / "week-2.transcript.srt").exists()
+    assert recorded and recorded[0]["source"] == str(out)
+
+
+def test_transcribe_to_markdown_missing_audio(tmp_path):
+    warnings: list[str] = []
+    out = t.transcribe_to_markdown(tmp_path / "nope.mp3", warnings)
+    assert out is None
+    assert any("Audio file not found" in w for w in warnings)
 
 
 if __name__ == "__main__":

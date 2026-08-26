@@ -24,7 +24,6 @@ from converter.pptx import PPTXConverter
 from converter.pdf import PDFConverter
 from converter.format import polish_text
 from converter.summary import prepend_summary
-from converter.transcribe import attach_transcript
 
 registry.register(PPTXConverter)
 registry.register(PDFConverter)
@@ -49,13 +48,12 @@ def _default_output_dir(path: Path) -> Path:
 def convert_file(
     path: str | Path,
     output_dir: str | Path | None = None,
-    audio_path: str | Path | None = None,
 ) -> ConvertResult:
     """Convert one supported file to a .md file plus an assets folder.
 
     ``output_dir`` defaults to ``<source-folder>/markdown`` when omitted.
-    ``audio_path`` optionally names an audio file to transcribe (ADR-0004);
-    when omitted, a same-stem file is discovered by convention.
+    Conversion is deterministic: it never invokes audio transcription
+    (see ``ptm-transcribe`` / ``converter.transcribe`` for that, ADR-0009).
     """
     path = Path(path)
     converter = registry.get(path)
@@ -80,10 +78,6 @@ def convert_file(
             prepend_summary(result.md_path, path, result.warnings)
         except Exception as exc:  # noqa: BLE001 - summary never fails the conversion
             result.warnings.append(f"Summary generation failed: {exc}")
-        try:
-            attach_transcript(result.md_path, path, result.warnings, audio_path)
-        except Exception as exc:  # noqa: BLE001 - transcription never fails the conversion
-            result.warnings.append(f"Audio transcription failed: {exc}")
     return result
 
 
@@ -91,27 +85,17 @@ def convert_files(
     paths: list[str | Path],
     output_dir: str | Path | None = None,
     progress_callback: ProgressCallback | None = None,
-    audio_paths: dict[str, str | Path] | None = None,
 ) -> list[ConvertResult]:
     """Convert multiple files; errors are captured per file.
 
     ``output_dir`` defaults to ``<source-folder>/markdown`` per file when
-    omitted. ``audio_paths`` optionally maps a source path (as given or resolved)
-    to its audio file for the transcription pass.
+    omitted.
     """
     results: list[ConvertResult] = []
     total = len(paths)
     for idx, path in enumerate(paths, start=1):
         p = Path(path)
-        audio = None
-        if audio_paths:
-            audio = audio_paths.get(str(path)) or audio_paths.get(str(p))
-            if audio is None:
-                try:
-                    audio = audio_paths.get(str(p.resolve()))
-                except OSError:
-                    audio = None
-        result = convert_file(path, output_dir, audio_path=audio)
+        result = convert_file(path, output_dir)
         results.append(result)
         if progress_callback:
             progress_callback(idx, total, p.name)

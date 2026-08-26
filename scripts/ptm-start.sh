@@ -1,19 +1,22 @@
 #!/usr/bin/env bash
 # ptm-start.sh — run the `ptm-start` CLI from the repo's venv without activating it.
 #
-# `pip install -e .` puts `ptm-start` (and `ptm`) inside `.venv/bin/`, which is
+# `pip install -e .` puts `ptm-start` (and `ptm`/`ptm-transcribe`) inside
+# `.venv/bin/`, which is
 # only on PATH while the venv is activated. This wrapper resolves that binary and
 # execs it with all arguments, so you can run e.g.:
 #
-#   scripts/ptm-start.sh --audio --diarize
 #   scripts/ptm-start.sh --vision --summary
+#   scripts/ptm-start.sh --all
+#
+# (Audio transcription is a separate command: `ptm-transcribe`.)
 #
 # If the venv binary is missing, it bootstraps it: creates `.venv` if needed,
 # installs `requirements.txt`, then `pip install -e .`.
 #
 # Env overrides:
 #   PTM_VENV   venv path (default: <repo>/.venv)
-#   PTM_CMD    which CLI to run (default: ptm-start; also accepts ptm)
+#   PTM_CMD    which CLI to run (default: ptm-start; also accepts ptm, ptm-transcribe)
 #
 # No `set -e`/`set -u`: stock macOS bash 3.2 footguns (see audio_serve.sh).
 set -o pipefail
@@ -29,8 +32,8 @@ die()  { _c '0;31'; printf '✗ %s\n' "$*" >&2; _c '0'; exit 1; }
 
 CMD="${PTM_CMD:-ptm-start}"
 case "$CMD" in
-  ptm|ptm-start) ;;
-  *) die "unknown PTM_CMD: $CMD (ptm|ptm-start)" ;;
+  ptm|ptm-start|ptm-transcribe) ;;
+  *) die "unknown PTM_CMD: $CMD (ptm|ptm-start|ptm-transcribe)" ;;
 esac
 
 _venv_python() { printf '%s/bin/python' "$VENV"; }
@@ -45,7 +48,7 @@ _bootstrap() {
   py="$(_venv_python)"
   log "installing requirements.txt"
   "$py" -m pip install -r "$ROOT/requirements.txt" || die "pip install -r failed"
-  log "installing package (editable) — adds ptm/ptm-start to $VENV/bin"
+  log "installing package (editable) — adds ptm/ptm-start/ptm-transcribe to $VENV/bin"
   "$py" -m pip install -e "$ROOT" || die "pip install -e . failed"
 }
 

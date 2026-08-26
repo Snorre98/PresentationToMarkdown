@@ -1,11 +1,16 @@
-"""Optional audio-to-text transcription post-pass for converted slides.
+"""Standalone audio-to-text transcription for lecture recordings.
 
 Turns a lecture recording into a timestamped, speaker-labelled transcript and
-attaches it to the Markdown converted from a PDF/PPTX. Local only: the audio is
+attaches it to an existing Markdown file, or writes it to a fresh
+``<stem>.transcript.md`` when no Markdown exists yet. Local only: the audio is
 cleaned (deterministic ffmpeg chain + optional DeepFilterNet denoise/dereverb)
 and persisted as a ``<stem>.clean.flac``, then transcribed by **mlx-whisper** run
 as a subprocess, so ``converter`` stays free of MLX. Speaker labelling (optional)
 comes from a separate diarization service (see ``converter.audio``, ADR-0006/0008).
+
+This module is **not** part of the conversion pipeline: ``convert_file``/``convert_files``
+never call into it (ADR-0009). It is driven by the dedicated ``ptm-transcribe``
+command (``cli_transcribe``), which operates on Markdown and/or audio directly.
 
 Configuration (environment variables):
 
@@ -82,8 +87,12 @@ def _run(cmd: list[str], timeout: float = AUDIO_TIMEOUT) -> str:
     return proc.stdout
 
 
-def find_audio_for_source(source_path: Path) -> Path | None:
-    """Return a same-stem audio file beside ``source_path``, or ``None``."""
+def find_audio_for(source_path: Path) -> Path | None:
+    """Return a same-stem audio file beside ``source_path``, or ``None``.
+
+    Matches on the file stem, so it works for a Markdown file (``deck.md`` →
+    ``deck.mp3``) as well as any other same-stem companion.
+    """
     try:
         parent = source_path.parent
         stem = source_path.stem
@@ -207,53 +216,119 @@ def segments_to_srt(segments: list[dict]) -> str:
     return "\n\n".join(blocks) + "\n"
 
 
+def _strip_transcript(md: str) -> str:
+    """Remove any existing ``# Transcript`` section from ``md``.
+
+    The section is always appended at the end of the file, so truncating at the
+    heading line is safe and makes re-attachment idempotent.
+    """
+    lines = md.splitlines()
+    for i, line in enumerate(lines):
+        if line.strip() == "# Transcript":
+            head = lines[:i]
+            return ("\n".join(head).rstrip("\n") + "\n") if head else ""
+    return md
+
+
+def _transcribe(
+    audio_path: Path,
+    clean_path: Path,
+    source: str,
+    warnings: list[str],
+) -> list[dict]:
+    """Enhance, transcribe, and (optionally) label ``audio_path``.
+
+    Persists the cleaned audio to ``clean_path``, records every segment to
+    ``ptm.sqlite`` under ``source``, and returns the segment list. Diarization
+    failure only warns; any fatal subprocess failure is raised to the caller.
+    """
+    segments = transcribe_audio(audio_path, clean_path, warnings=warnings)
+    if not segments:
+        return segments
+    if AUDIO_DIARIZE_ENABLED:
+        try:
+            turns = diarize(str(clean_path))
+            assign_speakers(segments, turns)
+        except Exception as exc:  # noqa: BLE001 - degrade to unlabelled transcript
+            warnings.append(f"Diarization failed: {exc}; keeping unlabelled transcript")
+
+    for seg in segments:
+        record_segment(
+            source=source,
+            start=seg["start"],
+            end=seg["end"],
+            text=seg["text"],
+            speaker=seg.get("speaker"),
+            model=AUDIO_MODEL,
+        )
+    return segments
+
+
 def attach_transcript(
     md_path: Path,
-    source_path: Path,
     warnings: list[str],
     audio_path: str | Path | None = None,
-) -> None:
-    """Transcribe the source's audio and attach it to ``md_path``.
+) -> list[dict] | None:
+    """Transcribe audio and attach it to ``md_path`` as a ``# Transcript`` section.
 
-    No-op unless ``AUDIO_ENABLED``; never raises. The cleaned audio is persisted
-    as ``<stem>.clean.flac``, the transcript is appended as a ``# Transcript``
-    section and written to a ``<stem>.transcript.srt`` sidecar, and every
-    segment is recorded to ``ptm.sqlite``.
+    Returns the attached segment list, or ``None`` when it is a no-op
+    (``AUDIO_ENABLED`` off, no audio found, no segments, or a failure — which
+    only warns). Never raises. The cleaned audio is persisted as
+    ``<stem>.clean.flac`` and a ``<stem>.transcript.srt`` sidecar is written.
+    Re-attaching is idempotent: any existing ``# Transcript`` section is replaced.
     """
     if not AUDIO_ENABLED:
-        return
+        return None
     try:
-        audio = Path(audio_path) if audio_path else find_audio_for_source(source_path)
+        audio = Path(audio_path) if audio_path else find_audio_for(md_path)
         if audio is None or not audio.exists():
-            return
+            return None
         clean_path = md_path.with_name(md_path.stem + ".clean.flac")
-        segments = transcribe_audio(audio, clean_path, warnings=warnings)
+        segments = _transcribe(audio, clean_path, str(md_path), warnings)
         if not segments:
-            return
-        if AUDIO_DIARIZE_ENABLED:
-            try:
-                turns = diarize(str(clean_path))
-                assign_speakers(segments, turns)
-            except Exception as exc:  # noqa: BLE001 - degrade to unlabelled transcript
-                warnings.append(f"Diarization failed: {exc}; keeping unlabelled transcript")
-
-        for seg in segments:
-            record_segment(
-                source=str(source_path),
-                start=seg["start"],
-                end=seg["end"],
-                text=seg["text"],
-                speaker=seg.get("speaker"),
-                model=AUDIO_MODEL,
-            )
+            return None
 
         md = md_path.read_text(encoding="utf-8")
         md_path.write_text(
-            md.rstrip("\n") + "\n\n" + segments_to_markdown(segments) + "\n",
+            _strip_transcript(md).rstrip("\n") + "\n\n" + segments_to_markdown(segments) + "\n",
             encoding="utf-8",
         )
 
         srt_path = md_path.with_name(md_path.stem + ".transcript.srt")
         srt_path.write_text(segments_to_srt(segments), encoding="utf-8")
-    except Exception as exc:  # noqa: BLE001 - transcription never fails the conversion
+        return segments
+    except Exception as exc:  # noqa: BLE001 - transcription never fails the caller
         warnings.append(f"Audio transcription failed: {exc}")
+        return None
+
+
+def transcribe_to_markdown(
+    audio_path: str | Path,
+    warnings: list[str] | None = None,
+) -> Path | None:
+    """Transcribe ``audio_path`` into a standalone ``<stem>.transcript.md``.
+
+    For the case where no Markdown document exists yet. Writes the transcript
+    Markdown plus the ``<stem>.clean.flac`` and ``<stem>.transcript.srt``
+    sidecars (all named from the audio stem, so the names stay readable). Returns
+    the transcript Markdown path, or ``None`` on a no-op/failure (which only
+    warns). Never raises.
+    """
+    warnings = warnings if warnings is not None else []
+    audio = Path(audio_path)
+    if not audio.exists():
+        warnings.append(f"Audio file not found: {audio}")
+        return None
+    try:
+        md_path = audio.with_name(audio.stem + ".transcript.md")
+        clean_path = audio.with_name(audio.stem + ".clean.flac")
+        segments = _transcribe(audio, clean_path, str(md_path), warnings)
+        if not segments:
+            return None
+        md_path.write_text(segments_to_markdown(segments) + "\n", encoding="utf-8")
+        srt_path = audio.with_name(audio.stem + ".transcript.srt")
+        srt_path.write_text(segments_to_srt(segments), encoding="utf-8")
+        return md_path
+    except Exception as exc:  # noqa: BLE001 - transcription never fails the caller
+        warnings.append(f"Audio transcription failed: {exc}")
+        return None

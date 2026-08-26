@@ -1,15 +1,17 @@
 # AI audio pass (optional)
 
-A local **audio-to-text transcription** post-pass that turns a lecture recording
-into a timestamped, speaker-labelled transcript and attaches it to the Markdown
-converted from a PDF. It is strictly a *companion*: the deterministic text
-extraction always runs first, and the transcript is appended as a `# Transcript`
-section (plus a `.srt` sidecar). Along the way the audio is **cleaned** (denoise
-+ dereverb + loudness) and the cleaned audio is **persisted** as a `.clean.flac`.
+A local **audio-to-text transcription** that turns a lecture recording into a
+timestamped, speaker-labelled transcript and attaches it to a Markdown file (or
+writes a standalone `<stem>.transcript.md` when none exists yet). It runs as its
+own `ptm-transcribe` command, decoupled from conversion (ADR-0009). It is
+strictly a *companion*: the deterministic text extraction always runs first, and
+the transcript is appended as a `# Transcript` section (plus a `.srt` sidecar).
+Along the way the audio is **cleaned** (denoise + dereverb + loudness) and the
+cleaned audio is **persisted** as a `.clean.flac`.
 
 > Transcription runs **locally** — no audio leaves the machine. This document
 > covers how to serve the models and enable the pass. See the
-> [ADR index](adr/README.md) (0004–0008) for the rationale.
+> [ADR index](adr/README.md) (0004–0009) for the rationale.
 
 ## Models and runtime
 
@@ -74,14 +76,18 @@ the deterministic ffmpeg chain and speaker labels are dropped.
 
 ### 3. Enable the pass
 
-```bash
-# GUI
-ptm-start --audio               # transcript only
-ptm-start --audio --diarize     # transcript + speaker labels
+Transcription is decoupled from conversion (ADR-0009) and runs as its own
+`ptm-transcribe` command — with or without an existing Markdown file:
 
-# headless
-ptm --audio deck.pdf
-ptm --audio --diarize --audio-file lecture.mp3 deck.pdf
+```bash
+# attach to existing Markdown (discover same-stem audio beside it)
+ptm-transcribe deck.md
+ptm-transcribe --diarize deck.md
+
+# no Markdown yet — transcribe straight to a transcript file
+ptm-transcribe week-2.mp3
+ptm-transcribe --audio-file lecture.mp3 deck.md   # explicit audio for deck.md
+ptm-transcribe lecture.mp3 --to deck.md           # attach lecture.mp3 to deck.md
 ```
 
 ## Configuration
@@ -102,16 +108,20 @@ ptm --audio --diarize --audio-file lecture.mp3 deck.pdf
 
 ## How the audio is found
 
-1. An **explicit** `--audio-file PATH` (CLI) or `audio_path` argument wins.
-2. Otherwise, by **convention**: a file in the same folder as the source with the
-   same stem and a known audio extension — `lecture.pdf` pairs with
-   `lecture.mp3` (`.m4a`, `.wav`, `.flac`, `.ogg`, `.aac`, `.m4b`, `.mp4`,
-   `.mov`, `.webm`, `.aiff`).
-3. No audio found → the pass is a no-op (no warning; the feature is opportunistic).
+1. An **explicit** `--to MARKDOWN.md` pairs an audio file to a specific lecture.
+2. An **explicit** `--audio-file PATH` wins (paired by stem, or the sole target).
+3. Otherwise, by **convention**: a file in the same folder as the Markdown with the
+   same stem and a known audio extension — `deck.md` pairs with `deck.mp3`
+   (`.m4a`, `.wav`, `.flac`, `.ogg`, `.aac`, `.m4b`, `.mp4`, `.mov`, `.webm`,
+   `.aiff`).
+4. If the pairing is still ambiguous, `ptm-transcribe` prompts to pick the
+   lecture (`[0]` = standalone).
+5. No audio found for a `.md` → `[WARN]`; an audio file with no Markdown →
+   standalone `<stem>.transcript.md`.
 
 ## Output
 
-Given `deck.pdf` + `deck.mp3`:
+Given `deck.md` + `deck.mp3`:
 
 ```text
 deck.md                    # slides + appended "# Transcript" section
@@ -150,8 +160,8 @@ Enhancement is on by default but can occasionally hurt already-clean audio. To
 compare, run the same file twice and diff the transcripts:
 
 ```bash
-ptm --audio deck.pdf                                        # enhancement on
-AUDIO_PREPROCESS=0 AUDIO_ENHANCE_ENABLED=0 ptm --audio deck.pdf   # raw audio
+ptm-transcribe deck.md                                         # enhancement on
+AUDIO_PREPROCESS=0 AUDIO_ENHANCE_ENABLED=0 ptm-transcribe deck.md   # raw audio
 ```
 
 ## Limitations
