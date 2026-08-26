@@ -270,6 +270,23 @@ def _temp_sibling(path: Path) -> str:
     return tmp
 
 
+def _next_free_version(base: Path) -> Path:
+    """Return ``base`` if free, else the first free ``<stem>.<N><suffix>``.
+
+    Keeps every transcript instead of overwriting the previous one: ``a.md`` →
+    ``a.1.md`` → ``a.2.md`` … (the ``.md`` stays the last suffix, so Markdown
+    editors keep rendering it).
+    """
+    if not base.exists():
+        return base
+    n = 1
+    while True:
+        candidate = base.with_name(f"{base.stem}.{n}{base.suffix}")
+        if not candidate.exists():
+            return candidate
+        n += 1
+
+
 def find_audio_for(source_path: Path) -> Path | None:
     """Return a same-stem audio file beside ``source_path``, or ``None``.
 
@@ -543,14 +560,19 @@ def transcribe_to_markdown(
     warnings: list[str] | None = None,
     on_line: Callable[[str], None] | None = None,
     heartbeat: float | None = None,
+    overwrite: bool = False,
 ) -> Path | None:
     """Transcribe ``audio_path`` into a standalone ``<stem>.transcript.md``.
 
     For the case where no Markdown document exists yet. Writes the transcript
     Markdown plus the ``<stem>.clean.flac`` and ``<stem>.transcript.srt``
-    sidecars (all named from the audio stem, so the names stay readable). Returns
-    the transcript Markdown path, or ``None`` on a no-op/failure (which only
-    warns). Never raises.
+    sidecars. Returns the transcript Markdown path, or ``None`` on a no-op/failure
+    (which only warns). Never raises.
+
+    By default the transcript is **append-only**: when ``<stem>.transcript.md``
+    already exists, the new one is written as ``<stem>.transcript.<N>.md`` (with a
+    matching ``.srt``) so prior transcripts are preserved for comparison. Pass
+    ``overwrite=True`` to replace the base (un-numbered) file instead.
     """
     warnings = warnings if warnings is not None else []
     audio = Path(audio_path)
@@ -558,7 +580,8 @@ def transcribe_to_markdown(
         warnings.append(f"Audio file not found: {audio}")
         return None
     try:
-        md_path = audio.with_name(audio.stem + ".transcript.md")
+        base_md = audio.with_name(audio.stem + ".transcript.md")
+        md_path = base_md if overwrite else _next_free_version(base_md)
         clean_path = audio.with_name(audio.stem + ".clean.flac")
         segments = _transcribe(
             audio, clean_path, str(md_path), warnings, on_line=on_line, heartbeat=heartbeat
@@ -566,7 +589,7 @@ def transcribe_to_markdown(
         if not segments:
             return None
         _atomic_write_text(md_path, segments_to_markdown(segments) + "\n")
-        srt_path = audio.with_name(audio.stem + ".transcript.srt")
+        srt_path = md_path.with_suffix(".srt")
         _atomic_write_text(srt_path, segments_to_srt(segments))
         return md_path
     except Exception as exc:  # noqa: BLE001 - transcription never fails the caller

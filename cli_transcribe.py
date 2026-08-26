@@ -60,6 +60,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Whisper language hint (e.g. 'no', 'en')",
     )
     parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="replace the base <stem>.transcript.md instead of writing a numbered copy",
+    )
+    parser.add_argument(
         "--env",
         action="append",
         metavar="KEY=VALUE",
@@ -113,6 +118,8 @@ def collect_targets(paths: list[str]) -> tuple[list[Path], list[Path]]:
         seen.add(key)
         suffix = path.suffix.lower()
         if suffix == MD_SUFFIX:
+            if ".transcript" in path.stem:
+                return  # skip our own transcript outputs (they have no audio)
             md_files.append(path)
         elif suffix in AUDIO_EXTENSIONS:
             audio_files.append(path)
@@ -296,7 +303,9 @@ def _run_targets(args: argparse.Namespace, printer: Callable[[str], None]) -> in
             print(f"[OK]  {md.name} <- {audio.name}")
         else:
             print(f"transcribing {audio.name} …", file=sys.stderr)
-            out = transcribe_to_markdown(audio, warnings, on_line=printer)
+            out = transcribe_to_markdown(
+                audio, warnings, on_line=printer, overwrite=args.overwrite
+            )
             _report(warnings, audio.name)
             if out is None:
                 if not warnings:

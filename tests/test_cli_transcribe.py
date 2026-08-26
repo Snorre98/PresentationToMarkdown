@@ -210,6 +210,27 @@ def test_main_end_to_end_standalone(tmp_path, monkeypatch, capsys):
     assert (tmp_path / "week-2.transcript.md").exists()
 
 
+def test_main_standalone_versions(tmp_path, monkeypatch, capsys):
+    audio = tmp_path / "week-2.mp3"
+    audio.write_bytes(b"audio")
+
+    monkeypatch.setattr("converter.transcribe.AUDIO_ENABLED", True)
+    monkeypatch.setattr("converter.transcribe.AUDIO_DIARIZE_ENABLED", False)
+    monkeypatch.setattr("converter.transcribe.record_segment", lambda **kw: None)
+    monkeypatch.setattr(
+        "converter.transcribe.transcribe_audio",
+        lambda p, cp, **kw: [{"start": 0.0, "end": 2.0, "text": "hello"}],
+    )
+
+    assert ct.main([str(audio)]) == 0
+    assert ct.main([str(audio)]) == 0
+
+    out = capsys.readouterr().out
+    assert (tmp_path / "week-2.transcript.md").exists()
+    assert (tmp_path / "week-2.transcript.1.md").exists()
+    assert "week-2.transcript.1.md" in out
+
+
 def test_main_end_to_end_streams_progress(tmp_path, monkeypatch, capsys):
     audio = tmp_path / "week-2.mp3"
     audio.write_bytes(b"audio")

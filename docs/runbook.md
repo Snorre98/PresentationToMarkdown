@@ -169,6 +169,10 @@ ptm-transcribe deck.md                          # deck.mp3/m4a/wav beside deck.m
 # without Markdown: transcribe straight to a transcript file
 ptm-transcribe week-2.mp3                       # -> week-2.transcript.md
 
+# re-running a standalone file is append-only (never overwrites):
+ptm-transcribe week-2.mp3                       # -> week-2.transcript.1.md, .2.md, …
+ptm-transcribe week-2.mp3 --overwrite           # force-replace the base transcript.md
+
 # explicit pairing / picking a lecture
 ptm-transcribe week-2.mp3 --to deck.md          # attach week-2's audio to deck.md
 ptm-transcribe --audio-file lecture.m4a deck.md # explicit audio for deck.md
@@ -203,6 +207,10 @@ scripts/ptm-transcribe.sh /path/to/week-2.mp3
 4. Interactive prompt — when an audio file matches no `.md` and candidates exist,
    `ptm-transcribe` asks which lecture it belongs to (`[0]` = standalone).
 5. Nothing found → a `[WARN]`, or a standalone `<stem>.transcript.md`.
+
+Standalone transcripts are **append-only**: re-running the same audio writes
+`<stem>.transcript.1.md`, `.2.md`, … (with a matching `.srt`) so past transcripts
+are kept for A/B comparison. Use `--overwrite` to replace the base file instead.
 
 ### Progress output & the single-instance guard
 

@@ -307,6 +307,58 @@ def test_transcribe_to_markdown_missing_audio(tmp_path):
     assert any("Audio file not found" in w for w in warnings)
 
 
+def test_next_free_version(tmp_path):
+    base = tmp_path / "week-2.transcript.md"
+    assert t._next_free_version(base) == base
+    base.write_text("x", encoding="utf-8")
+    assert t._next_free_version(base) == tmp_path / "week-2.transcript.1.md"
+    (tmp_path / "week-2.transcript.1.md").write_text("x", encoding="utf-8")
+    assert t._next_free_version(base) == tmp_path / "week-2.transcript.2.md"
+
+
+def test_transcribe_to_markdown_versions(tmp_path, monkeypatch):
+    audio = tmp_path / "week-2.mp3"
+    audio.write_bytes(b"fake audio")
+    monkeypatch.setattr(t, "AUDIO_DIARIZE_ENABLED", False)
+    monkeypatch.setattr(t, "record_segment", lambda **kw: None)
+    monkeypatch.setattr(
+        t,
+        "transcribe_audio",
+        lambda p, cp, **kw: [{"start": 0.0, "end": 5.0, "text": "hello"}],
+    )
+
+    first = t.transcribe_to_markdown(audio, [])
+    second = t.transcribe_to_markdown(audio, [])
+    third = t.transcribe_to_markdown(audio, [])
+
+    assert first == tmp_path / "week-2.transcript.md"
+    assert second == tmp_path / "week-2.transcript.1.md"
+    assert third == tmp_path / "week-2.transcript.2.md"
+    assert (tmp_path / "week-2.transcript.srt").exists()
+    assert (tmp_path / "week-2.transcript.1.srt").exists()
+    assert (tmp_path / "week-2.transcript.2.srt").exists()
+    assert first.read_text(encoding="utf-8").startswith("# Transcript")
+
+
+def test_transcribe_to_markdown_overwrite(tmp_path, monkeypatch):
+    audio = tmp_path / "week-2.mp3"
+    audio.write_bytes(b"fake audio")
+    monkeypatch.setattr(t, "AUDIO_DIARIZE_ENABLED", False)
+    monkeypatch.setattr(t, "record_segment", lambda **kw: None)
+    monkeypatch.setattr(
+        t,
+        "transcribe_audio",
+        lambda p, cp, **kw: [{"start": 0.0, "end": 5.0, "text": "hello"}],
+    )
+
+    first = t.transcribe_to_markdown(audio, [])
+    second = t.transcribe_to_markdown(audio, [], overwrite=True)
+
+    assert first == tmp_path / "week-2.transcript.md"
+    assert second == tmp_path / "week-2.transcript.md"
+    assert not (tmp_path / "week-2.transcript.1.md").exists()
+
+
 if __name__ == "__main__":
     import pytest
 

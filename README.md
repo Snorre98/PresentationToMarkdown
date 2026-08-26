@@ -424,8 +424,11 @@ ptm-transcribe --language no week-2.mp3   # language hint
 
 The audio file is paired to a Markdown file by **convention** (same stem, same
 folder) or explicitly (`--audio-file`, `--to MARKDOWN.md`); when neither settles
-it, `ptm-transcribe` prompts to pick the lecture (`[0]` = standalone). Re-running
-is idempotent — an existing `# Transcript` section is replaced, not duplicated.
+it, `ptm-transcribe` prompts to pick the lecture (`[0]` = standalone). For a
+standalone audio file the transcript is **append-only**: re-running writes
+`week-2.transcript.1.md`, `.2.md`, … (with matching `.srt`) instead of
+overwriting — pass `--overwrite` to replace the base file instead. Attaching to a
+`.md` is idempotent: the `# Transcript` section is replaced, not duplicated.
 If transcription fails (missing `ffmpeg`/`mlx_whisper`, server down), it degrades
 to a warning. Every segment is recorded to `ptm.sqlite` (`transcript_segments`
 table, keyed by the Markdown path).
