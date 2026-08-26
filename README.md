@@ -98,7 +98,9 @@ Both accept the same AI flags (default: all off):
 | `--classify` | Classifier gate (implies `--vision`) |
 | `--format` | LLM markdown-restructure pass |
 | `--summary` | Per-presentation RAG summary pass |
-| `--all` | Everything above |
+| `--audio` | Local audio-to-text transcription pass |
+| `--diarize` | Speaker diarization (implies `--audio`) |
+| `--all` | The four slide passes above (vision + classify + format + summary) |
 | `--env KEY=VALUE` | Set any other env var (repeatable) — model ids, URLs, log DB |
 
 `--env` is the escape hatch for anything the flags don't cover, e.g.
@@ -267,7 +269,10 @@ The model weights live on the external SSD under `HF_HOME` (see
   - `render.py` — LibreOffice + PyMuPDF rendering for PPTX charts
   - `logstore.py` — SQLite log of classifier/transcription decisions (`ptm.sqlite`)
   - `summary.py` — per-presentation RAG index (sqlite-vec) + standardized summary header
+  - `transcribe.py` — optional local audio→text pass (ffmpeg + mlx-whisper subprocess)
+  - `audio.py` — speaker-diarization client (isolated PyTorch server)
 - `docs/ai-vision.md` — how to serve the vision model and enable the AI pass
+- `docs/ai-audio.md` — how to serve the ASR/diarization models and enable the audio pass
 - `docs/adr/` — architecture decision records for the CLI entry points
 - `gui.py` — PySide6 interface (file list, output folder, progress, log)
 - `main.py` — entry point
@@ -379,6 +384,40 @@ By default the summary reuses the **vision transcriber** (`mlx_vlm.server` on
 **Ollama** — so no new server needs to be started. Override `SUMMARY_*`/`EMBED_*`
 to point at a dedicated model if you prefer.
 
+## Audio transcription pass (optional)
+
+Optionally, a lecture recording can be transcribed **locally** and attached to
+the Markdown as a timestamped, speaker-labelled `# Transcript` section (plus a
+`.srt` sidecar). Transcription runs via **mlx-whisper** (`mlx-community/whisper-large-v3-turbo`
+by default), invoked as a subprocess so `converter` stays MLX-free. Speaker
+diarization (optional) is served by a separate PyTorch server. See
+**[docs/ai-audio.md](docs/ai-audio.md)** for setup.
+
+Enable it with `AUDIO_ENABLED=1` (or `--audio`):
+
+```bash
+ptm --audio deck.pdf                 # discover deck.mp3/deck.m4a/… beside the PDF
+ptm --audio --audio-file lecture.m4a deck.pdf   # explicit pairing
+ptm --audio --diarize deck.pdf       # + speaker labels
+```
+
+The audio file is paired to a source by **convention** (same stem, same folder)
+or explicitly (`--audio-file`, or the `audio_path` argument on
+`convert_file`/`convert_files`). If no audio file is found, the pass is a silent
+no-op; if transcription fails (missing `ffmpeg`/`mlx_whisper`, server down), it
+degrades to a warning. Every segment is recorded to `ptm.sqlite`
+(`transcript_segments` table).
+
+| Var | Default | Purpose |
+| --- | --- | --- |
+| `AUDIO_ENABLED` | *(unset = off)* | Master switch |
+| `AUDIO_MODEL` | `mlx-community/whisper-large-v3-turbo` | ASR model id (`…-large-v3-mlx` for max quality) |
+| `AUDIO_MLX_WHISPER_BIN` | `mlx_whisper` | mlx-whisper CLI |
+| `AUDIO_FFMPEG_BIN` | `ffmpeg` | ffmpeg binary |
+| `AUDIO_LANGUAGE` | *(unset = auto-detect)* | Whisper language hint |
+| `AUDIO_DIARIZE_ENABLED` | *(unset = off)* | Enable speaker labelling |
+| `AUDIO_DIARIZE_BASE_URL` | `http://127.0.0.1:8083/v1` | Diarization service base URL |
+
 ### Running all AI passes at once
 
 Each AI pass is independently opt-in (off by default), so you can mix and match.
@@ -400,6 +439,13 @@ VISION_ENABLED=1 VISION_CLASSIFY_ENABLED=1 FORMAT_ENABLED=1 SUMMARY_ENABLED=1 \
 This uses only what's already running: the vision transcriber (`:8081`), the
 classifier (`:8082`), and Ollama for embeddings (`embeddinggemma`).
 
+Audio transcription is deliberately **excluded from `--all`** (it needs an audio
+file and the mlx-whisper/ffmpeg toolchain), but composes with it:
+
+```bash
+ptm --all --audio --diarize deck.pdf
+```
+
 The RAG index lives in the same `ptm.sqlite` as the vision log (`deck_documents`,
 `deck_chunks`, and a `deck_chunk_vec` sqlite-vec table). `sqlite-vec` is an added
 dependency; the embedding dimension is auto-detected from the first embedding.
@@ -412,5 +458,6 @@ dependency; the embedding dimension is auto-detected from the first embedding.
   they fall back to the rendered PNG plus a collapsed raw-text block (embedded
   images are still transcribed via the vision pass)
 - PyMuPDF is AGPL-3.0 (or commercial) licensed — fine for personal use, review if you distribute
+- Audio transcription uses segment-level timestamps (word-level needs wav2vec2 alignment) and does not yet auto-align the transcript to slides (see ADR-0007)
 - Markdown flavor toggle (Obsidian `![[wiki-links]]`), note style, and heading level options could go in a settings pane
 - Packaging into a standalone executable with PyInstaller

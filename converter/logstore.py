@@ -55,6 +55,18 @@ CREATE TABLE IF NOT EXISTS vision_events (
 );
 CREATE INDEX IF NOT EXISTS idx_events_source ON vision_events(source);
 CREATE INDEX IF NOT EXISTS idx_events_digest ON vision_events(image_digest);
+CREATE TABLE IF NOT EXISTS transcript_segments (
+    id       INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts       TEXT NOT NULL,
+    source   TEXT NOT NULL,
+    start    REAL NOT NULL,
+    end      REAL NOT NULL,
+    speaker  TEXT,
+    text     TEXT NOT NULL,
+    model    TEXT,
+    error    TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_transcript_source ON transcript_segments(source);
 """
 
 _lock = threading.Lock()
@@ -127,6 +139,44 @@ def record(
                     json.dumps(omitted_words) if omitted_words is not None else None,
                     error,
                     base_url,
+                ),
+            )
+            conn.commit()
+    except Exception:
+        pass
+
+
+def record_segment(
+    *,
+    source: str,
+    start: float,
+    end: float,
+    text: str,
+    speaker: str | None = None,
+    model: str | None = None,
+    error: str | None = None,
+) -> None:
+    """Insert one transcript segment. No-op when disabled; never raises."""
+    if not VISION_LOG_ENABLED:
+        return
+    try:
+        with _lock:
+            conn = _connection()
+            conn.execute(
+                """
+                INSERT INTO transcript_segments (
+                    ts, source, start, end, speaker, text, model, error
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    datetime.now(timezone.utc).isoformat(),
+                    source,
+                    start,
+                    end,
+                    speaker,
+                    text,
+                    model,
+                    error,
                 ),
             )
             conn.commit()
