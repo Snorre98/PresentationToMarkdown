@@ -45,6 +45,7 @@ import json
 import multiprocessing
 import os
 import queue
+import shutil
 import threading
 import time
 import traceback
@@ -64,6 +65,18 @@ AUDIO_ISOLATE_WINDOW_SEC = float(_WINDOW) if _WINDOW and _WINDOW.strip() else 20
 _TIMEOUT = os.environ.get("AUDIO_STAGE_TIMEOUT_SEC")
 AUDIO_STAGE_TIMEOUT_SEC = float(_TIMEOUT) if _TIMEOUT and _TIMEOUT.strip() else 1800.0
 
+_VAD_MODEL = os.environ.get("PYANNOTE_VAD_MODEL")
+VAD_MODEL = _VAD_MODEL if _VAD_MODEL and _VAD_MODEL.strip() else "pyannote/segmentation-3.0"
+_SKIP = os.environ.get("AUDIO_ISOLATE_SKIP_IF_NO_SPEECH")
+AUDIO_ISOLATE_SKIP_IF_NO_SPEECH = _SKIP is not None and _SKIP.strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+_MIN_SPEECH = os.environ.get("AUDIO_ISOLATE_MIN_SPEECH_SEC")
+AUDIO_ISOLATE_MIN_SPEECH_SEC = float(_MIN_SPEECH) if _MIN_SPEECH and _MIN_SPEECH.strip() else 5.0
+
 # The heavy stages (SepFormer isolation, pyannote diarization) run in respawning
 # worker subprocesses so a hang/OOM can't take the server down — see _run_in_worker.
 # Enhancement and dereverberation stay in-process: they degrade gracefully via
@@ -73,6 +86,7 @@ _CTX = multiprocessing.get_context("spawn")
 _pipeline = None
 _enhancer = None
 _separator = None
+_vad = None
 
 
 def _get_pipeline():
@@ -109,6 +123,24 @@ def _get_separator():
             source=ISOLATE_MODEL, savedir=SEPARATOR_SAVEDIR
         )
     return _separator
+
+
+def _get_vad():
+    global _vad
+    if _vad is None:
+        from pyannote.audio.pipelines import VoiceActivityDetection
+
+        _vad = VoiceActivityDetection(
+            segmentation=VAD_MODEL, use_auth_token=HF_TOKEN
+        )
+        # ``default_parameters()`` only knows the legacy ``pyannote/segmentation``
+        # ids, so set the hysteresis thresholds and post-processing durations
+        # ourselves before the first call (``onset``/``offset`` are plain float
+        # attributes, ``min_duration_on/off`` are the registered parameters).
+        _vad.onset = 0.5
+        _vad.offset = 0.5
+        _vad.instantiate({"min_duration_on": 0.0, "min_duration_off": 0.0})
+    return _vad
 
 
 def _run_diarization(path: str, min_speakers, max_speakers) -> list[dict]:
@@ -173,39 +205,67 @@ def _rms(signal) -> float:
     return float(centered.pow(2).mean().sqrt())
 
 
-def _pick_voice_idx(sources, prev_tail) -> int:
+def _pick_voice_idx(sources, speech_mask, prev_tail) -> int:
     """Pick which of SepFormer's two *unordered* outputs is the tracked voice.
 
-    The first window (``prev_tail is None``) uses the higher-RMS source — the
-    same heuristic the pre-chunking code used globally. Subsequent windows pick
-    the source whose overlap region best matches the previous window's chosen
-    voice (normalized zero-lag cross-correlation), so one physical source is
-    tracked across windows instead of flipping whenever noise briefly outranks
-    the voice.
+    Preference order:
+    1. Speech concentration — the source whose energy is concentrated inside the
+       VAD speech regions. This tracks the *talking* stream rather than the
+       *loudest* stream, so it stays correct when the noise is far louder than
+       the voice (which is exactly where the old higher-RMS heuristic failed).
+    2. Cross-correlation with the previous window's chosen voice — continuity
+       through a window that happens to contain no speech.
+    3. Higher RMS — first window, or when neither of the above applies.
     """
     num_sources = sources.shape[1]
-    if prev_tail is None or prev_tail.numel() == 0:
-        rms = [_rms(sources[:, i]) for i in range(num_sources)]
-        return max(range(num_sources), key=lambda i: rms[i])
 
-    heads = sources[: prev_tail.shape[0], :]  # (overlap, num_sources)
-    a = prev_tail - prev_tail.mean()
-    best, best_i = -float("inf"), 0
-    for i in range(num_sources):
-        b = heads[:, i] - heads[:, i].mean()
-        corr = float((a * b).sum() / (a.norm() * b.norm() + 1e-8))
-        if corr > best:
-            best, best_i = corr, i
-    return best_i
+    if speech_mask is not None and bool(speech_mask.any()):
+        weighted = speech_mask.float()
+        energies = [float(sources[:, i].pow(2).sum()) for i in range(num_sources)]
+        if any(e > 0 for e in energies):
+            def _concentration(i: int) -> float:
+                return float((weighted * sources[:, i].pow(2)).sum()) / (energies[i] + 1e-8)
+
+            return max(range(num_sources), key=_concentration)
+
+    if prev_tail is not None and prev_tail.numel() > 0:
+        heads = sources[: prev_tail.shape[0], :]  # (overlap, num_sources)
+        a = prev_tail - prev_tail.mean()
+        best, best_i = -float("inf"), 0
+        for i in range(num_sources):
+            b = heads[:, i] - heads[:, i].mean()
+            corr = float((a * b).sum() / (a.norm() * b.norm() + 1e-8))
+            if corr > best:
+                best, best_i = corr, i
+        return best_i
+
+    rms = [_rms(sources[:, i]) for i in range(num_sources)]
+    return max(range(num_sources), key=lambda i: rms[i])
+
+
+def _run_vad(path: str):
+    """Return VAD speech regions as ``[(start, end), ...]`` seconds.
+
+    Returns ``None`` when the VAD is unavailable or failed (so the caller can
+    tell "unknown" from "no speech"), and ``[]`` when it ran but found nothing.
+    """
+    try:
+        annotation = _get_vad()(path)
+    except Exception as exc:  # noqa: BLE001 - VAD is best-effort; degrade to RMS
+        print(f"WARNING: voice-activity detection failed ({exc}); picking source by RMS", flush=True)
+        return None
+    if annotation is None:
+        return []
+    return [(float(seg.start), float(seg.end)) for seg in annotation.get_timeline()]
 
 
 def _run_isolate(path: str, output: str) -> None:
     """Separate the dominant voice (SepFormer) and write a 16 kHz result to ``output``.
 
     ``sepformer-whamr`` is trained on speech + noise + reverb, so it splits the
-    mixture into two unordered streams; we pick the "voice" (higher-RMS first,
-    then cross-correlation-tracked across windows) and resample its native 8 kHz
-    up to 16 kHz for ASR.
+    mixture into two unordered streams; we pick the "voice" — the *talking*
+    stream, via VAD speech concentration (see ``_pick_voice_idx``), not merely
+    the louder one — and resample its native 8 kHz up to 16 kHz for ASR.
 
     ``SepformerSeparation.separate_batch`` does one full forward pass over the
     whole tensor, and ``sepformer-whamr`` is an 8 kHz 8-layer dual-path
@@ -213,6 +273,11 @@ def _run_isolate(path: str, output: str) -> None:
     ~27x that. So we feed it bounded, overlapping windows
     (``AUDIO_ISOLATE_WINDOW_SEC``) and stitch the per-window voice sources back
     together with a linear crossfade over the overlap.
+
+    When ``AUDIO_ISOLATE_SKIP_IF_NO_SPEECH`` is set and the VAD finds less than
+    ``AUDIO_ISOLATE_MIN_SPEECH_SEC`` of speech, the input is copied straight to
+    ``output`` (a no-op) so a music track — where "voice" is ill-defined — can't
+    be mangled by a best-effort source pick.
     """
     import torch
     import torchaudio
@@ -225,6 +290,24 @@ def _run_isolate(path: str, output: str) -> None:
         mix = mix.mean(dim=0, keepdim=True)
 
     total = mix.shape[1]
+
+    # One VAD pass over the clip (at its native rate — pyannote resamples
+    # internally) to build a speech mask on the 8 kHz grid, so each window can be
+    # scored by speech concentration rather than loudness.
+    speech_segs = _run_vad(path)
+    if speech_segs is not None:
+        speech_sec = sum(end - start for start, end in speech_segs)
+        if AUDIO_ISOLATE_SKIP_IF_NO_SPEECH and speech_sec < AUDIO_ISOLATE_MIN_SPEECH_SEC:
+            shutil.copyfile(path, output)
+            return
+        speech_mask = torch.zeros(total, dtype=torch.bool)
+        for start, end in speech_segs:
+            a, b = int(start * _ISOLATE_SR), int(end * _ISOLATE_SR)
+            if b > a:
+                speech_mask[a:b] = True
+    else:
+        speech_mask = None
+
     window = int(AUDIO_ISOLATE_WINDOW_SEC * _ISOLATE_SR)
     overlap = _ISOLATE_OVERLAP_SAMPLES
     hop = max(window - overlap, 1)
@@ -249,11 +332,12 @@ def _run_isolate(path: str, output: str) -> None:
         sources = est[0]  # (time, num_sources)
 
         if prev_voice is None:
-            idx = _pick_voice_idx(sources, None)
+            prev_tail = None
         else:
             overlap_len = prev_end - start
             prev_tail = prev_voice[-overlap_len:] if overlap_len > 0 else None
-            idx = _pick_voice_idx(sources, prev_tail)
+        mask_slice = speech_mask[start:end] if speech_mask is not None else None
+        idx = _pick_voice_idx(sources, mask_slice, prev_tail)
         voice = sources[:, idx]  # (time,)
         prev_voice, prev_end = voice, end
 
