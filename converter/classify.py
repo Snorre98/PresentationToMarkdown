@@ -36,6 +36,7 @@ from converter.vision import (
     image_readable,
     transcribe_image,
     transcribe_image_meta,
+    transcribe_page,
     transcription_quality,
 )
 
@@ -127,6 +128,7 @@ def _ms(t0: float) -> int:
 _category_cache: dict[str, str] = {}
 _transcribe_cache: dict[str, str] = {}
 _meta_transcribe_cache: dict[str, str] = {}
+_page_transcribe_cache: dict[str, str] = {}
 _readability_cache: dict[str, str | None] = {}
 
 
@@ -192,6 +194,38 @@ def transcribe_image_meta_cached(
         )
         usage = None
     _meta_transcribe_cache[digest] = markdown
+    if return_usage:
+        return markdown, usage
+    return markdown
+
+
+def transcribe_page_cached(
+    png_bytes: bytes,
+    base_url: str | None = None,
+    model: str | None = None,
+    api_key: str | None = None,
+    timeout: float = 600.0,
+    return_usage: bool = False,
+):
+    """Transcribe a page render, memoized by content digest.
+
+    Returns the markdown, or ``(markdown, usage)`` when ``return_usage`` is True.
+    """
+    digest = image_digest(png_bytes)
+    if digest in _page_transcribe_cache:
+        if return_usage:
+            return _page_transcribe_cache[digest], None
+        return _page_transcribe_cache[digest]
+    if return_usage:
+        markdown, usage = transcribe_page(
+            png_bytes, base_url=base_url, model=model, api_key=api_key, timeout=timeout, return_usage=True
+        )
+    else:
+        markdown = transcribe_page(
+            png_bytes, base_url=base_url, model=model, api_key=api_key, timeout=timeout
+        )
+        usage = None
+    _page_transcribe_cache[digest] = markdown
     if return_usage:
         return markdown, usage
     return markdown
@@ -455,6 +489,113 @@ def maybe_transcribe_image(
         page=ctx.get("page"),
         image_ref=ctx.get("image_ref"),
         image_digest=ctx.get("image_digest"),
+        stage="transcribe",
+        model=model or VISION_MODEL,
+        latency_ms=_ms(t0),
+        prompt_tokens=prompt_tokens,
+        generated_tokens=generated_tokens,
+        markdown=markdown,
+        base_url=base_url or VISION_BASE_URL,
+    )
+    return _blockquote(markdown) if category == "diagram" else markdown
+
+
+def transcribe_complex_page(
+    png_bytes: bytes,
+    warnings: list[str] | None = None,
+    base_url: str | None = None,
+    model: str | None = None,
+    log_ctx: dict | None = None,
+    width: int | None = None,
+    height: int | None = None,
+) -> str | None:
+    """Transcribe a rendered page PNG for a page that failed linearization.
+
+    Only runs when ``VISION_ENABLED`` is on. With the classifier on, routes by
+    category — ``diagram`` gets a high-level gist (blockquoted), ``text`` a
+    lossless page transcription, ``decorative`` is skipped — and without it,
+    defaults to lossless transcription. Returns ``None`` when disabled, skipped,
+    unreadable, or gated, so the caller keeps its deterministic fallback.
+    """
+    if not VISION_ENABLED:
+        return None
+    mime = image_mime("png")
+    ctx = log_ctx or {}
+    digest = image_digest(png_bytes)
+    if digest not in _readability_cache:
+        _readability_cache[digest] = image_readable(png_bytes, "png", width=width, height=height)
+    reason = _readability_cache[digest]
+    if reason is not None:
+        if warnings is not None:
+            warnings.append(f"Skipping unreadable page render ({reason}); keeping raw text")
+        record(
+            source=ctx.get("source", ""),
+            page=ctx.get("page"),
+            image_digest=digest,
+            stage="readability",
+            model=model or VISION_MODEL,
+            decision=reason,
+            base_url=base_url or VISION_BASE_URL,
+        )
+        return None
+    if VISION_CLASSIFY_ENABLED:
+        category = classify_image_with_log(png_bytes, mime, warnings, base_url, model, ctx)
+        if category == "decorative" and _looks_like_content(width, height):
+            category = "diagram"
+        if category == "decorative":
+            return None
+    else:
+        category = "text"
+    t0 = time.perf_counter()
+    try:
+        if category == "diagram":
+            markdown, usage = transcribe_image_meta_cached(
+                png_bytes, mime, base_url=base_url, model=model, return_usage=True
+            )
+        else:
+            markdown, usage = transcribe_page_cached(
+                png_bytes, base_url=base_url, model=model, return_usage=True
+            )
+    except Exception as exc:  # noqa: BLE001
+        if warnings is not None:
+            warnings.append(f"Vision page transcription failed: {exc}")
+        record(
+            source=ctx.get("source", ""),
+            page=ctx.get("page"),
+            image_digest=digest,
+            stage="transcribe",
+            model=model or VISION_MODEL,
+            latency_ms=_ms(t0),
+            error=str(exc),
+            base_url=base_url or VISION_BASE_URL,
+        )
+        return None
+    prompt_tokens, generated_tokens = _usage_counts(usage)
+    reason = transcription_quality(markdown)
+    if category == "diagram" and reason is None:
+        if bullet_item_count(markdown) > _DIAGRAM_MAX_BULLETS:
+            reason = "enumerated"
+    if reason is not None:
+        if warnings is not None:
+            warnings.append(f"Discarding low-value page transcription ({reason})")
+        record(
+            source=ctx.get("source", ""),
+            page=ctx.get("page"),
+            image_digest=digest,
+            stage="transcribe",
+            model=model or VISION_MODEL,
+            latency_ms=_ms(t0),
+            prompt_tokens=prompt_tokens,
+            generated_tokens=generated_tokens,
+            markdown=markdown,
+            error=f"quality gate: {reason}",
+            base_url=base_url or VISION_BASE_URL,
+        )
+        return None
+    record(
+        source=ctx.get("source", ""),
+        page=ctx.get("page"),
+        image_digest=digest,
         stage="transcribe",
         model=model or VISION_MODEL,
         latency_ms=_ms(t0),

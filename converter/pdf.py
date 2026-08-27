@@ -29,7 +29,8 @@ from converter.base import (
     repeated_image_hashes,
     write_image,
 )
-from converter.classify import maybe_transcribe_image
+from converter.classify import maybe_transcribe_image, transcribe_complex_page
+from converter.interpret import interpret_diagram
 
 _BOLD_FLAG = 2**4
 _ITALIC_FLAG = 2**1
@@ -253,12 +254,13 @@ def _line_in_tables(line: Line, tables) -> bool:
     return False
 
 
-def _page_images(page, doc, assets_dir, stem, counter, warnings, skip_xrefs, dedup, pno, repeated, seen, source) -> list[str]:
+def _page_images(page, doc, assets_dir, stem, counter, warnings, skip_xrefs, dedup, pno, repeated, seen, source) -> tuple[list[str], bytes, int, int]:
     refs: list[str] = []
     assets_dir.mkdir(parents=True, exist_ok=True)
     pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
     png_name = f"{stem}_page_{pno:02d}.png"
     pix.save(str(assets_dir / png_name))
+    png_bytes = pix.tobytes("png")
     refs.append(f"[Page {pno}]({_link_dest(f'assets/{stem}/{png_name}')})")
     for img in page.get_images(full=True):
         xref = img[0]
@@ -303,7 +305,7 @@ def _page_images(page, doc, assets_dir, stem, counter, warnings, skip_xrefs, ded
             if transcription:
                 refs.extend(transcription.splitlines())
                 refs.append("")
-    return refs
+    return refs, png_bytes, pix.width, pix.height
 
 
 def _merge_lone_bullets(items: list[dict]) -> list[dict]:
@@ -386,6 +388,19 @@ def _raw_text(lines: list[Line]) -> str:
     return "\n".join(line.text.strip() for line in lines)
 
 
+def _strip_transcribed_title(md: str) -> str:
+    """Drop a leading heading the vision model adds, since we already emit the
+    page heading. Leaves blockquote gists (which start with ``>``) untouched."""
+    lines = md.splitlines()
+    while lines and not lines[0].strip():
+        lines.pop(0)
+    if lines and lines[0].lstrip().startswith("#"):
+        lines.pop(0)
+        while lines and not lines[0].strip():
+            lines.pop(0)
+    return "\n".join(lines)
+
+
 def _page_is_complex(lines: list[Line]) -> bool:
     distinct_x = len({_round5(line.bbox[0]) for line in lines})
     if distinct_x >= _COMPLEX_DISTINCT_X:
@@ -464,7 +479,7 @@ class PDFConverter(Converter):
         out.append(f"# {heading}")
         out.append("")
 
-        image_refs = _page_images(
+        image_refs, page_png, png_w, png_h = _page_images(
             page, doc, assets_dir, stem, counter, warnings, skip_xrefs, dedup, pno, repeated, seen, source
         )
         out.extend(image_refs)
@@ -484,7 +499,29 @@ class PDFConverter(Converter):
         complex_page = _page_is_complex(content)
 
         if complex_page:
-            out.append(_details_block("Raw extracted text", _raw_text(content)))
+            labels = _raw_text(content).splitlines()
+            interpretation = interpret_diagram(
+                page_png,
+                labels,
+                warnings,
+                log_ctx={"source": source, "page": pno},
+                width=png_w,
+                height=png_h,
+            )
+            if interpretation:
+                out.extend(interpretation.splitlines())
+            else:
+                transcription = transcribe_complex_page(
+                    page_png,
+                    warnings,
+                    log_ctx={"source": source, "page": pno},
+                    width=png_w,
+                    height=png_h,
+                )
+                if transcription:
+                    out.extend(_strip_transcribed_title(transcription).splitlines())
+                else:
+                    out.append(_details_block("Raw extracted text", _raw_text(content)))
         else:
             bullet_levels = self._bullet_levels(content)
             items = [

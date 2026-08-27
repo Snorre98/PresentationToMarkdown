@@ -34,6 +34,7 @@ def test_classify_implies_vision():
 def test_individual_flags():
     assert ai_env_vars(parse(["--format"])) == {"FORMAT_ENABLED": "1"}
     assert ai_env_vars(parse(["--summary"])) == {"SUMMARY_ENABLED": "1"}
+    assert ai_env_vars(parse(["--interpret"])) == {"INTERPRET_ENABLED": "1"}
 
 
 def test_all_enables_every_pass():
@@ -41,6 +42,7 @@ def test_all_enables_every_pass():
     assert env == {
         "VISION_ENABLED": "1",
         "VISION_CLASSIFY_ENABLED": "1",
+        "INTERPRET_ENABLED": "1",
         "FORMAT_ENABLED": "1",
         "SUMMARY_ENABLED": "1",
     }

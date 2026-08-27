@@ -105,9 +105,10 @@ Both accept the same AI flags (default: all off):
 | --- | --- |
 | `--vision` | Vision transcription post-pass |
 | `--classify` | Classifier gate (implies `--vision`) |
+| `--interpret` | Grounded diagram-interpretation pass |
 | `--format` | LLM markdown-restructure pass |
 | `--summary` | Per-presentation RAG summary pass |
-| `--all` | The four slide passes above (vision + classify + format + summary) |
+| `--all` | The five slide passes above (vision + classify + interpret + format + summary) |
 | `--env KEY=VALUE` | Set any other env var (repeatable) — model ids, URLs, log DB |
 
 Audio transcription is **not** an AI flag on `ptm`/`ptm-start` — it is its own
@@ -280,6 +281,7 @@ The model weights live on the external SSD under `HF_HOME` (see
   - `vision.py` — optional local vision-LLM post-pass (OpenAI-compatible endpoint)
   - `format.py` — Markdown polish post-pass (deterministic whitespace cleanup + optional LLM restructure)
   - `classify.py` — cheap classifier gate for the vision pass (tiny VLM)
+  - `interpret.py` — grounded diagram-interpretation pass (typed relationships + prose)
   - `render.py` — LibreOffice + PyMuPDF rendering for PPTX charts
   - `logstore.py` — SQLite log of classifier/transcription decisions (`ptm.sqlite`)
   - `summary.py` — per-presentation RAG index (sqlite-vec) + standardized summary header
@@ -468,8 +470,8 @@ releases the lock. See [docs/runbook.md](docs/runbook.md).
 ### Running all AI passes at once
 
 Each AI pass is independently opt-in (off by default), so you can mix and match.
-To enable every pass — vision transcription + classifier gate, markdown restructure,
-and the RAG summary — in one command:
+To enable every pass — vision transcription + classifier gate, diagram
+interpretation, markdown restructure, and the RAG summary — in one command:
 
 ```bash
 # GUI
@@ -479,7 +481,7 @@ ptm-start --all
 ptm --all deck.pptx
 
 # or, the underlying env vars directly:
-VISION_ENABLED=1 VISION_CLASSIFY_ENABLED=1 FORMAT_ENABLED=1 SUMMARY_ENABLED=1 \
+VISION_ENABLED=1 VISION_CLASSIFY_ENABLED=1 INTERPRET_ENABLED=1 FORMAT_ENABLED=1 SUMMARY_ENABLED=1 \
   ./.venv/bin/python main.py
 ```
 

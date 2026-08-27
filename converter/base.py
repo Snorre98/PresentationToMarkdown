@@ -18,6 +18,7 @@ from urllib.parse import quote
 ProgressCallback = Callable[[int, int, str], None]
 
 _MD_SPECIALS = str.maketrans({"\\": "\\\\", "`": "\\`", "*": "\\*", "_": "\\_"})
+_MD_SPECIALS_NO_UNDERSCORE = str.maketrans({"\\": "\\\\", "`": "\\`", "*": "\\*"})
 
 # Images whose content appears on at least this fraction of slides/pages are
 # treated as recurring (logos/watermarks): shown inline once, then as a link.
@@ -76,16 +77,21 @@ def _link_dest(rel: str) -> str:
     return quote(rel, safe="/")
 
 
-def _escape(text: str) -> str:
-    text = text.translate(_MD_SPECIALS)
+def _escape(text: str, *, underscore: bool = True) -> str:
+    table = _MD_SPECIALS if underscore else _MD_SPECIALS_NO_UNDERSCORE
+    text = text.translate(table)
     if text.startswith("#"):
         text = "\\" + text
     return text
 
 
 def _format_md(text: str, bold: bool = False, italic: bool = False) -> str:
-    """Escape and wrap a text span with bold/italic Markdown markers."""
-    text = _escape(text)
+    """Escape and wrap a text span with bold/italic Markdown markers.
+
+    ``_`` is left unescaped when the span is italic, since a single underscore
+    inside ``*...*`` cannot close the italic marker (fixes ``<short_name>``).
+    """
+    text = _escape(text, underscore=not italic)
     if not text:
         return ""
     if bold and italic:

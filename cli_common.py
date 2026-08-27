@@ -18,6 +18,7 @@ import os
 AI_FLAGS: dict[str, tuple[str, str]] = {
     "vision": ("VISION_ENABLED", "1"),
     "classify": ("VISION_CLASSIFY_ENABLED", "1"),
+    "interpret": ("INTERPRET_ENABLED", "1"),
     "format": ("FORMAT_ENABLED", "1"),
     "summary": ("SUMMARY_ENABLED", "1"),
 }
@@ -25,7 +26,7 @@ AI_FLAGS: dict[str, tuple[str, str]] = {
 # ``--all`` enables the core slide passes only — not audio transcription, which
 # is a separate command (``ptm-transcribe``) and needs an audio file to exist
 # plus the ffmpeg/mlx-whisper toolchain.
-_ALL_FLAGS = ("vision", "classify", "format", "summary")
+_ALL_FLAGS = ("vision", "classify", "interpret", "format", "summary")
 
 
 def add_ai_flags(parser: argparse.ArgumentParser) -> None:
@@ -42,6 +43,11 @@ def add_ai_flags(parser: argparse.ArgumentParser) -> None:
         help="enable the classifier gate (implies --vision)",
     )
     group.add_argument(
+        "--interpret",
+        action="store_true",
+        help="enable the grounded diagram-interpretation pass",
+    )
+    group.add_argument(
         "--format",
         action="store_true",
         help="enable the LLM markdown-restructure pass",
@@ -54,7 +60,7 @@ def add_ai_flags(parser: argparse.ArgumentParser) -> None:
     group.add_argument(
         "--all",
         action="store_true",
-        help="enable every slide AI pass (vision + classify + format + summary)",
+        help="enable every slide AI pass (vision + classify + interpret + format + summary)",
     )
     group.add_argument(
         "--env",

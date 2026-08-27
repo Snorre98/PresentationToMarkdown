@@ -280,6 +280,43 @@ same quality checks.
 > `mlx-vlm 0.6.15` — its `config.json` declares `model_type: "moondream1"`,
 > which mlx-vlm routes to a broken loader. Qwen2.5-VL-3B is the default instead.
 
+## Diagram interpretation pass (optional)
+
+The transcription/gist layers *describe* a slide. The interpretation pass
+(`INTERPRET_ENABLED=1`) goes one level deeper: it reads the *meaning* a diagram
+asserts, as typed relationships plus a short plain-language reading.
+
+```
+- `Constraint 1` —`hinders`→ `Goal 3.5`
+
+**Meaning:**
+
+Overtime rules block cutting peak-time temporary recruitment.
+```
+
+The key design point is **grounding**: the deterministic layout pass already
+extracts every text label on the page, so the model is handed those labels
+verbatim and asked only to *bind* them into relationships (`<A> | <label> | <B>`)
+— never to re-read or re-word them. A grounding gate then drops any relationship
+whose entities or relationship label aren't in the supplied set, which is what
+keeps the interpretation anchored to the slide instead of drifting (the
+"describe the description" failure mode). Unreadable pages and outputs that fail
+the quality gate fall back to the ordinary vision transcription, then to the raw
+text block.
+
+| Var | Default | Purpose |
+| --- | --- | --- |
+| `INTERPRET_ENABLED` | *(unset = off)* | Master switch for the interpretation pass |
+| `INTERPRET_BASE_URL` | `VISION_BASE_URL` | Model server (reuses the transcriber by default) |
+| `INTERPRET_MODEL` | `VISION_MODEL` | Model id (`Qwen2.5-VL-7B` by default) |
+| `INTERPRET_API_KEY` | `VISION_API_KEY` | Optional bearer token |
+
+To use a larger model for interpretation without changing the transcriber, serve
+`Qwen2.5-VL-32B-Instruct-8bit` on its own port and point `INTERPRET_BASE_URL` /
+`INTERPRET_MODEL` at it — the same override pattern `SUMMARY_*` uses. The pass is
+general-purpose: the relationship vocabulary comes from the diagram's own labels,
+not a fixed meta-model, so it applies to any diagram, not just 4EM.
+
 ### PPTX charts
 
 Charts live in the file as data, not pixels, so `python-pptx` can't read them
