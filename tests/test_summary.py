@@ -4,7 +4,14 @@ from pathlib import Path
 import pytest
 
 import converter.summary as summary
-from converter import logstore
+from converter import config, logstore
+
+
+@pytest.fixture(autouse=True)
+def _reset_config():
+    config.reset()
+    yield
+    config.reset()
 
 
 @pytest.fixture
@@ -187,7 +194,7 @@ def test_retrieve_scoped_to_document(isolated_db, tmp_path, fake_embed):
 
 
 def test_prepend_summary_end_to_end(tmp_path, isolated_db, fake_embed, monkeypatch):
-    monkeypatch.setattr(summary, "SUMMARY_ENABLED", True)
+    config.set_enabled("summary", True)
     monkeypatch.setattr(
         summary, "_chat_completion", lambda messages, **kw: VALID_REPLY
     )
@@ -205,7 +212,7 @@ def test_prepend_summary_end_to_end(tmp_path, isolated_db, fake_embed, monkeypat
 
 
 def test_prepend_summary_disabled_is_noop(tmp_path, monkeypatch):
-    monkeypatch.setattr(summary, "SUMMARY_ENABLED", False)
+    config.set_enabled("summary", False)
     md = tmp_path / "deck.md"
     md.write_text(SAMPLE_MD, encoding="utf-8")
     summary.prepend_summary(md, tmp_path / "deck.pptx", warnings=[])

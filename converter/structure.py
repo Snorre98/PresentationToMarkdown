@@ -37,6 +37,7 @@ import re
 import time
 from dataclasses import dataclass
 
+from converter import config
 from converter.format import (
     FORMAT_API_KEY,
     FORMAT_BASE_URL,
@@ -53,12 +54,6 @@ from converter.vision import (
     verify_no_omissions,
 )
 
-STRUCTURE_ENABLED = os.environ.get("STRUCTURE_ENABLED", "").strip().lower() in {
-    "1",
-    "true",
-    "yes",
-    "on",
-}
 STRUCTURE_BASE_URL = os.environ.get("STRUCTURE_BASE_URL", FORMAT_BASE_URL)
 STRUCTURE_MODEL = os.environ.get("STRUCTURE_MODEL", FORMAT_MODEL)
 STRUCTURE_API_KEY = os.environ.get("STRUCTURE_API_KEY", FORMAT_API_KEY)
@@ -446,7 +441,7 @@ def structure_paper(
     given no pages, or when nothing was amended. Never raises: any failure
     degrades per page with a warning.
     """
-    if not STRUCTURE_ENABLED or not pages:
+    if not config.is_enabled("structure") or not pages:
         return None
     out: list[str] = []
     changed = False

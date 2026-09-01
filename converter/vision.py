@@ -29,12 +29,6 @@ import re
 import urllib.request
 from collections import Counter
 
-VISION_ENABLED = os.environ.get("VISION_ENABLED", "").strip().lower() in {
-    "1",
-    "true",
-    "yes",
-    "on",
-}
 VISION_BASE_URL = os.environ.get("VISION_BASE_URL", "http://127.0.0.1:8081/v1")
 VISION_MODEL = os.environ.get("VISION_MODEL", "mlx-community/Qwen2.5-VL-7B-Instruct-4bit")
 VISION_API_KEY = os.environ.get("VISION_API_KEY") or None

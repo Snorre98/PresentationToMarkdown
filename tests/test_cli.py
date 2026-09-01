@@ -75,10 +75,11 @@ def test_env_passthrough_invalid_raises():
 
 
 def test_apply_ai_env_sets_environment(monkeypatch):
-    monkeypatch.delenv("VISION_ENABLED", raising=False)
-    monkeypatch.delenv("VISION_CLASSIFY_ENABLED", raising=False)
-    applied = apply_ai_env(parse(["--classify"]))
     import os
+
+    for var in ("VISION_ENABLED", "VISION_CLASSIFY_ENABLED"):
+        monkeypatch.setenv(var, "")
+    applied = apply_ai_env(parse(["--classify"]))
 
     assert os.environ["VISION_ENABLED"] == "1"
     assert os.environ["VISION_CLASSIFY_ENABLED"] == "1"

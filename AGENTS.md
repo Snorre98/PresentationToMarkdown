@@ -48,6 +48,7 @@ No lint, typecheck, or formatter is configured (no ruff/black/mypy/pre-commit in
   - `base.py` — shared `Converter` interface, `ConverterRegistry`, and reusable Markdown helpers
   - `pptx.py`, `pdf.py` — the two concrete converters
   - `vision.py`, `classify.py`, `interpret.py`, `format.py`, `structure.py`, `summary.py` — optional AI post-passes
+  - `config.py` — runtime registry of AI feature toggles + local server catalog (ADR-0012)
   - `render.py` — LibreOffice + PyMuPDF rendering for PPTX charts
   - `logstore.py` — SQLite log of classifier/transcription decisions (`ptm.sqlite`)
   - `settings.py` — persistent app preferences + recent-files list (same DB as `logstore`)
@@ -67,6 +68,7 @@ No lint, typecheck, or formatter is configured (no ruff/black/mypy/pre-commit in
 - New file formats subclass `Converter`, set `extensions`, implement `convert`, and are registered in `converter/__init__.py` via `registry.register(...)`.
 - Conversion is deterministic and never invokes audio transcription (that is the separate `ptm-transcribe` command, ADR-0009).
 - AI/audio configuration is read from environment variables at **import time**; `cli_common.apply_ai_env` must be called before importing `converter` or `gui`. `cli_common` deliberately does not import `converter`.
+- Exception to the import-time rule: the AI feature *on/off* toggles are runtime state owned by `converter.config` (`is_enabled`/`set_enabled`), seeded from the env at import; the GUI flips them per conversion without a restart (ADR-0012). Endpoint/model env vars (`*_BASE_URL`/`*_MODEL`/`EMBED_*`) remain import-time.
 - Exception to the import-time rule: the PDF layout (`PDF_MODE`) is read lazily inside `PDFConverter.convert`, so the GUI checkbox can toggle it per conversion without a restart; `--paper`/`--slide` set it via `apply_ai_env`.
 - `converter` stays MLX-free: transcription runs `mlx_whisper`/`ffmpeg` as subprocesses.
 - Tests use `pytest` and `tmp_path`; `conftest.py` isolates `PTM_STATE_DIR` to a temp dir so tests never touch the real state dir.

@@ -1,13 +1,15 @@
 """Unit tests for the grounded diagram-interpretation pass (converter.interpret)."""
 import pytest
 
-from converter import interpret
+from converter import config, interpret
 
 
 @pytest.fixture(autouse=True)
 def _clear_cache():
+    config.reset()
     interpret._readability_cache.clear()
     yield
+    config.reset()
 
 
 def _noop_record(**kw):
@@ -29,17 +31,17 @@ LABELS = [
 
 
 def test_disabled(monkeypatch):
-    monkeypatch.setattr(interpret, "INTERPRET_ENABLED", False)
+    config.set_enabled("interpret", False)
     assert interpret.interpret_diagram(b"\x89PNG\r\n\x1a\nfake", LABELS) is None
 
 
 def test_no_labels(monkeypatch):
-    monkeypatch.setattr(interpret, "INTERPRET_ENABLED", True)
+    config.set_enabled("interpret", True)
     assert interpret.interpret_diagram(b"\x89PNG\r\n\x1a\nfake", []) is None
 
 
 def test_happy_path(monkeypatch):
-    monkeypatch.setattr(interpret, "INTERPRET_ENABLED", True)
+    config.set_enabled("interpret", True)
     monkeypatch.setattr(interpret, "image_readable", lambda *a, **kw: None)
     monkeypatch.setattr(interpret, "record", _noop_record)
     monkeypatch.setattr(
@@ -59,7 +61,7 @@ def test_happy_path(monkeypatch):
 
 
 def test_ungrounded_statements_rejected(monkeypatch):
-    monkeypatch.setattr(interpret, "INTERPRET_ENABLED", True)
+    config.set_enabled("interpret", True)
     monkeypatch.setattr(interpret, "image_readable", lambda *a, **kw: None)
     monkeypatch.setattr(interpret, "record", _noop_record)
     monkeypatch.setattr(
@@ -93,7 +95,7 @@ def test_matches_normalizes_and_substring():
 
 
 def test_quality_gate_rejects_repetitive(monkeypatch):
-    monkeypatch.setattr(interpret, "INTERPRET_ENABLED", True)
+    config.set_enabled("interpret", True)
     monkeypatch.setattr(interpret, "image_readable", lambda *a, **kw: None)
     monkeypatch.setattr(interpret, "record", _noop_record)
     monkeypatch.setattr(

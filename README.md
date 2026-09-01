@@ -99,6 +99,15 @@ occurrences become a text hyperlink to the same asset instead of a repeated imag
    - `[ERR] broken.pdf: ...` on failure
    - `[WARN] ...` for non-fatal issues (e.g. skipped charts)
 
+The AI passes (vision, classifier gate, diagram interpretation, LLM restructure,
+RAG summary, paper structure) each have a checkbox in the GUI, toggled at
+runtime and remembered across sessions — no restart or `ptm-start --vision`
+needed. A *Check servers* status line probes the local model servers and shows
+which are up/down; if you enable a pass whose server is not running, **Convert**
+blocks and tells you the exact terminal command to start it (e.g.
+`tools/serve.sh start transcriber`). The server catalog defaults to a built-in
+table and optionally refreshes from the sibling `macos-dev-config/servers.conf`.
+
 ### CLI
 
 Three console commands (`pip install -e .` puts them on `PATH`):
@@ -325,6 +334,7 @@ The model weights live on the external SSD under `HF_HOME` (see
   - `classify.py` — cheap classifier gate for the vision pass (tiny VLM)
   - `interpret.py` — grounded diagram-interpretation pass (typed relationships + prose)
   - `structure.py` — paper-mode document-structure LLM pass (verbatim text regime + image reword)
+  - `config.py` — runtime registry of AI feature toggles + local server catalog (ADR-0012)
   - `render.py` — LibreOffice + PyMuPDF rendering for PPTX charts
   - `logstore.py` — SQLite log of classifier/transcription decisions (`ptm.sqlite`)
   - `summary.py` — per-presentation RAG index (sqlite-vec) + standardized summary header
@@ -550,8 +560,10 @@ releases the lock. See [docs/runbook.md](docs/runbook.md).
 ### Running all AI passes at once
 
 Each AI pass is independently opt-in (off by default), so you can mix and match.
-To enable every pass — vision transcription + classifier gate, diagram
-interpretation, markdown restructure, and the RAG summary — in one command:
+In the GUI the same toggles are checkboxes (persisted across sessions); the
+`ptm-start` flags below are the headless equivalent. To enable every pass —
+vision transcription + classifier gate, diagram interpretation, markdown
+restructure, and the RAG summary — in one command:
 
 ```bash
 # GUI

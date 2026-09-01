@@ -1,11 +1,12 @@
 """Unit tests for the complex-page vision transcription gate (converter.classify)."""
 import pytest
 
-from converter import classify
+from converter import classify, config
 
 
 @pytest.fixture(autouse=True)
 def _clear_caches():
+    config.reset()
     for name in (
         "_readability_cache",
         "_category_cache",
@@ -15,6 +16,7 @@ def _clear_caches():
     ):
         getattr(classify, name).clear()
     yield
+    config.reset()
 
 
 def _fake_png() -> bytes:
@@ -26,13 +28,13 @@ def _noop_record(**kw):
 
 
 def test_transcribe_complex_page_disabled(monkeypatch):
-    monkeypatch.setattr(classify, "VISION_ENABLED", False)
+    config.set_enabled("vision", False)
     assert classify.transcribe_complex_page(_fake_png()) is None
 
 
 def test_transcribe_complex_page_text_without_classifier(monkeypatch):
-    monkeypatch.setattr(classify, "VISION_ENABLED", True)
-    monkeypatch.setattr(classify, "VISION_CLASSIFY_ENABLED", False)
+    config.set_enabled("vision", True)
+    config.set_enabled("classify", False)
     monkeypatch.setattr(classify, "image_readable", lambda *a, **kw: None)
     monkeypatch.setattr(classify, "record", _noop_record)
     monkeypatch.setattr(
@@ -45,8 +47,8 @@ def test_transcribe_complex_page_text_without_classifier(monkeypatch):
 
 
 def test_transcribe_complex_page_diagram_blockquote(monkeypatch):
-    monkeypatch.setattr(classify, "VISION_ENABLED", True)
-    monkeypatch.setattr(classify, "VISION_CLASSIFY_ENABLED", True)
+    config.set_enabled("vision", True)
+    config.set_enabled("classify", True)
     monkeypatch.setattr(classify, "image_readable", lambda *a, **kw: None)
     monkeypatch.setattr(classify, "record", _noop_record)
     monkeypatch.setattr(classify, "classify_image_with_log", lambda *a, **kw: "diagram")
@@ -60,8 +62,8 @@ def test_transcribe_complex_page_diagram_blockquote(monkeypatch):
 
 
 def test_transcribe_complex_page_rejects_low_quality(monkeypatch):
-    monkeypatch.setattr(classify, "VISION_ENABLED", True)
-    monkeypatch.setattr(classify, "VISION_CLASSIFY_ENABLED", False)
+    config.set_enabled("vision", True)
+    config.set_enabled("classify", False)
     monkeypatch.setattr(classify, "image_readable", lambda *a, **kw: None)
     monkeypatch.setattr(classify, "record", _noop_record)
     monkeypatch.setattr(
@@ -76,8 +78,8 @@ def test_transcribe_complex_page_rejects_low_quality(monkeypatch):
 
 
 def test_transcribe_complex_page_skips_unreadable(monkeypatch):
-    monkeypatch.setattr(classify, "VISION_ENABLED", True)
-    monkeypatch.setattr(classify, "VISION_CLASSIFY_ENABLED", False)
+    config.set_enabled("vision", True)
+    config.set_enabled("classify", False)
     monkeypatch.setattr(classify, "image_readable", lambda *a, **kw: "low resolution")
     monkeypatch.setattr(classify, "record", _noop_record)
     warnings: list[str] = []

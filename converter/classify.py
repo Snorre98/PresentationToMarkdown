@@ -23,11 +23,11 @@ from __future__ import annotations
 import os
 import time
 
+from converter import config
 from converter.base import image_digest
 from converter.logstore import record
 from converter.vision import (
     VISION_BASE_URL,
-    VISION_ENABLED,
     VISION_MODEL,
     _chat_completion,
     _image_content,
@@ -40,12 +40,6 @@ from converter.vision import (
     transcription_quality,
 )
 
-VISION_CLASSIFY_ENABLED = os.environ.get("VISION_CLASSIFY_ENABLED", "").strip().lower() in {
-    "1",
-    "true",
-    "yes",
-    "on",
-}
 VISION_MIN_CONTENT_AREA = int(os.environ.get("VISION_MIN_CONTENT_AREA", "150000"))
 VISION_MIN_CONTENT_ASPECT = float(os.environ.get("VISION_MIN_CONTENT_ASPECT", "2.0"))
 VISION_CLASSIFY_BASE_URL = os.environ.get("VISION_CLASSIFY_BASE_URL", "http://127.0.0.1:8082/v1")
@@ -304,7 +298,7 @@ def classify_image_with_log(
     warning and returns ``decorative``, so a failed gate degrades to "keep the
     image link" rather than spending the transcriber.
     """
-    if not VISION_CLASSIFY_ENABLED:
+    if not config.is_enabled("classify"):
         return "text"
     ctx = log_ctx or {}
     t0 = time.perf_counter()
@@ -409,7 +403,7 @@ def maybe_transcribe_image(
     decorative images are skipped. A transcription that fails the quality gate is
     discarded with a warning. Any error degrades to ``None``.
     """
-    if not (VISION_ENABLED and VISION_CLASSIFY_ENABLED):
+    if not (config.is_enabled("vision") and config.is_enabled("classify")):
         return None
     mime = image_mime(ext)
     ctx = log_ctx or {}
@@ -517,7 +511,7 @@ def transcribe_complex_page(
     defaults to lossless transcription. Returns ``None`` when disabled, skipped,
     unreadable, or gated, so the caller keeps its deterministic fallback.
     """
-    if not VISION_ENABLED:
+    if not config.is_enabled("vision"):
         return None
     mime = image_mime("png")
     ctx = log_ctx or {}
@@ -538,7 +532,7 @@ def transcribe_complex_page(
             base_url=base_url or VISION_BASE_URL,
         )
         return None
-    if VISION_CLASSIFY_ENABLED:
+    if config.is_enabled("classify"):
         category = classify_image_with_log(png_bytes, mime, warnings, base_url, model, ctx)
         if category == "decorative" and _looks_like_content(width, height):
             category = "diagram"

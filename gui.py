@@ -5,7 +5,7 @@ import os
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import QThread, QUrl, Signal
+from PySide6.QtCore import QThread, Qt, QUrl, Signal
 from PySide6.QtGui import QAction, QDesktopServices, QDragEnterEvent, QDropEvent
 from PySide6.QtWidgets import (
     QApplication,
@@ -27,13 +27,16 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from converter import ConvertResult, SUPPORTED_EXTENSIONS, convert_files
+from converter import ConvertResult, SUPPORTED_EXTENSIONS, config, convert_files
 from converter.settings import get_setting, recent_files, record_recent, set_setting
 
 _INPUT_DIR_KEY = "last_input_dir"
 _OUTPUT_DIR_KEY = "last_output_dir"
 _WINDOW_GEOMETRY_KEY = "window_geometry"
 _PDF_MODE_KEY = "pdf_mode"
+_AI_KEY_PREFIX = "ai_"
+
+_TRUE_VALUES = {"1", "true", "yes", "on"}
 
 
 class DropList(QListWidget):
@@ -72,12 +75,32 @@ class ConversionThread(QThread):
         self.progressed.emit(idx, total, name)
 
 
+class HealthCheckThread(QThread):
+    """Probes the local AI servers required by enabled features, off the UI thread."""
+
+    checked = Signal(list)
+
+    def run(self):
+        results = []
+        seen: set[str] = set()
+        for key in config.enabled_keys():
+            for name, url in config.feature_endpoints(key):
+                if name in seen:
+                    continue
+                seen.add(name)
+                results.append(
+                    (name, config.probe(url), config.SERVERS[name].serve_command)
+                )
+        self.checked.emit(results)
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Presentation to Markdown")
         self.resize(640, 520)
         self._worker_thread: QThread | None = None
+        self._health_thread: QThread | None = None
 
         self._last_input_dir = get_setting(_INPUT_DIR_KEY) or ""
         self._last_output_dir = get_setting(_OUTPUT_DIR_KEY) or ""
@@ -129,6 +152,27 @@ class MainWindow(QMainWindow):
         self.paper_check.setChecked(startup_mode == "paper")
         self.paper_check.toggled.connect(self._remember_pdf_mode)
 
+        self.ai_checks: dict[str, QCheckBox] = {}
+        ai_label = QLabel("AI features (need local model servers):")
+        ai_checks_layout = QVBoxLayout()
+        ai_checks_layout.addWidget(ai_label)
+        self._load_ai_state()
+        for key, feature in config.FEATURES.items():
+            cb = QCheckBox(feature.label)
+            cb.setToolTip(feature.description)
+            cb.setChecked(config.is_enabled(key))
+            cb.toggled.connect(lambda checked, k=key: self._toggle_feature(k, checked))
+            self.ai_checks[key] = cb
+            ai_checks_layout.addWidget(cb)
+        self.status_label = QLabel()
+        self.status_label.setTextFormat(Qt.RichText)
+        self.status_label.setWordWrap(True)
+        check_servers_btn = QPushButton("Check servers")
+        check_servers_btn.clicked.connect(self._refresh_health)
+        ai_status_row = QHBoxLayout()
+        ai_status_row.addWidget(self.status_label, 1)
+        ai_status_row.addWidget(check_servers_btn)
+
         self.convert_btn = QPushButton("Convert")
         self.convert_btn.clicked.connect(self.start_conversion)
 
@@ -156,6 +200,8 @@ class MainWindow(QMainWindow):
         layout.addLayout(file_buttons)
         layout.addWidget(self.file_list, 1)
         layout.addLayout(output_row)
+        layout.addLayout(ai_checks_layout)
+        layout.addLayout(ai_status_row)
         layout.addWidget(self.paper_check)
         layout.addWidget(self.convert_btn)
         layout.addWidget(self.progress)
@@ -167,6 +213,7 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(container)
 
         self._restore_geometry()
+        self._refresh_health()
 
     def _restore_geometry(self):
         geom = get_setting(_WINDOW_GEOMETRY_KEY)
@@ -291,6 +338,86 @@ class MainWindow(QMainWindow):
     def _remember_pdf_mode(self, checked: bool):
         set_setting(_PDF_MODE_KEY, "paper" if checked else "slide")
 
+    def _load_ai_state(self):
+        """Seed runtime AI state from stored settings for env vars left unset.
+
+        The environment (from ``ptm-start --vision`` etc.) takes precedence: a
+        feature whose env var is set keeps the value ``config`` read at import.
+        """
+        for key, feature in config.FEATURES.items():
+            if os.environ.get(feature.env_var) is not None:
+                continue
+            stored = get_setting(_AI_KEY_PREFIX + key)
+            if stored is not None:
+                config.set_enabled(key, stored.strip().lower() in _TRUE_VALUES)
+
+    def _persist_ai_state(self):
+        for key in config.FEATURES:
+            set_setting(_AI_KEY_PREFIX + key, "1" if config.is_enabled(key) else "0")
+
+    def _sync_ai_checkboxes(self):
+        for key, checkbox in self.ai_checks.items():
+            checkbox.blockSignals(True)
+            checkbox.setChecked(config.is_enabled(key))
+            checkbox.blockSignals(False)
+
+    def _toggle_feature(self, key: str, checked: bool):
+        config.set_enabled(key, checked)
+        self._persist_ai_state()
+        self._sync_ai_checkboxes()
+        self._refresh_health()
+
+    def _refresh_health(self):
+        if self._health_thread is not None and self._health_thread.isRunning():
+            return
+        self._health_thread = HealthCheckThread()
+        self._health_thread.checked.connect(self._on_health)
+        self._health_thread.finished.connect(self._health_thread.deleteLater)
+        self._health_thread.start()
+
+    def _on_health(self, results):
+        if not config.enabled_keys():
+            self.status_label.setText("AI features are disabled.")
+            return
+        lines = ["<b>AI servers:</b>"]
+        for name, up, command in results:
+            state = "up" if up else "down"
+            color = "#2e7d32" if up else "#c62828"
+            extra = "" if up else f" — run: <code>{command}</code>"
+            lines.append(f'<span style="color:{color}">{name}</span> ({state}){extra}')
+        self.status_label.setText("<br>".join(lines))
+
+    def _block_on_servers(self, missing) -> bool:
+        """Modal "block until up" gate: re-probe until the servers answer or the
+        user cancels. Returns True when conversion may proceed."""
+        while True:
+            lines = [f"• {name} — <code>{command}</code>" for name, _, command in missing]
+            box = QMessageBox(self)
+            box.setIcon(QMessageBox.Warning)
+            box.setWindowTitle("AI server not running")
+            box.setText(
+                "Some enabled AI features need a local model server that is not "
+                "running. Start it in a terminal, then click Retry:"
+            )
+            box.setInformativeText("\n".join(lines))
+            box.setDetailedText("\n".join(name for name, _, _ in missing))
+            retry = box.addButton("Retry", QMessageBox.AcceptRole)
+            cancel = box.addButton("Cancel", QMessageBox.RejectRole)
+            box.setDefaultButton(retry)
+            box.exec()
+            if box.clickedButton() is cancel:
+                return False
+            missing = config.missing_servers()
+            if not missing:
+                return True
+
+    def _ai_preflight(self) -> bool:
+        """Block conversion until every enabled feature's server is up."""
+        missing = config.missing_servers()
+        if not missing:
+            return True
+        return self._block_on_servers(missing)
+
     def start_conversion(self):
         os.environ["PDF_MODE"] = "paper" if self.paper_check.isChecked() else "slide"
         self._remember_pdf_mode(self.paper_check.isChecked())
@@ -300,6 +427,9 @@ class MainWindow(QMainWindow):
         ]
         if not paths:
             QMessageBox.warning(self, "No files", "Add at least one .pptx or .pdf file first.")
+            return
+
+        if not self._ai_preflight():
             return
 
         text = self.output_edit.text().strip()

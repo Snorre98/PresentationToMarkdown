@@ -16,3 +16,4 @@ Index of architectural decisions for PresentationToMarkdown, in
 | [0009](0009-decouple-transcription-from-conversion.md) | Decouple transcription from conversion into a `ptm-transcribe` command | Accepted |
 | [0010](0010-dereverb-voice-isolation.md) | Dereverberation (WPE) and voice isolation (SepFormer) in the audio server | Accepted |
 | [0011](0011-paper-structure-llm-pass.md) | Paper-mode document-structure LLM pass with image reword | Accepted |
+| [0012](0012-runtime-ai-features.md) | Runtime-togglable AI features with server health checks | Accepted |

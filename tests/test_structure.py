@@ -3,15 +3,21 @@ from pathlib import Path
 
 import pytest
 
-from converter import convert_file
+from converter import config, convert_file
 from converter.structure import (
-    STRUCTURE_ENABLED,
     PageData,
     _match_meta,
     _page_regime,
     _text_coverage,
     structure_paper,
 )
+
+
+@pytest.fixture(autouse=True)
+def _reset_config():
+    config.reset()
+    yield
+    config.reset()
 
 TESTS_DIR = Path(__file__).parent
 PAPER = TESTS_DIR / "test_paper.pdf"
@@ -103,7 +109,7 @@ def _image_page() -> PageData:
 
 
 def _enable(monkeypatch):
-    monkeypatch.setattr("converter.structure.STRUCTURE_ENABLED", True)
+    config.set_enabled("structure", True)
 
 
 def _mock(monkeypatch, reply):
@@ -265,8 +271,7 @@ def test_image_regime_discards_garbage_transcription(monkeypatch):
 
 def test_pdf_paper_structure_off_path_unchanged(tmp_path, monkeypatch):
     monkeypatch.setenv("PDF_MODE", "paper")
-    monkeypatch.setattr("converter.structure.STRUCTURE_ENABLED", False)
-    monkeypatch.setattr("converter.pdf.STRUCTURE_ENABLED", False)
+    config.set_enabled("structure", False)
     result = convert_file(PAPER, tmp_path)
     assert result.error is None
     text = result.md_path.read_text(encoding="utf-8")
@@ -278,8 +283,7 @@ def test_pdf_paper_structure_off_path_unchanged(tmp_path, monkeypatch):
 
 def test_pdf_paper_structure_model_failure_matches_off_path(tmp_path, monkeypatch):
     monkeypatch.setenv("PDF_MODE", "paper")
-    monkeypatch.setattr("converter.structure.STRUCTURE_ENABLED", True)
-    monkeypatch.setattr("converter.pdf.STRUCTURE_ENABLED", True)
+    config.set_enabled("structure", True)
 
     def boom(*args, **kwargs):
         raise RuntimeError("server down")
@@ -289,8 +293,7 @@ def test_pdf_paper_structure_model_failure_matches_off_path(tmp_path, monkeypatc
     assert result.error is None
     assert any("Structure pass failed" in w for w in result.warnings)
 
-    monkeypatch.setattr("converter.structure.STRUCTURE_ENABLED", False)
-    monkeypatch.setattr("converter.pdf.STRUCTURE_ENABLED", False)
+    config.set_enabled("structure", False)
     off = convert_file(PAPER, tmp_path / "off")
     assert off.error is None
     assert result.md_path.read_bytes() == off.md_path.read_bytes()
@@ -298,8 +301,7 @@ def test_pdf_paper_structure_model_failure_matches_off_path(tmp_path, monkeypatc
 
 def test_pdf_paper_structure_on_path(tmp_path, monkeypatch):
     monkeypatch.setenv("PDF_MODE", "paper")
-    monkeypatch.setattr("converter.structure.STRUCTURE_ENABLED", True)
-    monkeypatch.setattr("converter.pdf.STRUCTURE_ENABLED", True)
+    config.set_enabled("structure", True)
 
     def echo(messages, **kw):
         content = messages[0]["content"]

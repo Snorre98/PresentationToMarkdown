@@ -20,6 +20,7 @@ from pathlib import Path
 
 import pymupdf as fitz
 
+from converter import config
 from converter.base import (
     ConvertResult,
     Converter,
@@ -32,7 +33,7 @@ from converter.base import (
 )
 from converter.classify import maybe_transcribe_image, transcribe_complex_page
 from converter.interpret import interpret_diagram
-from converter.structure import STRUCTURE_ENABLED, PageData, structure_paper
+from converter.structure import PageData, structure_paper
 
 _BOLD_FLAG = 2**4
 _ITALIC_FLAG = 2**1
@@ -678,7 +679,7 @@ class PDFConverter(Converter):
                 )
                 lines.extend(page_out)
                 if paper:
-                    if STRUCTURE_ENABLED:
+                    if config.is_enabled("structure"):
                         paper_pages.append(
                             PageData(
                                 md_lines=page_out,
@@ -705,7 +706,7 @@ class PDFConverter(Converter):
                         "",
                     ])
             doc.close()
-            if paper and STRUCTURE_ENABLED:
+            if paper and config.is_enabled("structure"):
                 structured = structure_paper(
                     paper_pages, warnings=result.warnings, source=source
                 )

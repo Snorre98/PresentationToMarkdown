@@ -26,6 +26,7 @@ import os
 import re
 import time
 
+from converter import config
 from converter.base import image_digest
 from converter.logstore import record
 from converter.vision import (
@@ -39,12 +40,6 @@ from converter.vision import (
     transcription_quality,
 )
 
-INTERPRET_ENABLED = os.environ.get("INTERPRET_ENABLED", "").strip().lower() in {
-    "1",
-    "true",
-    "yes",
-    "on",
-}
 INTERPRET_BASE_URL = os.environ.get("INTERPRET_BASE_URL", VISION_BASE_URL)
 INTERPRET_MODEL = os.environ.get("INTERPRET_MODEL", VISION_MODEL)
 INTERPRET_API_KEY = os.environ.get("INTERPRET_API_KEY", VISION_API_KEY)
@@ -156,7 +151,7 @@ def interpret_diagram(
     or rejected by the grounding/quality gates — so the caller falls back to the
     ordinary vision transcription (or raw text).
     """
-    if not INTERPRET_ENABLED:
+    if not config.is_enabled("interpret"):
         return None
     labels = [l for l in (labels or []) if l.strip()]
     if not labels:

@@ -22,6 +22,7 @@ from __future__ import annotations
 import os
 import re
 
+from converter import config
 from converter.vision import (
     VISION_API_KEY,
     VISION_BASE_URL,
@@ -31,12 +32,6 @@ from converter.vision import (
     verify_no_omissions,
 )
 
-FORMAT_ENABLED = os.environ.get("FORMAT_ENABLED", "").strip().lower() in {
-    "1",
-    "true",
-    "yes",
-    "on",
-}
 FORMAT_BASE_URL = os.environ.get("FORMAT_BASE_URL", VISION_BASE_URL)
 FORMAT_MODEL = os.environ.get("FORMAT_MODEL", VISION_MODEL)
 FORMAT_API_KEY = os.environ.get("FORMAT_API_KEY", VISION_API_KEY)
@@ -200,6 +195,6 @@ def polish_text(md: str, warnings: list[str] | None = None) -> str:
     word cross-check that rejects any reformat which drops or invents content.
     """
     text = _deterministic_pass(md)
-    if FORMAT_ENABLED and text:
+    if config.is_enabled("format") and text:
         text = _deterministic_pass(_llm_pass(text, warnings or []))
     return text

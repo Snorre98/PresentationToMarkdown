@@ -1,4 +1,7 @@
 """Unit tests for the Markdown polish post-pass (converter.format)."""
+import pytest
+
+import converter.config as config
 from converter.format import (
     _deterministic_pass,
     _is_structural,
@@ -7,6 +10,14 @@ from converter.format import (
     _verify_preserved,
     polish_text,
 )
+
+
+@pytest.fixture(autouse=True)
+def _reset_config():
+    config.reset()
+    yield
+    config.reset()
+
 
 
 def test_deterministic_strips_trailing_whitespace():
@@ -139,13 +150,13 @@ def test_reformat_slide_keeps_original_on_omission(monkeypatch):
     assert _reformat_slide(slide) == slide
 
 
-def test_polish_text_disabled_llm_is_deterministic_only(monkeypatch):
-    monkeypatch.setattr("converter.format.FORMAT_ENABLED", False)
+def test_polish_text_disabled_llm_is_deterministic_only():
+    config.set_enabled("format", False)
     assert polish_text("a   \n\n\n\n\nb") == "a\n\n\nb"
 
 
 def test_polish_text_enabled_runs_llm(monkeypatch):
-    monkeypatch.setattr("converter.format.FORMAT_ENABLED", True)
+    config.set_enabled("format", True)
     monkeypatch.setattr(
         "converter.format._chat_completion",
         lambda messages, **kw: "# Slide — Page 1\n\n## The course topics\n- Modelling",

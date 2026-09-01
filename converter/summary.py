@@ -39,6 +39,7 @@ from pathlib import Path
 
 import numpy as np
 
+from converter import config
 from converter.format import _iter_slides
 from converter.logstore import _connection, _lock
 from converter.vision import _chat_completion
@@ -48,12 +49,6 @@ try:
 except ImportError:  # pragma: no cover - sqlite-vec is a soft dependency
     sqlite_vec = None
 
-SUMMARY_ENABLED = os.environ.get("SUMMARY_ENABLED", "").strip().lower() in {
-    "1",
-    "true",
-    "yes",
-    "on",
-}
 SUMMARY_BASE_URL = os.environ.get("SUMMARY_BASE_URL", "http://127.0.0.1:8081/v1")
 SUMMARY_MODEL = os.environ.get("SUMMARY_MODEL", "mlx-community/Qwen2.5-VL-7B-Instruct-4bit")
 SUMMARY_API_KEY = os.environ.get("SUMMARY_API_KEY") or None
@@ -574,7 +569,7 @@ def prepend_summary(md_path: Path, source_path: Path, warnings: list[str]) -> No
 
     No-op unless ``SUMMARY_ENABLED``; never raises.
     """
-    if not SUMMARY_ENABLED:
+    if not config.is_enabled("summary"):
         return
     try:
         text = md_path.read_text(encoding="utf-8")

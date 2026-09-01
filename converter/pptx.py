@@ -8,6 +8,7 @@ from pptx import Presentation
 from pptx.enum.shapes import MSO_SHAPE_TYPE, PP_PLACEHOLDER
 from pptx.oxml.ns import qn
 
+from converter import config
 from converter.base import (
     ConvertResult,
     Converter,
@@ -20,14 +21,13 @@ from converter.base import (
     write_image,
 )
 from converter.classify import (
-    VISION_CLASSIFY_ENABLED,
     maybe_transcribe_image,
     should_transcribe,
     transcribe_image_cached,
 )
 from converter.logstore import record
 from converter.render import PPTXRenderer, emu_rect_to_points, soffice_available
-from converter.vision import VISION_ENABLED, VISION_MODEL, transcription_quality
+from converter.vision import VISION_MODEL, transcription_quality
 
 SKIP_PLACEHOLDERS = {PP_PLACEHOLDER.SLIDE_NUMBER, PP_PLACEHOLDER.DATE}
 FOOTER_PLACEHOLDERS = {PP_PLACEHOLDER.FOOTER, PP_PLACEHOLDER.HEADER}
@@ -216,7 +216,7 @@ def _handle_chart(shape, ctx) -> list[str]:
     ``VISION_CLASSIFY_ENABLED`` are on and LibreOffice is available; otherwise
     the chart is skipped with a warning (the pre-existing behaviour).
     """
-    if not (VISION_ENABLED and VISION_CLASSIFY_ENABLED):
+    if not (config.is_enabled("vision") and config.is_enabled("classify")):
         ctx["warnings"].append(
             f"Chart '{shape.name}' skipped (set VISION_ENABLED and VISION_CLASSIFY_ENABLED to transcribe charts)"
         )
@@ -397,7 +397,7 @@ class PPTXConverter(Converter):
             }
             renderer = None
             has_charts = any(_slide_has_chart(slide) for slide in prs.slides)
-            if has_charts and VISION_ENABLED and VISION_CLASSIFY_ENABLED:
+            if has_charts and config.is_enabled("vision") and config.is_enabled("classify"):
                 if soffice_available():
                     try:
                         renderer = PPTXRenderer(path)
