@@ -1,6 +1,7 @@
 """PySide6 GUI for the Presentation/PDF -> Markdown converter."""
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -8,6 +9,7 @@ from PySide6.QtCore import QThread, QUrl, Signal
 from PySide6.QtGui import QAction, QDesktopServices, QDragEnterEvent, QDropEvent
 from PySide6.QtWidgets import (
     QApplication,
+    QCheckBox,
     QFileDialog,
     QHBoxLayout,
     QLabel,
@@ -31,6 +33,7 @@ from converter.settings import get_setting, recent_files, record_recent, set_set
 _INPUT_DIR_KEY = "last_input_dir"
 _OUTPUT_DIR_KEY = "last_output_dir"
 _WINDOW_GEOMETRY_KEY = "window_geometry"
+_PDF_MODE_KEY = "pdf_mode"
 
 
 class DropList(QListWidget):
@@ -119,6 +122,13 @@ class MainWindow(QMainWindow):
         output_row.addWidget(browse_btn)
         output_row.addWidget(self.open_output_btn)
 
+        self.paper_check = QCheckBox(
+            "Paper layout (multi-column whitepapers — no per-page slide breaks)"
+        )
+        startup_mode = os.environ.get("PDF_MODE") or get_setting(_PDF_MODE_KEY, "slide")
+        self.paper_check.setChecked(startup_mode == "paper")
+        self.paper_check.toggled.connect(self._remember_pdf_mode)
+
         self.convert_btn = QPushButton("Convert")
         self.convert_btn.clicked.connect(self.start_conversion)
 
@@ -146,6 +156,7 @@ class MainWindow(QMainWindow):
         layout.addLayout(file_buttons)
         layout.addWidget(self.file_list, 1)
         layout.addLayout(output_row)
+        layout.addWidget(self.paper_check)
         layout.addWidget(self.convert_btn)
         layout.addWidget(self.progress)
         layout.addLayout(log_header)
@@ -277,7 +288,12 @@ class MainWindow(QMainWindow):
         for item in self.file_list.selectedItems():
             self.file_list.takeItem(self.file_list.row(item))
 
+    def _remember_pdf_mode(self, checked: bool):
+        set_setting(_PDF_MODE_KEY, "paper" if checked else "slide")
+
     def start_conversion(self):
+        os.environ["PDF_MODE"] = "paper" if self.paper_check.isChecked() else "slide"
+        self._remember_pdf_mode(self.paper_check.isChecked())
         paths = [
             Path(self.file_list.item(i).data(0))
             for i in range(self.file_list.count())

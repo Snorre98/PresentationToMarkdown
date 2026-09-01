@@ -41,6 +41,34 @@ Pages whose text can't be linearized (diagrams, multi-column flowcharts) fall
 back to a link to the rendered PNG plus a collapsed raw-text block — and can
 optionally be transcribed by a local vision model. See [docs/ai-vision.md](docs/ai-vision.md).
 
+#### Whitepapers / multi-column documents (`--paper`)
+
+Academic papers, whitepapers and brochures are **two-column (or more)** layouts,
+which default conversion treats as "complex" pages and dumps as raw text. Enable
+**paper mode** to convert them as continuous documents instead:
+
+```bash
+ptm --paper paper.pdf            # CLI
+PDF_MODE=paper ptm paper.pdf     # same, via env var
+```
+
+In paper mode each PDF is rendered column-by-column (full left column, then
+right column) in reading order, and structured like a document rather than a
+slide deck:
+
+| Element | Markdown output |
+| --- | --- |
+| Title + subtitle + authors (page 1) | `# Title` + `*Authors · Affiliation*` metadata block |
+| Section headings | `## Heading` (bold / larger / centered standalone lines) |
+| Each page | `# Page N` heading + `[Page N](…)` PNG link |
+| Running headers | Dropped (repeats at the top of every page) |
+| Page separators | None — pages flow continuously (no `---` / page-break divs) |
+
+Slide decks keep the default per-page behaviour; pass `--slide` (or
+`PDF_MODE=slide`) to restore it explicitly. `--paper` and `--slide` are mutually
+exclusive. The GUI offers the same toggle as a *Paper layout* checkbox
+(remembered across sessions).
+
 Shared slide-master background images are detected and skipped, and all extracted
 images are deduplicated by content hash. Images that recur on ≥80% of slides/pages
 (logos, watermarks) are embedded inline only on their first occurrence; later
@@ -71,6 +99,8 @@ Three console commands (`pip install -e .` puts them on `PATH`):
 ptm deck.pptx handout.pdf
 ptm --output out/ --vision --format .
 ptm --all --quiet folder_of_slides/
+ptm --paper whitepaper.pdf       # two-column paper -> continuous document
+ptm --slide handout.pdf          # force per-page slide layout (the default)
 
 # launch the GUI, enabling AI passes via flags
 ptm-start --vision
@@ -109,6 +139,8 @@ Both accept the same AI flags (default: all off):
 | `--format` | LLM markdown-restructure pass |
 | `--summary` | Per-presentation RAG summary pass |
 | `--all` | The five slide passes above (vision + classify + interpret + format + summary) |
+| `--paper` | Treat PDFs as multi-column whitepapers (continuous document layout) |
+| `--slide` | Treat PDFs as slide decks (the default) |
 | `--env KEY=VALUE` | Set any other env var (repeatable) — model ids, URLs, log DB |
 
 Audio transcription is **not** an AI flag on `ptm`/`ptm-start` — it is its own
@@ -500,9 +532,11 @@ dependency; the embedding dimension is auto-detected from the first embedding.
 
 - SmartArt is skipped (SmartArt text lives in a separate XML part); charts are
   skipped unless the vision pass + classifier + LibreOffice are enabled
-- PDF multi-column layouts and vector diagrams are not linearized deterministically —
-  they fall back to the rendered PNG plus a collapsed raw-text block (embedded
-  images are still transcribed via the vision pass)
+- PDF vector diagrams and non-column flowcharts are not linearized
+  deterministically — they fall back to the rendered PNG plus a collapsed
+  raw-text block (embedded images are still transcribed via the vision pass).
+  Multi-column text pages *are* linearized: column-by-column automatically, and
+  with full document structure under `--paper`.
 - PyMuPDF is AGPL-3.0 (or commercial) licensed — fine for personal use, review if you distribute
 - Audio transcription uses segment-level timestamps (word-level needs wav2vec2 alignment) and does not yet auto-align the transcript to slides (see ADR-0007)
 - Markdown flavor toggle (Obsidian `![[wiki-links]]`), note style, and heading level options could go in a settings pane

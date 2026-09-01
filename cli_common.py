@@ -69,6 +69,17 @@ def add_ai_flags(parser: argparse.ArgumentParser) -> None:
         help="set an arbitrary environment variable (repeatable); e.g. "
         "--env VISION_MODEL=... or --env VISION_LOG_DB=/tmp/ptm.sqlite",
     )
+    pdf = parser.add_argument_group("PDF layout")
+    pdf.add_argument(
+        "--paper",
+        action="store_true",
+        help="treat PDFs as multi-column paper documents (whitepapers, academic papers)",
+    )
+    pdf.add_argument(
+        "--slide",
+        action="store_true",
+        help="treat PDFs as slide decks (default)",
+    )
 
 
 def ai_env_vars(args: argparse.Namespace) -> dict[str, str]:
@@ -91,6 +102,15 @@ def ai_env_vars(args: argparse.Namespace) -> dict[str, str]:
     for flag in enabled:
         key, value = AI_FLAGS[flag]
         env[key] = value
+
+    paper = getattr(args, "paper", False)
+    slide = getattr(args, "slide", False)
+    if paper and slide:
+        raise SystemExit("--paper and --slide are mutually exclusive")
+    if paper:
+        env["PDF_MODE"] = "paper"
+    elif slide:
+        env["PDF_MODE"] = "slide"
 
     for item in getattr(args, "env", None) or []:
         if "=" not in item:

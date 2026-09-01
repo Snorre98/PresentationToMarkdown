@@ -157,5 +157,56 @@ def test_pdf_repeated_image(tmp_path):
     assert text.count("[image](") - text.count("![image](") == 3
 
 
+PAPER = TESTS_DIR / "test_paper.pdf"
+
+
+def test_pdf_paper_mode_structure(tmp_path, monkeypatch):
+    monkeypatch.setenv("PDF_MODE", "paper")
+    result = convert_file(PAPER, tmp_path)
+    assert result.error is None
+    text = result.md_path.read_text(encoding="utf-8")
+
+    assert "# What Makes Things Fun to Learn? Heuristics for Design" in text
+    assert "*T. Malone · Xerox PARC*" in text
+    assert "## Challenge" in text
+    assert "## Fantasy" in text
+    assert "## Curiosity" in text
+    assert "# Page 2" in text
+    assert "# Page 3" in text
+    assert "A Study of Fun Games" not in text  # running header stripped
+    assert "page-break-after" not in text
+    assert not any(line.strip() == "---" for line in text.splitlines())
+
+
+def test_pdf_paper_mode_column_order(tmp_path, monkeypatch):
+    monkeypatch.setenv("PDF_MODE", "paper")
+    result = convert_file(PAPER, tmp_path)
+    assert result.error is None
+    text = result.md_path.read_text(encoding="utf-8")
+
+    assert text.index("## Challenge") < text.index("## Fantasy")
+    assert (
+        text.index("The first challenge is keeping players")
+        < text.index("Fantasy can make a game more")
+    )
+
+
+def test_pdf_paper_mode_slide_default(tmp_path):
+    result = convert_file(PAPER, tmp_path)
+    assert result.error is None
+    text = result.md_path.read_text(encoding="utf-8")
+    assert "page-break-after" in text
+
+
+def test_pdf_columns_linearized_in_slide_mode(tmp_path):
+    result = convert_file(PAPER, tmp_path)
+    assert result.error is None
+    text = result.md_path.read_text(encoding="utf-8")
+    assert "Raw extracted text" not in text
+    assert text.index("The first challenge is keeping players") < text.index(
+        "Fantasy can make a game more"
+    )
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__]))

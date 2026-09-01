@@ -7,6 +7,7 @@ Desktop app and reusable Python library that converts PowerPoint (`.pptx`) and P
 - The importable library lives in the `converter/` package and has no UI dependencies.
 - One Markdown file is produced per source document, with images extracted to a sidecar `assets/<name>/` folder and deduplicated by content hash. Recurring images (logos/watermarks) are inlined once, then hyperlinked.
 - Both formats preserve **bold** and *italic*; output includes pipe tables, bullet/numbered lists, and per-slide/page headings carrying the slide or page number. PPTX also emits speaker notes as blockquotes; PDF also links a per-page rendered PNG as visual ground truth.
+- Multi-column PDFs (whitepapers, academic papers) are linearized column-by-column automatically; opt-in **paper mode** (`--paper` / `PDF_MODE=paper` / GUI checkbox) renders them as continuous documents with a title/authors block, `##` section headings, and stripped running headers. Slide decks keep the per-page default (`--slide`).
 - GUI (`gui.py`, `main.py`, `ptm-start`) — drag-and-drop, batch convert, background-thread progress, per-file `[OK]`/`[ERR]`/`[WARN]` log.
 - CLI (`cli.py` / `ptm`) — headless batch conversion mirroring the GUI; `cli_transcribe.py` / `ptm-transcribe` — decoupled local audio→Markdown transcription.
 - Optional, all-off-by-default AI passes (vision transcription, classifier gate, diagram interpretation, LLM markdown restructure, per-presentation RAG summary) run against local OpenAI-compatible model servers. Conversion is fully deterministic without them.
@@ -27,6 +28,7 @@ Run:
 ./.venv/bin/python main.py          # GUI
 ptm deck.pptx handout.pdf           # headless conversion (after pip install -e .)
 ptm --output out/ --vision .
+ptm --paper whitepaper.pdf          # two-column paper -> continuous document
 ptm-start --all                     # GUI with AI flags
 ptm-transcribe deck.md              # audio -> Markdown transcription
 ```
@@ -65,6 +67,7 @@ No lint, typecheck, or formatter is configured (no ruff/black/mypy/pre-commit in
 - New file formats subclass `Converter`, set `extensions`, implement `convert`, and are registered in `converter/__init__.py` via `registry.register(...)`.
 - Conversion is deterministic and never invokes audio transcription (that is the separate `ptm-transcribe` command, ADR-0009).
 - AI/audio configuration is read from environment variables at **import time**; `cli_common.apply_ai_env` must be called before importing `converter` or `gui`. `cli_common` deliberately does not import `converter`.
+- Exception to the import-time rule: the PDF layout (`PDF_MODE`) is read lazily inside `PDFConverter.convert`, so the GUI checkbox can toggle it per conversion without a restart; `--paper`/`--slide` set it via `apply_ai_env`.
 - `converter` stays MLX-free: transcription runs `mlx_whisper`/`ffmpeg` as subprocesses.
 - Tests use `pytest` and `tmp_path`; `conftest.py` isolates `PTM_STATE_DIR` to a temp dir so tests never touch the real state dir.
 - `ptm.sqlite` and `.env` are gitignored.

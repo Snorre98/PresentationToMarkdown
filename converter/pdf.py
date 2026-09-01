@@ -13,6 +13,7 @@ The converter reconstructs a page's visual layout from per-span coordinates:
 """
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -45,6 +46,22 @@ _FOOTER_MAX_SIZE = 16.0
 _FOOTER_BOTTOM_BAND = 70.0
 _ROW_TOL = 6.0
 _COMPLEX_DISTINCT_X = 8
+
+# Multi-column detection (coverage-profile based; see _detect_columns).
+_COLUMN_STEP = 2.0  # x-resolution of the coverage profile
+_COLUMN_GUTTER_COV = 0.02  # x is "gutter" when coverage < 2% of the max
+_COLUMN_MIN_LINES = 3
+_COLUMN_MIN_SPAN = 0.07  # a column must span at least 7% of the page height
+_COLUMN_LEFT_MAX_X0 = 0.18  # the leftmost column must start near the left margin
+_COLUMN_RIGHT_MIN_X0 = 0.35  # the rightmost column must start past 35% of the width
+_COLUMN_MIN_COVERAGE = 0.5  # columns must hold 50%+ of the page's lines
+
+# Paper mode heuristics.
+_HEADING_MAX_LEN = 40
+_HEADING_CENTER_TOL = 15.0  # heading must be centered within this many pt of its column
+_HEADING_FLUSH_TOL = 5.0  # ... or start flush with the column's left edge
+_TITLE_BLOCK_TOP = 0.28  # title block search area: top 28% of page 1
+_TOP_BAND_FRAC = 0.09  # running-header band at the top of each page
 
 
 @dataclass
@@ -159,6 +176,42 @@ def _detect_title(lines: list[Line], page_height: float) -> tuple[str | None, se
     return (text or None), {id(line) for line in absorbed}
 
 
+def _title_block(lines: list[Line], page_width: float, page_height: float) -> tuple[str | None, str, list[Line]]:
+    """Extract the paper's title, authors, and their lines from page 1.
+
+    Looks for a contiguous run of centered lines at the top of the page (title,
+    subtitle, authors/affiliations) above the first column content. Returns
+    ``(title, authors, block_lines)``; ``authors`` may be empty.
+    """
+    top = [
+        ln
+        for ln in lines
+        if ln.bbox[1] < page_height * _TITLE_BLOCK_TOP
+        and ln.bbox[0] >= page_width * 0.25
+        and ln.bbox[2] <= page_width * 0.80
+    ]
+    centered = sorted(top, key=lambda ln: ln.bbox[1])
+    if not centered:
+        return None, "", []
+    heights = [max(ln.bbox[3] - ln.bbox[1], 1.0) for ln in centered]
+    median_h = sorted(heights)[len(heights) // 2] if heights else 10.0
+    run: list[Line] = [centered[0]]
+    for ln in centered[1:]:
+        if ln.bbox[1] - run[-1].bbox[1] <= 2.5 * median_h:
+            run.append(ln)
+        else:
+            break
+    if len(run) > 6:
+        run = run[:6]
+    if not run:
+        return None, "", []
+    title = run[0].text.strip()
+    if len(run) > 1:
+        title = f"{title} {run[1].text.strip()}"
+    authors = " · ".join(ln.text.strip() for ln in run[2:])
+    return title, authors, run
+
+
 def _is_page_number(line: Line) -> bool:
     return (
         bool(_PAGE_NUMBER_RE.match(line.text.strip()))
@@ -183,6 +236,24 @@ def _collect_footer_keys(doc) -> set[str]:
                 counts[_footer_key(line.text)] += 1
     threshold = max(2, int(doc.page_count * 0.5))
     return {key for key, n in counts.items() if n >= threshold}
+
+
+def _collect_top_keys(doc) -> set[str]:
+    """Lines repeating at the top of most pages — the paper's running headers."""
+    from collections import Counter
+
+    counts: Counter = Counter()
+    for page in doc:
+        for line in _page_lines(page):
+            if line.bbox[1] < page.rect.height * _TOP_BAND_FRAC and line.size <= _FOOTER_MAX_SIZE:
+                counts[_footer_key(line.text)] += 1
+    threshold = max(2, int(doc.page_count * 0.5))
+    return {key for key, n in counts.items() if n >= threshold}
+
+
+def _pdf_mode() -> bool:
+    """Whether the PDF converter should render documents as multi-column papers."""
+    return os.environ.get("PDF_MODE", "").strip().lower() == "paper"
 
 
 def _background_xrefs(doc) -> set[int]:
@@ -326,6 +397,7 @@ def _merge_lone_bullets(items: list[dict]) -> list[dict]:
                     "md": glyph + " " + nxt["md"].lstrip(),
                     "x0": item["x0"],
                     "y0": item["y0"],
+                    "heading": False,
                 }
             )
             i += 2
@@ -333,6 +405,25 @@ def _merge_lone_bullets(items: list[dict]) -> list[dict]:
             merged.append(item)
             i += 1
     return merged
+
+
+def _make_items(lines: list[Line]) -> list[dict]:
+    """Turn ordered lines into emission items carrying layout + font metadata."""
+    items = []
+    for line in lines:
+        items.append(
+            {
+                "md": _spans_to_md(line.spans),
+                "x0": line.bbox[0],
+                "x1": line.bbox[2],
+                "y0": line.bbox[1],
+                "y1": line.bbox[3],
+                "h": max(line.bbox[3] - line.bbox[1], 1.0),
+                "size": line.size,
+                "bold": line.bold,
+            }
+        )
+    return _merge_lone_bullets(items)
 
 
 def _looks_like_lead(md: str) -> bool:
@@ -354,7 +445,12 @@ def _emit_items(items: list[dict], bullet_levels: dict[int, int]) -> list[str]:
         glyph, rest = _strip_bullet(md)
         y0, y1, h = item["y0"], item["y1"], item["h"]
         gap = y0 - prev_y1 if prev_y1 is not None else 0.0
-        if glyph is not None:
+        if item.get("heading"):
+            out.append("")
+            out.append(md)
+            out.append("")
+            mode, list_level = None, 0
+        elif glyph is not None:
             level = bullet_levels.get(_round5(item["x0"]), 0)
             indent = "  " * level
             if mode not in (None, "list"):
@@ -402,31 +498,155 @@ def _strip_transcribed_title(md: str) -> str:
 
 
 def _page_is_complex(lines: list[Line]) -> bool:
+    """A page is "complex" when its lines scatter across too many x positions
+    (diagrams, flowcharts). Multi-column *text* pages are not complex — they are
+    linearized column-by-column by :func:`_detect_columns` instead."""
     distinct_x = len({_round5(line.bbox[0]) for line in lines})
-    if distinct_x >= _COMPLEX_DISTINCT_X:
-        return True
-    return _has_parallel_columns(lines)
+    return distinct_x >= _COMPLEX_DISTINCT_X
 
 
-def _has_parallel_columns(lines: list[Line], tol: float = _ROW_TOL, gap: float = 30.0, min_rows: int = 3) -> bool:
-    """Detect side-by-side columns: multiple rows where two lines are separated by
-    a horizontal gap (as opposed to a bullet glyph immediately before its text)."""
-    rows: list[list[Line]] = []
-    for line in sorted(lines, key=lambda l: l.bbox[1]):
-        if rows and abs(line.bbox[1] - rows[-1][0].bbox[1]) <= tol:
-            rows[-1].append(line)
-        else:
-            rows.append([line])
-    count = 0
-    for row in rows:
-        if len(row) < 2:
+def _detect_columns(lines: list[Line], page_width: float, page_height: float) -> list[list[Line]]:
+    """Return the page's side-by-side text columns, or ``[]`` for one column.
+
+    Builds a vertical coverage profile (for each x, the summed height of every
+    line whose x-extent contains x) and treats low-coverage corridors as
+    "gutters"; the bands between gutters are the columns. Lines are assigned to
+    a band by their ``x0``. This is robust to justified text whose wrapped
+    continuation lines start at arbitrary x positions (their x-extent still
+    covers the gutter at a fixed x), which x0-gap clustering gets wrong.
+    """
+    if len(lines) < 6:
+        return []
+    step = _COLUMN_STEP
+    n = max(1, int(page_width / step))
+    cov = [0.0] * n
+    for ln in lines:
+        x0, y0, x1, y1 = ln.bbox
+        i0 = max(0, int(x0 / step))
+        i1 = min(n - 1, int(x1 / step))
+        h = max(y1 - y0, 1.0)
+        for i in range(i0, i1 + 1):
+            cov[i] += h
+    max_cov = max(cov)
+    if max_cov <= 0.0:
+        return []
+    threshold = max_cov * _COLUMN_GUTTER_COV
+    bands: list[tuple[float, float]] = []
+    band_start = 0
+    in_gutter = cov[0] < threshold
+    for i in range(1, n):
+        if cov[i] < threshold and not in_gutter:
+            bands.append((band_start * step, i * step))
+            in_gutter = True
+        elif cov[i] >= threshold and in_gutter:
+            in_gutter = False
+            band_start = i
+    if not in_gutter and (bands or n > 1):
+        bands.append((band_start * step, page_width))
+
+    cols: list[list[Line]] = []
+    for b0, b1 in bands:
+        band_lines = [ln for ln in lines if b0 <= ln.bbox[0] <= b1]
+        if len(band_lines) < _COLUMN_MIN_LINES:
             continue
-        row = sorted(row, key=lambda l: l.bbox[0])
-        for a, b in zip(row, row[1:]):
-            if b.bbox[0] - a.bbox[2] >= gap:
-                count += 1
-                break
-    return count >= min_rows
+        ys = [ln.bbox[1] for ln in band_lines]
+        if max(ys) - min(ys) < _COLUMN_MIN_SPAN * page_height:
+            continue
+        cols.append(band_lines)
+    if len(cols) < 2:
+        return []
+    cols.sort(key=lambda c: min(ln.bbox[0] for ln in c))
+    if min(ln.bbox[0] for ln in cols[0]) > _COLUMN_LEFT_MAX_X0 * page_width:
+        return []
+    if min(ln.bbox[0] for ln in cols[-1]) < _COLUMN_RIGHT_MIN_X0 * page_width:
+        return []
+    if sum(len(c) for c in cols) < _COLUMN_MIN_COVERAGE * len(lines):
+        return []
+    return cols
+
+
+def _tables_for_columns(tables, columns: list[list[Line]]) -> list[list[object]]:
+    """Split the page's detected tables among columns by their mid-x position.
+
+    A table whose mid-x falls in no column (full-width tables) is attached to
+    the last column."""
+    x_ranges = []
+    for col in columns:
+        x_ranges.append((min(ln.bbox[0] for ln in col), max(ln.bbox[2] for ln in col)))
+    result: list[list[object]] = [[] for _ in columns]
+    for table in tables:
+        cx = (table.bbox[0] + table.bbox[2]) / 2.0
+        idx = next((i for i, (a, b) in enumerate(x_ranges) if a <= cx <= b), len(columns) - 1)
+        result[idx].append(table)
+    return result
+
+
+def _body_size(lines: list[Line]) -> float:
+    """Median font size of a column's lines — the reference for heading detection."""
+    sizes = sorted(ln.size for ln in lines if ln.size > 0.0)
+    if not sizes:
+        return 10.0
+    return sizes[len(sizes) // 2]
+
+
+def _heading_text(md: str) -> str:
+    """Strip bold/italic markers so headings render cleanly (``## Challenge``)."""
+    return md.strip().strip("*").strip()
+
+
+def _mark_alone(items: list[dict]) -> None:
+    """Mark items that share a text row with another item (``crowded``).
+
+    Two side-by-side labels on one line (e.g. figure labels) are not section
+    headings, even when bold."""
+    for i, item in enumerate(items):
+        if item.get("crowded"):
+            continue
+        row_y = item["y0"]
+        others = [
+            j for j, other in enumerate(items)
+            if j != i and abs(other["y0"] - row_y) <= _ROW_TOL
+        ]
+        if others:
+            for j in others + [i]:
+                items[j]["crowded"] = True
+
+
+def _mark_headings(items: list[dict], body_size: float) -> None:
+    """Promote standalone bold/larger/short lines to ``## Heading`` (paper mode).
+
+    A candidate must sit at a "heading position": centered within its column, or
+    flush with the column's left edge. This keeps bold *continuation* lines (wrapped
+    fragments, table rows) from being promoted. Rewrites ``item["md"]`` to the
+    heading itself and sets the ``heading`` flag, which :func:`_emit_items`
+    renders with blank lines around it."""
+    xs0 = [item.get("x0", 0.0) for item in items]
+    xs1 = [item.get("x1", 0.0) for item in items]
+    col_min = min(xs0)
+    col_max = max(xs1)
+    col_center = (col_min + col_max) / 2.0
+    for item in items:
+        md = item["md"].strip()
+        if not md or item.get("crowded"):
+            continue
+        if len(md) > _HEADING_MAX_LEN or _strip_bullet(md)[0] is not None:
+            continue
+        if md.endswith((":", ";", ",")):
+            continue
+        size = item.get("size", 0.0)
+        if not (
+            item.get("bold")
+            or size >= body_size + 1.5
+            or (md.isupper() and size >= body_size)
+        ):
+            continue
+        x_center = (item.get("x0", 0.0) + item.get("x1", 0.0)) / 2.0
+        centered = abs(x_center - col_center) <= _HEADING_CENTER_TOL
+        flush = abs(item.get("x0", 0.0) - col_min) <= _HEADING_FLUSH_TOL
+        if not centered and not flush:
+            continue
+        item["md"] = f"## {_heading_text(md)}"
+        item["heading"] = True
 
 
 class PDFConverter(Converter):
@@ -437,9 +657,11 @@ class PDFConverter(Converter):
         try:
             doc = fitz.open(path)
             stem = path.stem
+            paper = _pdf_mode()
             assets_dir = output_dir / "assets" / stem
             skip_xrefs = _background_xrefs(doc)
             footer_keys = _collect_footer_keys(doc)
+            top_keys = _collect_top_keys(doc) if paper else set()
             repeated = repeated_image_hashes(_collect_page_image_digests(doc, skip_xrefs))
             seen: set[str] = set()
             counter = [1]
@@ -450,16 +672,20 @@ class PDFConverter(Converter):
                 lines.extend(
                     self._page_to_md(
                         page, doc, pno, assets_dir, stem, counter, skip_xrefs,
-                        footer_keys, dedup, result.warnings, repeated, seen, source,
+                        footer_keys, top_keys, dedup, result.warnings, repeated,
+                        seen, source, paper,
                     )
                 )
-                lines.extend([
-                    "",
-                    '<div style="page-break-after: always; break-after: page;"></div>',
-                    "",
-                    "---",
-                    "",
-                ])
+                if paper:
+                    lines.append("")
+                else:
+                    lines.extend([
+                        "",
+                        '<div style="page-break-after: always; break-after: page;"></div>',
+                        "",
+                        "---",
+                        "",
+                    ])
             doc.close()
             md_path = output_dir / f"{stem}.md"
             md_path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
@@ -469,15 +695,36 @@ class PDFConverter(Converter):
         return result
 
     def _page_to_md(
-        self, page, doc, pno, assets_dir, stem, counter, skip_xrefs, footer_keys, dedup, warnings, repeated, seen, source
+        self, page, doc, pno, assets_dir, stem, counter, skip_xrefs, footer_keys,
+        top_keys, dedup, warnings, repeated, seen, source, paper,
     ) -> list[str]:
         out: list[str] = []
         all_lines = _ordered_lines(_page_lines(page))
 
-        title, title_ids = _detect_title(all_lines, page.rect.height)
-        heading = f"{title} — Page {pno}" if title else f"Page {pno}"
-        out.append(f"# {heading}")
-        out.append("")
+        if paper:
+            if pno == 1:
+                title, authors, block_lines = _title_block(
+                    all_lines, page.rect.width, page.rect.height
+                )
+                title_ids = {id(ln) for ln in block_lines}
+                if title:
+                    out.append(f"# {title}")
+                    out.append("")
+                    if authors:
+                        out.append(f"*{authors}*")
+                        out.append("")
+                else:
+                    out.append("# Page 1")
+                    out.append("")
+            else:
+                title_ids = set()
+                out.append(f"# Page {pno}")
+                out.append("")
+        else:
+            title, title_ids = _detect_title(all_lines, page.rect.height)
+            heading = f"{title} — Page {pno}" if title else f"Page {pno}"
+            out.append(f"# {heading}")
+            out.append("")
 
         image_refs, page_png, png_w, png_h = _page_images(
             page, doc, assets_dir, stem, counter, warnings, skip_xrefs, dedup, pno, repeated, seen, source
@@ -493,12 +740,19 @@ class PDFConverter(Converter):
             if id(line) not in title_ids
             and not _is_page_number(line)
             and _footer_key(line.text) not in footer_keys
+            and _footer_key(line.text) not in top_keys
             and not _line_in_tables(line, tables)
         ]
 
-        complex_page = _page_is_complex(content)
-
-        if complex_page:
+        columns = _detect_columns(content, page.rect.width, page.rect.height)
+        if columns:
+            for col_lines, col_tables in zip(
+                (_ordered_lines(col) for col in columns),
+                _tables_for_columns(tables, columns),
+            ):
+                out.extend(self._emit_group(col_lines, col_tables, paper))
+            out.append("")
+        elif _page_is_complex(content):
             labels = _raw_text(content).splitlines()
             interpretation = interpret_diagram(
                 page_png,
@@ -523,22 +777,18 @@ class PDFConverter(Converter):
                 else:
                     out.append(_details_block("Raw extracted text", _raw_text(content)))
         else:
-            bullet_levels = self._bullet_levels(content)
-            items = [
-                {
-                    "md": _spans_to_md(line.spans),
-                    "x0": line.bbox[0],
-                    "y0": line.bbox[1],
-                    "y1": line.bbox[3],
-                    "h": max(line.bbox[3] - line.bbox[1], 1.0),
-                }
-                for line in content
-            ]
-            items = _merge_lone_bullets(items)
-            out.extend(self._with_table_flow(items, tables, bullet_levels))
+            out.extend(self._emit_group(content, tables, paper))
 
         out.append("")
         return out
+
+    def _emit_group(self, lines: list[Line], tables, promote_heads: bool) -> list[str]:
+        """Emit one reading-order group (a column, or a single-column page)."""
+        items = _make_items(lines)
+        if promote_heads:
+            _mark_alone(items)
+            _mark_headings(items, _body_size(lines))
+        return self._with_table_flow(items, tables, self._bullet_levels(lines))
 
     @staticmethod
     def _bullet_levels(lines: list[Line]) -> dict[int, int]:
