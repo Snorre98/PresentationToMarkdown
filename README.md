@@ -69,6 +69,15 @@ Slide decks keep the default per-page behaviour; pass `--slide` (or
 exclusive. The GUI offers the same toggle as a *Paper layout* checkbox
 (remembered across sessions).
 
+With `--structure` (or `STRUCTURE_ENABLED=1`) an optional LLM pass then improves
+the structure: it fixes the page-1 title/authors block, blockquotes the
+abstract, adds `##` headings and a `## References` section, wraps footnotes, and
+repairs interleaved multi-column linearization — keeping every word verbatim.
+Pages whose text layer is unusable (scans, garbage OCR) are instead reworded
+from the rendered page image. Any page the model gets wrong is left in its
+deterministic form with a warning. See
+[Paper structure pass](#paper-structure-pass).
+
 Shared slide-master background images are detected and skipped, and all extracted
 images are deduplicated by content hash. Images that recur on ≥80% of slides/pages
 (logos, watermarks) are embedded inline only on their first occurrence; later
@@ -138,6 +147,7 @@ Both accept the same AI flags (default: all off):
 | `--interpret` | Grounded diagram-interpretation pass |
 | `--format` | LLM markdown-restructure pass |
 | `--summary` | Per-presentation RAG summary pass |
+| `--structure` | LLM document-structure pass (paper-mode PDFs only) |
 | `--all` | The five slide passes above (vision + classify + interpret + format + summary) |
 | `--paper` | Treat PDFs as multi-column whitepapers (continuous document layout) |
 | `--slide` | Treat PDFs as slide decks (the default) |
@@ -314,6 +324,7 @@ The model weights live on the external SSD under `HF_HOME` (see
   - `format.py` — Markdown polish post-pass (deterministic whitespace cleanup + optional LLM restructure)
   - `classify.py` — cheap classifier gate for the vision pass (tiny VLM)
   - `interpret.py` — grounded diagram-interpretation pass (typed relationships + prose)
+  - `structure.py` — paper-mode document-structure LLM pass (verbatim text regime + image reword)
   - `render.py` — LibreOffice + PyMuPDF rendering for PPTX charts
   - `logstore.py` — SQLite log of classifier/transcription decisions (`ptm.sqlite`)
   - `summary.py` — per-presentation RAG index (sqlite-vec) + standardized summary header
@@ -388,6 +399,43 @@ FORMAT_ENABLED=1 ./.venv/bin/python main.py
 `FORMAT_BASE_URL`/`FORMAT_MODEL`/`FORMAT_API_KEY` default to their `VISION_*`
 equivalents; override them to point the restructure pass at a different text
 model.
+
+## Paper structure pass (optional)
+
+Paper-mode output (see
+[Whitepapers / multi-column documents](#whitepapers--multi-column-documents-paper))
+is produced by deterministic geometry heuristics. The optional **structure pass**
+(`converter/structure.py`) improves it with a local chat model, per page:
+
+- **Text regime** — pages with a usable text layer are *check-and-amended*: the
+  model fixes the page-1 `# Title` + `*Authors*` block, blockquotes the
+  abstract, adds `##` headings (never demoting existing ones), wraps footnotes,
+  inserts a `## References` heading, and repairs interleaved multi-column
+  linearization — while every content word must stay verbatim. A word
+  cross-check rejects any page that omits or invents prose.
+- **Image regime** — pages whose text layer is unusable (scans, garbage OCR;
+  the raw-text `<details>` fallback) are reworded from the rendered page image,
+  gated by image readability and transcription quality instead of the verbatim
+  word gate.
+- Pages already handled by the interpret/vision passes are skipped, and every
+  rejected page keeps its deterministic Markdown with a `[WARN]`.
+
+Enable it together with paper mode:
+
+```bash
+ptm --paper --structure paper.pdf
+STRUCTURE_ENABLED=1 PDF_MODE=paper ptm paper.pdf
+```
+
+| Var | Default | Purpose |
+| --- | --- | --- |
+| `STRUCTURE_ENABLED` | *(unset = off)* | Master switch for the structure pass |
+| `STRUCTURE_BASE_URL` | `FORMAT_BASE_URL` (then `VISION_BASE_URL`) | Structure model server |
+| `STRUCTURE_MODEL` | `FORMAT_MODEL` (then `VISION_MODEL`) | Structure model id (a VLM can read page images) |
+| `STRUCTURE_API_KEY` | `FORMAT_API_KEY` (then `VISION_API_KEY`) | Optional bearer token (unused locally) |
+
+The pass is PDF-only and therefore **not** part of `--all`; enable it
+explicitly with `--structure`.
 
 ## Summary pass (per-presentation RAG)
 

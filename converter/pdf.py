@@ -32,6 +32,7 @@ from converter.base import (
 )
 from converter.classify import maybe_transcribe_image, transcribe_complex_page
 from converter.interpret import interpret_diagram
+from converter.structure import STRUCTURE_ENABLED, PageData, structure_paper
 
 _BOLD_FLAG = 2**4
 _ITALIC_FLAG = 2**1
@@ -667,16 +668,33 @@ class PDFConverter(Converter):
             counter = [1]
             dedup: dict[str, str] = {}
             lines: list[str] = []
+            paper_pages: list[PageData] = []
             source = str(path)
             for pno, page in enumerate(doc, start=1):
-                lines.extend(
-                    self._page_to_md(
-                        page, doc, pno, assets_dir, stem, counter, skip_xrefs,
-                        footer_keys, top_keys, dedup, result.warnings, repeated,
-                        seen, source, paper,
-                    )
+                page_out, page_content, page_png = self._page_to_md(
+                    page, doc, pno, assets_dir, stem, counter, skip_xrefs,
+                    footer_keys, top_keys, dedup, result.warnings, repeated,
+                    seen, source, paper,
                 )
+                lines.extend(page_out)
                 if paper:
+                    if STRUCTURE_ENABLED:
+                        paper_pages.append(
+                            PageData(
+                                md_lines=page_out,
+                                line_meta=[
+                                    {
+                                        "text": ln.text,
+                                        "size": ln.size,
+                                        "bold": ln.bold,
+                                        "x0": ln.bbox[0],
+                                    }
+                                    for ln in page_content
+                                ],
+                                png=page_png,
+                                pno=pno,
+                            )
+                        )
                     lines.append("")
                 else:
                     lines.extend([
@@ -687,6 +705,12 @@ class PDFConverter(Converter):
                         "",
                     ])
             doc.close()
+            if paper and STRUCTURE_ENABLED:
+                structured = structure_paper(
+                    paper_pages, warnings=result.warnings, source=source
+                )
+                if structured is not None:
+                    lines = structured
             md_path = output_dir / f"{stem}.md"
             md_path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
             result.md_path = md_path
@@ -697,7 +721,14 @@ class PDFConverter(Converter):
     def _page_to_md(
         self, page, doc, pno, assets_dir, stem, counter, skip_xrefs, footer_keys,
         top_keys, dedup, warnings, repeated, seen, source, paper,
-    ) -> list[str]:
+    ) -> tuple[list[str], list[Line], bytes | None]:
+        """Return ``(md_lines, content_lines, page_png)`` for one page.
+
+        ``content_lines`` is the ordered, filtered line list used for emission
+        (the text-layer input for the structure pass); ``page_png`` is the
+        rendered page image (the image-regime input). ``page_png`` is ``None``
+        when the page could not be rendered.
+        """
         out: list[str] = []
         all_lines = _ordered_lines(_page_lines(page))
 
@@ -780,7 +811,7 @@ class PDFConverter(Converter):
             out.extend(self._emit_group(content, tables, paper))
 
         out.append("")
-        return out
+        return out, content, page_png
 
     def _emit_group(self, lines: list[Line], tables, promote_heads: bool) -> list[str]:
         """Emit one reading-order group (a column, or a single-column page)."""

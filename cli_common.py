@@ -21,6 +21,7 @@ AI_FLAGS: dict[str, tuple[str, str]] = {
     "interpret": ("INTERPRET_ENABLED", "1"),
     "format": ("FORMAT_ENABLED", "1"),
     "summary": ("SUMMARY_ENABLED", "1"),
+    "structure": ("STRUCTURE_ENABLED", "1"),
 }
 
 # ``--all`` enables the core slide passes only — not audio transcription, which
@@ -56,6 +57,11 @@ def add_ai_flags(parser: argparse.ArgumentParser) -> None:
         "--summary",
         action="store_true",
         help="enable the per-presentation RAG summary pass",
+    )
+    group.add_argument(
+        "--structure",
+        action="store_true",
+        help="enable the LLM document-structure pass (paper-mode PDFs only)",
     )
     group.add_argument(
         "--all",

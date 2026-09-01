@@ -35,6 +35,12 @@ def test_individual_flags():
     assert ai_env_vars(parse(["--format"])) == {"FORMAT_ENABLED": "1"}
     assert ai_env_vars(parse(["--summary"])) == {"SUMMARY_ENABLED": "1"}
     assert ai_env_vars(parse(["--interpret"])) == {"INTERPRET_ENABLED": "1"}
+    assert ai_env_vars(parse(["--structure"])) == {"STRUCTURE_ENABLED": "1"}
+
+
+def test_structure_not_part_of_all():
+    env = ai_env_vars(parse(["--all"]))
+    assert "STRUCTURE_ENABLED" not in env
 
 
 def test_all_enables_every_pass():

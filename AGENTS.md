@@ -10,7 +10,7 @@ Desktop app and reusable Python library that converts PowerPoint (`.pptx`) and P
 - Multi-column PDFs (whitepapers, academic papers) are linearized column-by-column automatically; opt-in **paper mode** (`--paper` / `PDF_MODE=paper` / GUI checkbox) renders them as continuous documents with a title/authors block, `##` section headings, and stripped running headers. Slide decks keep the per-page default (`--slide`).
 - GUI (`gui.py`, `main.py`, `ptm-start`) — drag-and-drop, batch convert, background-thread progress, per-file `[OK]`/`[ERR]`/`[WARN]` log.
 - CLI (`cli.py` / `ptm`) — headless batch conversion mirroring the GUI; `cli_transcribe.py` / `ptm-transcribe` — decoupled local audio→Markdown transcription.
-- Optional, all-off-by-default AI passes (vision transcription, classifier gate, diagram interpretation, LLM markdown restructure, per-presentation RAG summary) run against local OpenAI-compatible model servers. Conversion is fully deterministic without them.
+- Optional, all-off-by-default AI passes (vision transcription, classifier gate, diagram interpretation, LLM markdown restructure, paper structure tagging/reword, per-presentation RAG summary) run against local OpenAI-compatible model servers. Conversion is fully deterministic without them.
 
 ## Commands
 
@@ -47,7 +47,7 @@ No lint, typecheck, or formatter is configured (no ruff/black/mypy/pre-commit in
   - `__init__.py` — public API (`convert_file`, `convert_files`, `ConvertResult`) and extension-based dispatch
   - `base.py` — shared `Converter` interface, `ConverterRegistry`, and reusable Markdown helpers
   - `pptx.py`, `pdf.py` — the two concrete converters
-  - `vision.py`, `classify.py`, `interpret.py`, `format.py`, `summary.py` — optional AI post-passes
+  - `vision.py`, `classify.py`, `interpret.py`, `format.py`, `structure.py`, `summary.py` — optional AI post-passes
   - `render.py` — LibreOffice + PyMuPDF rendering for PPTX charts
   - `logstore.py` — SQLite log of classifier/transcription decisions (`ptm.sqlite`)
   - `settings.py` — persistent app preferences + recent-files list (same DB as `logstore`)
