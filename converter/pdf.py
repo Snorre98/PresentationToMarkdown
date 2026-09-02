@@ -24,6 +24,7 @@ from converter import config
 from converter.base import (
     ConvertResult,
     Converter,
+    PageProgressCallback,
     _format_md,
     _link_dest,
     _table_to_md,
@@ -654,12 +655,18 @@ def _mark_headings(items: list[dict], body_size: float) -> None:
 class PDFConverter(Converter):
     extensions = (".pdf",)
 
-    def convert(self, path: Path, output_dir: Path) -> ConvertResult:
+    def convert(
+        self,
+        path: Path,
+        output_dir: Path,
+        progress_callback: PageProgressCallback | None = None,
+    ) -> ConvertResult:
         result = ConvertResult(source_path=path)
         try:
             doc = fitz.open(path)
             stem = path.stem
             paper = _pdf_mode()
+            page_count = doc.page_count
             assets_dir = output_dir / "assets" / stem
             skip_xrefs = _background_xrefs(doc)
             footer_keys = _collect_footer_keys(doc)
@@ -705,6 +712,8 @@ class PDFConverter(Converter):
                         "---",
                         "",
                     ])
+                if progress_callback:
+                    progress_callback(pno, page_count, path.name)
             doc.close()
             if paper and config.is_enabled("structure"):
                 structured = structure_paper(

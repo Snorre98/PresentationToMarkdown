@@ -12,6 +12,7 @@ from converter import config
 from converter.base import (
     ConvertResult,
     Converter,
+    PageProgressCallback,
     _escape,
     _format_md,
     _link_dest,
@@ -368,13 +369,19 @@ def _slide_to_md(slide, ctx) -> list[str]:
 class PPTXConverter(Converter):
     extensions = (".pptx",)
 
-    def convert(self, path: Path, output_dir: Path) -> ConvertResult:
+    def convert(
+        self,
+        path: Path,
+        output_dir: Path,
+        progress_callback: PageProgressCallback | None = None,
+    ) -> ConvertResult:
         result = ConvertResult(source_path=path)
         try:
             prs = Presentation(path)
             stem = path.stem
             assets_dir = output_dir / "assets" / stem
             assets_dir.mkdir(parents=True, exist_ok=True)
+            slide_count = len(prs.slides)
             per_slide: list[set[str]] = []
             for slide in prs.slides:
                 digests: set[str] = set()
@@ -422,6 +429,8 @@ class PPTXConverter(Converter):
                         "---",
                         "",
                     ])
+                    if progress_callback:
+                        progress_callback(idx, slide_count, path.name)
             finally:
                 if renderer is not None:
                     renderer.close()

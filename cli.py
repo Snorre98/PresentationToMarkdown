@@ -104,6 +104,7 @@ def main(argv: list[str] | None = None) -> int:
         files,
         output_dir,
         progress_callback=None if args.quiet else _progress,
+        page_progress_callback=None if args.quiet else _page_progress,
     )
 
     if not args.no_recent:
@@ -127,7 +128,21 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _progress(idx: int, total: int, name: str) -> None:
+    if sys.stderr.isatty():
+        print("", file=sys.stderr)
     print(f"[{idx}/{total}] {name}")
+
+
+def _page_progress(page: int, total: int, name: str) -> None:
+    """Report per-page progress as a carriage-return status line on a TTY only.
+
+    On a pipe (scripts), the status line is suppressed so logs don't accumulate
+    one line per page; the per-file ``_progress`` lines still appear.
+    """
+    if not sys.stderr.isatty():
+        return
+    noun = "Slide" if name.lower().endswith(".pptx") else "Page"
+    print(f"\r{name}: {noun} {page}/{total}", end="", file=sys.stderr, flush=True)
 
 
 if __name__ == "__main__":

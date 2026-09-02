@@ -17,6 +17,7 @@ from converter.base import (
     ConvertResult,
     Converter,
     ConverterRegistry,
+    PageProgressCallback,
     ProgressCallback,
     registry,
 )
@@ -34,6 +35,7 @@ __all__ = [
     "ConvertResult",
     "Converter",
     "ConverterRegistry",
+    "PageProgressCallback",
     "ProgressCallback",
     "SUPPORTED_EXTENSIONS",
     "convert_file",
@@ -48,12 +50,16 @@ def _default_output_dir(path: Path) -> Path:
 def convert_file(
     path: str | Path,
     output_dir: str | Path | None = None,
+    progress_callback: PageProgressCallback | None = None,
 ) -> ConvertResult:
     """Convert one supported file to a .md file plus an assets folder.
 
     ``output_dir`` defaults to ``<source-folder>/markdown`` when omitted.
     Conversion is deterministic: it never invokes audio transcription
     (see ``ptm-transcribe`` / ``converter.transcribe`` for that, ADR-0009).
+
+    ``progress_callback``, when given, is called once per slide/page as
+    ``(page, page_total, name)``.
     """
     path = Path(path)
     converter = registry.get(path)
@@ -64,7 +70,7 @@ def convert_file(
         )
     resolved = Path(output_dir) if output_dir else _default_output_dir(path)
     resolved.mkdir(parents=True, exist_ok=True)
-    result = converter.convert(path, resolved)
+    result = converter.convert(path, resolved, progress_callback=progress_callback)
     if result.error is None and result.md_path is not None:
         try:
             original = result.md_path.read_text(encoding="utf-8")
@@ -85,17 +91,22 @@ def convert_files(
     paths: list[str | Path],
     output_dir: str | Path | None = None,
     progress_callback: ProgressCallback | None = None,
+    page_progress_callback: PageProgressCallback | None = None,
 ) -> list[ConvertResult]:
     """Convert multiple files; errors are captured per file.
 
     ``output_dir`` defaults to ``<source-folder>/markdown`` per file when
     omitted.
+
+    ``progress_callback`` fires once per completed file as ``(idx, total,
+    name)``; ``page_progress_callback`` fires once per slide/page as ``(page,
+    page_total, name)``.
     """
     results: list[ConvertResult] = []
     total = len(paths)
     for idx, path in enumerate(paths, start=1):
         p = Path(path)
-        result = convert_file(path, output_dir)
+        result = convert_file(path, output_dir, progress_callback=page_progress_callback)
         results.append(result)
         if progress_callback:
             progress_callback(idx, total, p.name)

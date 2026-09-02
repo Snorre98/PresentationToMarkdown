@@ -72,6 +72,48 @@ def test_convert_files_mixed(tmp_path):
     assert all(r.error is None for r in results)
 
 
+def test_convert_pptx_page_progress(tmp_path):
+    events: list[tuple[int, int, str]] = []
+    result = convert_file(PPTX, tmp_path, progress_callback=lambda p, t, n: events.append((p, t, n)))
+    assert result.error is None
+    assert events
+    total = events[-1][1]
+    assert total == 5
+    assert [e[0] for e in events] == list(range(1, total + 1))
+    assert all(e[1] == total for e in events)
+    assert all(e[2] == "test_deck.pptx" for e in events)
+
+
+def test_convert_pdf_page_progress(tmp_path):
+    events: list[tuple[int, int, str]] = []
+    result = convert_file(PDF, tmp_path, progress_callback=lambda p, t, n: events.append((p, t, n)))
+    assert result.error is None
+    assert events
+    total = events[-1][1]
+    assert total == 4
+    assert [e[0] for e in events] == list(range(1, total + 1))
+    assert all(e[1] == total for e in events)
+    assert all(e[2] == "test_doc.pdf" for e in events)
+
+
+def test_convert_files_page_progress(tmp_path):
+    file_events: list[tuple[int, int, str]] = []
+    page_events: list[tuple[int, int, str]] = []
+    results = convert_files(
+        [PPTX, PDF],
+        tmp_path,
+        progress_callback=lambda i, t, n: file_events.append((i, t, n)),
+        page_progress_callback=lambda p, t, n: page_events.append((p, t, n)),
+    )
+    assert len(results) == 2
+    assert [e[0] for e in file_events] == [1, 2]
+    assert [e[2] for e in file_events] == ["test_deck.pptx", "test_doc.pdf"]
+    for name in ("test_deck.pptx", "test_doc.pdf"):
+        per = [e for e in page_events if e[2] == name]
+        total = per[-1][1]
+        assert [e[0] for e in per] == list(range(1, total + 1))
+
+
 def test_convert_file_default_output_dir(tmp_path):
     import shutil
 

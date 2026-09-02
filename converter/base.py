@@ -16,6 +16,7 @@ from typing import Callable
 from urllib.parse import quote
 
 ProgressCallback = Callable[[int, int, str], None]
+PageProgressCallback = Callable[[int, int, str], None]
 
 _MD_SPECIALS = str.maketrans({"\\": "\\\\", "`": "\\`", "*": "\\*", "_": "\\_"})
 _MD_SPECIALS_NO_UNDERSCORE = str.maketrans({"\\": "\\\\", "`": "\\`", "*": "\\*"})
@@ -39,8 +40,17 @@ class Converter(ABC):
     extensions: tuple[str, ...] = ()
 
     @abstractmethod
-    def convert(self, path: Path, output_dir: Path) -> ConvertResult:
-        """Convert ``path``, writing ``<stem>.md`` into ``output_dir``."""
+    def convert(
+        self,
+        path: Path,
+        output_dir: Path,
+        progress_callback: PageProgressCallback | None = None,
+    ) -> ConvertResult:
+        """Convert ``path``, writing ``<stem>.md`` into ``output_dir``.
+
+        ``progress_callback``, when given, is called once per slide/page as
+        ``(page, page_total, name)`` from the main emission loop.
+        """
 
 
 class ConverterRegistry:

@@ -60,6 +60,7 @@ class ConversionThread(QThread):
     """Runs convert_files off the UI thread."""
 
     progressed = Signal(int, int, str)
+    page_progressed = Signal(int, int, str)
     conversion_finished = Signal(list)
 
     def __init__(self, paths: list[Path], output_dir: Path | None):
@@ -68,11 +69,16 @@ class ConversionThread(QThread):
         self._output_dir = output_dir
 
     def run(self):
-        results = convert_files(self._paths, self._output_dir, self._on_progress)
+        results = convert_files(
+            self._paths, self._output_dir, self._on_progress, self._on_page_progress
+        )
         self.conversion_finished.emit(results)
 
     def _on_progress(self, idx: int, total: int, name: str):
         self.progressed.emit(idx, total, name)
+
+    def _on_page_progress(self, page: int, total: int, name: str):
+        self.page_progressed.emit(page, total, name)
 
 
 class HealthCheckThread(QThread):
@@ -179,6 +185,9 @@ class MainWindow(QMainWindow):
         self.progress = QProgressBar()
         self.progress.setVisible(False)
 
+        self.page_progress = QProgressBar()
+        self.page_progress.setVisible(False)
+
         self.log = QPlainTextEdit()
         self.log.setReadOnly(True)
         self.log.setPlaceholderText(
@@ -205,6 +214,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.paper_check)
         layout.addWidget(self.convert_btn)
         layout.addWidget(self.progress)
+        layout.addWidget(self.page_progress)
         layout.addLayout(log_header)
         layout.addWidget(self.log, 1)
 
@@ -372,8 +382,13 @@ class MainWindow(QMainWindow):
             return
         self._health_thread = HealthCheckThread()
         self._health_thread.checked.connect(self._on_health)
-        self._health_thread.finished.connect(self._health_thread.deleteLater)
+        self._health_thread.finished.connect(self._on_health_finished)
         self._health_thread.start()
+
+    def _on_health_finished(self):
+        if self._health_thread is not None:
+            self._health_thread.deleteLater()
+        self._health_thread = None
 
     def _on_health(self, results):
         if not config.enabled_keys():
@@ -450,6 +465,8 @@ class MainWindow(QMainWindow):
         self.progress.setVisible(True)
         self.progress.setMaximum(len(paths))
         self.progress.setValue(0)
+        self.page_progress.setVisible(False)
+        self.page_progress.setValue(0)
         if output_dir is None:
             self.log.appendPlainText(
                 f"Converting {len(paths)} file(s) to <input-folder>/markdown ..."
@@ -459,6 +476,7 @@ class MainWindow(QMainWindow):
 
         self._worker_thread = ConversionThread(paths, output_dir)
         self._worker_thread.progressed.connect(self._on_progress)
+        self._worker_thread.page_progressed.connect(self._on_page_progress)
         self._worker_thread.conversion_finished.connect(self._on_finished)
         self._worker_thread.finished.connect(self._worker_thread.deleteLater)
         self._worker_thread.start()
@@ -466,6 +484,14 @@ class MainWindow(QMainWindow):
     def _on_progress(self, idx: int, total: int, name: str):
         self.progress.setValue(idx)
         self.log.appendPlainText(f"[{idx}/{total}] {name}")
+
+    def _on_page_progress(self, page: int, total: int, name: str):
+        noun = "Slide" if name.lower().endswith(".pptx") else "Page"
+        if not self.page_progress.isVisible():
+            self.page_progress.setVisible(True)
+        self.page_progress.setMaximum(total)
+        self.page_progress.setValue(page)
+        self.page_progress.setFormat(f"{noun} %v/%m")
 
     def _on_finished(self, results: list[ConvertResult]):
         ok = 0
@@ -480,6 +506,7 @@ class MainWindow(QMainWindow):
                     self.log.appendPlainText(f"[WARN] {result.source_path.name}: {warning}")
         self.log.appendPlainText(f"Done: {ok} of {len(results)} converted.\n")
         self.progress.setVisible(False)
+        self.page_progress.setVisible(False)
         self.convert_btn.setEnabled(True)
         self._worker_thread = None
 
