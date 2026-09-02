@@ -45,11 +45,16 @@ class Converter(ABC):
         path: Path,
         output_dir: Path,
         progress_callback: PageProgressCallback | None = None,
+        output_stem: str | None = None,
     ) -> ConvertResult:
         """Convert ``path``, writing ``<stem>.md`` into ``output_dir``.
 
         ``progress_callback``, when given, is called once per slide/page as
         ``(page, page_total, name)`` from the main emission loop.
+
+        ``output_stem`` overrides the output name (defaults to ``path.stem``);
+        used by ``duplicate_if_exists`` to write ``stem (2).md`` etc. without
+        clobbering an existing conversion.
         """
 
 

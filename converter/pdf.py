@@ -660,11 +660,12 @@ class PDFConverter(Converter):
         path: Path,
         output_dir: Path,
         progress_callback: PageProgressCallback | None = None,
+        output_stem: str | None = None,
     ) -> ConvertResult:
         result = ConvertResult(source_path=path)
         try:
             doc = fitz.open(path)
-            stem = path.stem
+            stem = output_stem or path.stem
             paper = _pdf_mode()
             page_count = doc.page_count
             assets_dir = output_dir / "assets" / stem

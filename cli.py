@@ -47,6 +47,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="suppress per-file progress lines",
     )
+    parser.add_argument(
+        "--duplicate",
+        action="store_true",
+        help="write to <stem> (N).md instead of overwriting an existing .md",
+    )
     return parser
 
 
@@ -105,6 +110,7 @@ def main(argv: list[str] | None = None) -> int:
         output_dir,
         progress_callback=None if args.quiet else _progress,
         page_progress_callback=None if args.quiet else _page_progress,
+        duplicate_if_exists=args.duplicate,
     )
 
     if not args.no_recent:

@@ -199,6 +199,20 @@ for r in results:
 - `SUPPORTED_EXTENSIONS` — e.g. `{".pptx", ".pdf"}`
 - `output_dir` is optional; when omitted, each file is written to `<source-folder>/markdown/`.
 
+### Dashboard
+
+A read-only web dashboard for the conversion log (`ptm.sqlite`, ADR-0014) — watch
+per-page AI progress live while a conversion runs:
+
+```bash
+./.venv/bin/python dashboard.py                        # port 8080
+./.venv/bin/python dashboard.py --db /path/to/ptm.sqlite --port 9000
+```
+
+Opens the database read-only (never interferes with the running converter) and
+auto-refreshes every ~2s: an overview per source, a per-page timeline for a
+selected source, and an errors view.
+
 ## Output layout
 
 ```text
@@ -349,6 +363,7 @@ The model weights live on the external SSD under `HF_HOME` (see
 - `cli_transcribe.py` — `ptm-transcribe` standalone audio→Markdown transcription
 - `start.py` — `ptm-start` GUI launcher with AI flags
 - `cli_common.py` — shared AI flag parser + env mapping
+- `dashboard.py` — read-only web dashboard for the conversion log (ADR-0014)
 - `tests/make_test_deck.py` — generates a synthetic deck covering all features
 - `tests/make_test_pdf.py` — generates a synthetic PDF for testing
 - `tests/test_converters.py` — pytest smoke tests for both converters

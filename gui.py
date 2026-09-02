@@ -34,6 +34,7 @@ _INPUT_DIR_KEY = "last_input_dir"
 _OUTPUT_DIR_KEY = "last_output_dir"
 _WINDOW_GEOMETRY_KEY = "window_geometry"
 _PDF_MODE_KEY = "pdf_mode"
+_DUPLICATE_KEY = "duplicate_if_exists"
 _AI_KEY_PREFIX = "ai_"
 
 _TRUE_VALUES = {"1", "true", "yes", "on"}
@@ -63,14 +64,19 @@ class ConversionThread(QThread):
     page_progressed = Signal(int, int, str)
     conversion_finished = Signal(list)
 
-    def __init__(self, paths: list[Path], output_dir: Path | None):
+    def __init__(self, paths: list[Path], output_dir: Path | None, duplicate: bool):
         super().__init__()
         self._paths = paths
         self._output_dir = output_dir
+        self._duplicate = duplicate
 
     def run(self):
         results = convert_files(
-            self._paths, self._output_dir, self._on_progress, self._on_page_progress
+            self._paths,
+            self._output_dir,
+            self._on_progress,
+            self._on_page_progress,
+            duplicate_if_exists=self._duplicate,
         )
         self.conversion_finished.emit(results)
 
@@ -158,6 +164,14 @@ class MainWindow(QMainWindow):
         self.paper_check.setChecked(startup_mode == "paper")
         self.paper_check.toggled.connect(self._remember_pdf_mode)
 
+        self.duplicate_check = QCheckBox(
+            "Duplicate if conversion exists (keep prior output as <stem> (2).md)"
+        )
+        self.duplicate_check.setChecked(
+            get_setting(_DUPLICATE_KEY, "off") in _TRUE_VALUES
+        )
+        self.duplicate_check.toggled.connect(self._remember_duplicate)
+
         self.ai_checks: dict[str, QCheckBox] = {}
         ai_label = QLabel("AI features (need local model servers):")
         ai_checks_layout = QVBoxLayout()
@@ -212,6 +226,7 @@ class MainWindow(QMainWindow):
         layout.addLayout(ai_checks_layout)
         layout.addLayout(ai_status_row)
         layout.addWidget(self.paper_check)
+        layout.addWidget(self.duplicate_check)
         layout.addWidget(self.convert_btn)
         layout.addWidget(self.progress)
         layout.addWidget(self.page_progress)
@@ -348,6 +363,9 @@ class MainWindow(QMainWindow):
     def _remember_pdf_mode(self, checked: bool):
         set_setting(_PDF_MODE_KEY, "paper" if checked else "slide")
 
+    def _remember_duplicate(self, checked: bool):
+        set_setting(_DUPLICATE_KEY, "on" if checked else "off")
+
     def _load_ai_state(self):
         """Seed runtime AI state from stored settings for env vars left unset.
 
@@ -474,7 +492,9 @@ class MainWindow(QMainWindow):
         else:
             self.log.appendPlainText(f"Converting {len(paths)} file(s) to {output_dir} ...")
 
-        self._worker_thread = ConversionThread(paths, output_dir)
+        self._worker_thread = ConversionThread(
+            paths, output_dir, self.duplicate_check.isChecked()
+        )
         self._worker_thread.progressed.connect(self._on_progress)
         self._worker_thread.page_progressed.connect(self._on_page_progress)
         self._worker_thread.conversion_finished.connect(self._on_finished)

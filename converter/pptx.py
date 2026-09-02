@@ -374,11 +374,12 @@ class PPTXConverter(Converter):
         path: Path,
         output_dir: Path,
         progress_callback: PageProgressCallback | None = None,
+        output_stem: str | None = None,
     ) -> ConvertResult:
         result = ConvertResult(source_path=path)
         try:
             prs = Presentation(path)
-            stem = path.stem
+            stem = output_stem or path.stem
             assets_dir = output_dir / "assets" / stem
             assets_dir.mkdir(parents=True, exist_ok=True)
             slide_count = len(prs.slides)

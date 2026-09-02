@@ -250,5 +250,43 @@ def test_pdf_columns_linearized_in_slide_mode(tmp_path):
     )
 
 
+def test_convert_duplicate_if_exists_keeps_original(tmp_path):
+    import shutil
+
+    src = tmp_path / "deck.pptx"
+    shutil.copy(PPTX, src)
+
+    first = convert_file(src, tmp_path)
+    assert first.error is None
+    original_md = tmp_path / "deck.md"
+    assert original_md.exists()
+    before = original_md.read_bytes()
+
+    second = convert_file(src, tmp_path, duplicate_if_exists=True)
+    assert second.error is None
+    assert second.md_path == tmp_path / "deck (2).md"
+    assert second.md_path.exists()
+    assert original_md.read_bytes() == before
+    assert (tmp_path / "assets" / "deck").exists()
+    assert (tmp_path / "assets" / "deck (2)").exists()
+
+    third = convert_file(src, tmp_path, duplicate_if_exists=True)
+    assert third.error is None
+    assert third.md_path == tmp_path / "deck (3).md"
+
+
+def test_convert_duplicate_off_overwrites(tmp_path):
+    import shutil
+
+    src = tmp_path / "deck.pptx"
+    shutil.copy(PPTX, src)
+
+    convert_file(src, tmp_path)
+    result = convert_file(src, tmp_path, duplicate_if_exists=False)
+    assert result.error is None
+    assert result.md_path == tmp_path / "deck.md"
+    assert not (tmp_path / "deck (2).md").exists()
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__]))

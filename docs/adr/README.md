@@ -18,3 +18,5 @@ Index of architectural decisions for PresentationToMarkdown, in
 | [0011](0011-paper-structure-llm-pass.md) | Paper-mode document-structure LLM pass with image reword | Accepted |
 | [0012](0012-runtime-ai-features.md) | Runtime-togglable AI features with server health checks | Accepted |
 | [0013](0013-per-page-progress.md) | Per-page progress reporting | Accepted |
+| [0014](0014-read-only-log-dashboard.md) | Read-only web dashboard for conversion logs | Accepted |
+| [0015](0015-duplicate-if-exists.md) | Duplicate-if-exists conversion option | Accepted |
