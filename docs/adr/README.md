@@ -20,3 +20,5 @@ Index of architectural decisions for PresentationToMarkdown, in
 | [0013](0013-per-page-progress.md) | Per-page progress reporting | Accepted |
 | [0014](0014-read-only-log-dashboard.md) | Read-only web dashboard for conversion logs | Accepted |
 | [0015](0015-duplicate-if-exists.md) | Duplicate-if-exists conversion option | Accepted |
+| [0016](0016-reader-writer-role-separation.md) | Reader/writer role separation for the AI passes | Accepted |
+| [0017](0017-model-residency-orchestration.md) | App-level model-residency orchestration across the local servers | Accepted |

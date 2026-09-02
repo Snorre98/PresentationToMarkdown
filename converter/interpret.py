@@ -14,11 +14,11 @@ describe-the-description drift (inventing or paraphrasing labels).
 Configuration (environment variables):
 
 - ``INTERPRET_ENABLED`` — master switch. Default off.
-- ``INTERPRET_BASE_URL`` — defaults to ``VISION_BASE_URL`` (reuses the transcriber).
-- ``INTERPRET_MODEL`` — defaults to ``VISION_MODEL``. Point it at a larger model
+- ``INTERPRET_BASE_URL`` — defaults to ``WRITE_BASE_URL`` (reuses the writer).
+- ``INTERPRET_MODEL`` — defaults to ``WRITE_MODEL``. Point it at a larger model
   (e.g. ``mlx-community/Qwen2.5-VL-32B-Instruct-8bit``) on its own endpoint for
   higher-quality interpretation.
-- ``INTERPRET_API_KEY`` — defaults to ``VISION_API_KEY``.
+- ``INTERPRET_API_KEY`` — defaults to ``WRITE_API_KEY``.
 """
 from __future__ import annotations
 
@@ -30,19 +30,17 @@ from converter import config
 from converter.base import image_digest
 from converter.logstore import record
 from converter.vision import (
-    VISION_API_KEY,
-    VISION_BASE_URL,
-    VISION_MODEL,
     _chat_completion,
     _image_content,
     image_mime,
     image_readable,
     transcription_quality,
 )
+from converter.write import WRITE_API_KEY, WRITE_BASE_URL, WRITE_MODEL
 
-INTERPRET_BASE_URL = os.environ.get("INTERPRET_BASE_URL", VISION_BASE_URL)
-INTERPRET_MODEL = os.environ.get("INTERPRET_MODEL", VISION_MODEL)
-INTERPRET_API_KEY = os.environ.get("INTERPRET_API_KEY", VISION_API_KEY)
+INTERPRET_BASE_URL = os.environ.get("INTERPRET_BASE_URL", WRITE_BASE_URL)
+INTERPRET_MODEL = os.environ.get("INTERPRET_MODEL", WRITE_MODEL)
+INTERPRET_API_KEY = os.environ.get("INTERPRET_API_KEY", WRITE_API_KEY)
 
 INTERPRET_MAX_TOKENS = 1024
 

@@ -421,7 +421,7 @@ Enable it by reusing the vision endpoint (see [AI vision pass](#ai-vision-pass))
 FORMAT_ENABLED=1 ./.venv/bin/python main.py
 ```
 
-`FORMAT_BASE_URL`/`FORMAT_MODEL`/`FORMAT_API_KEY` default to their `VISION_*`
+`FORMAT_BASE_URL`/`FORMAT_MODEL`/`FORMAT_API_KEY` default to their `WRITE_*`
 equivalents; override them to point the restructure pass at a different text
 model.
 
@@ -455,9 +455,9 @@ STRUCTURE_ENABLED=1 PDF_MODE=paper ptm paper.pdf
 | Var | Default | Purpose |
 | --- | --- | --- |
 | `STRUCTURE_ENABLED` | *(unset = off)* | Master switch for the structure pass |
-| `STRUCTURE_BASE_URL` | `FORMAT_BASE_URL` (then `VISION_BASE_URL`) | Structure model server |
-| `STRUCTURE_MODEL` | `FORMAT_MODEL` (then `VISION_MODEL`) | Structure model id (a VLM can read page images) |
-| `STRUCTURE_API_KEY` | `FORMAT_API_KEY` (then `VISION_API_KEY`) | Optional bearer token (unused locally) |
+| `STRUCTURE_BASE_URL` | `FORMAT_BASE_URL` (then `WRITE_BASE_URL`) | Structure model server |
+| `STRUCTURE_MODEL` | `FORMAT_MODEL` (then `WRITE_MODEL`) | Structure model id (a VLM can read page images) |
+| `STRUCTURE_API_KEY` | `FORMAT_API_KEY` (then `WRITE_API_KEY`) | Optional bearer token (unused locally) |
 
 The pass is PDF-only and therefore **not** part of `--all`; enable it
 explicitly with `--structure`.
@@ -494,17 +494,17 @@ SUMMARY_ENABLED=1 ./.venv/bin/python main.py
 | Var | Default | Purpose |
 | --- | --- | --- |
 | `SUMMARY_ENABLED` | *(unset = off)* | Master switch for the summary pass |
-| `SUMMARY_BASE_URL` | `http://127.0.0.1:8081/v1` | Summary chat model server (reuses the vision transcriber) |
-| `SUMMARY_MODEL` | `mlx-community/Qwen2.5-VL-7B-Instruct-4bit` | Summary chat model id (the vision transcriber) |
+| `SUMMARY_BASE_URL` | `WRITE_BASE_URL` | Summary chat model server (reuses the writer) |
+| `SUMMARY_MODEL` | `WRITE_MODEL` | Summary chat model id (Qwen2.5-VL-7B by default) |
 | `SUMMARY_API_KEY` | *(unset)* | Optional bearer token (unused locally) |
 | `EMBED_BASE_URL` | `http://localhost:11434/v1` | Embeddings server (Ollama) |
 | `EMBED_MODEL` | `embeddinggemma` | Embeddings model id |
 | `EMBED_API_KEY` | *(unset)* | Optional bearer token (unused locally) |
 
-By default the summary reuses the **vision transcriber** (`mlx_vlm.server` on
-`:8081`) as its chat model, and embeddings come from the already-running
-**Ollama** — so no new server needs to be started. Override `SUMMARY_*`/`EMBED_*`
-to point at a dedicated model if you prefer.
+By default the summary reuses the **writer** (`mlx_vlm.server` on `:8081`) as
+its chat model, and embeddings come from the already-running **Ollama** — so no
+new server needs to be started. Override `SUMMARY_*`/`EMBED_*` to point at a
+dedicated model if you prefer.
 
 ## Audio transcription pass (optional)
 

@@ -148,10 +148,12 @@ via environment variables:
 | `VISION_LOG_DB` | `ptm.sqlite` | SQLite log path (the project dir for now) |
 | `VISION_MIN_IMAGE_DIM` | `250` | Skip transcription for images whose smaller native side is below this many pixels |
 | `VISION_BLUR_THRESHOLD` | `30.0` | Skip transcription for images whose Laplacian variance is below this value |
-| `FORMAT_ENABLED` | *(unset = off)* | Enables the LLM markdown-restructure pass (reuses the vision endpoint) |
-| `FORMAT_BASE_URL` | `VISION_BASE_URL` | Restructure-pass server base URL |
-| `FORMAT_MODEL` | `VISION_MODEL` | Restructure-pass model id |
-| `FORMAT_API_KEY` | `VISION_API_KEY` | Optional bearer token for the restructure pass |
+| `FORMAT_ENABLED` | *(unset = off)* | Enables the LLM markdown-restructure pass (reuses the writer endpoint) |
+| `FORMAT_BASE_URL` | `WRITE_BASE_URL` | Restructure-pass server base URL |
+| `FORMAT_MODEL` | `WRITE_MODEL` | Restructure-pass model id |
+| `FORMAT_API_KEY` | `WRITE_API_KEY` | Optional bearer token for the restructure pass |
+| `WRITE_BASE_URL` | `http://127.0.0.1:8081/v1` | Writer server base URL (rewrite passes) |
+| `WRITE_MODEL` | `mlx-community/Qwen2.5-VL-7B-Instruct-4bit` | Writer model id (a VLM) |
 | `SOFFICE_PATH` | `soffice` | LibreOffice binary, for PPTX chart rendering only |
 
 Example:
@@ -307,9 +309,9 @@ text block.
 | Var | Default | Purpose |
 | --- | --- | --- |
 | `INTERPRET_ENABLED` | *(unset = off)* | Master switch for the interpretation pass |
-| `INTERPRET_BASE_URL` | `VISION_BASE_URL` | Model server (reuses the transcriber by default) |
-| `INTERPRET_MODEL` | `VISION_MODEL` | Model id (`Qwen2.5-VL-7B` by default) |
-| `INTERPRET_API_KEY` | `VISION_API_KEY` | Optional bearer token |
+| `INTERPRET_BASE_URL` | `WRITE_BASE_URL` | Model server (reuses the writer by default) |
+| `INTERPRET_MODEL` | `WRITE_MODEL` | Model id (`Qwen2.5-VL-7B` by default) |
+| `INTERPRET_API_KEY` | `WRITE_API_KEY` | Optional bearer token |
 
 To use a larger model for interpretation without changing the transcriber, serve
 `Qwen2.5-VL-32B-Instruct-8bit` on its own port and point `INTERPRET_BASE_URL` /
@@ -366,7 +368,7 @@ any slide where content is dropped or invented is rejected (the deterministic
 output is kept instead). Structural lines — the slide title, page/image links,
 tables, blockquotes, `<details>` blocks, and the page-break `<div>` — must also
 survive verbatim. `FORMAT_BASE_URL`/`FORMAT_MODEL`/`FORMAT_API_KEY` default to
-their `VISION_*` equivalents.
+their `WRITE_*` equivalents.
 
 ## Summary pass (per-presentation RAG)
 
@@ -375,10 +377,10 @@ standardized English summary header to each converted presentation. It stores
 per-slide chunks and **sqlite-vec** embeddings in `ptm.sqlite`, retrieves the most
 salient chunks, and has a dedicated summary chat model write the header.
 
-- **Summary model** — reuses the **vision transcriber** by default
-  (`SUMMARY_BASE_URL=http://127.0.0.1:8081/v1`,
-  `SUMMARY_MODEL=mlx-community/Qwen2.5-VL-7B-Instruct-4bit`), so no extra server
-  is needed; override `SUMMARY_*` to use a dedicated text model instead.
+- **Summary model** — reuses the **writer** by default
+  (`SUMMARY_BASE_URL` defaults to `WRITE_BASE_URL`,
+  `SUMMARY_MODEL` to `WRITE_MODEL`, i.e. Qwen2.5-VL-7B on `:8081`), so no extra
+  server is needed; override `SUMMARY_*` to use a dedicated text model instead.
 - **Embeddings** — served by Ollama (`EMBED_BASE_URL=http://localhost:11434/v1`,
   `EMBED_MODEL=embeddinggemma`, a 768-dim embedding model). The dimension is
   auto-detected, so any embedding model works.

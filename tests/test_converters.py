@@ -3,11 +3,18 @@ from pathlib import Path
 
 import pytest
 
-from converter import SUPPORTED_EXTENSIONS, convert_file, convert_files
+from converter import SUPPORTED_EXTENSIONS, config, convert_file, convert_files
 
 TESTS_DIR = Path(__file__).parent
 PPTX = TESTS_DIR / "test_deck.pptx"
 PDF = TESTS_DIR / "test_doc.pdf"
+
+
+@pytest.fixture(autouse=True)
+def _reset_config():
+    config.reset()
+    yield
+    config.reset()
 
 
 def test_supported_extensions():
@@ -286,6 +293,50 @@ def test_convert_duplicate_off_overwrites(tmp_path):
     assert result.error is None
     assert result.md_path == tmp_path / "deck.md"
     assert not (tmp_path / "deck (2).md").exists()
+
+
+def _echo_reformat(messages, **kw):
+    return messages[0]["content"].split("\n\nSlide:\n\n", 1)[1]
+
+
+def test_convert_file_releases_reader_before_writer(tmp_path, monkeypatch):
+    import converter.lifecycle as lifecycle
+    import converter.vision as vision
+    import converter.write as write
+
+    monkeypatch.setattr(vision, "VISION_BASE_URL", "http://localhost:11434/v1")
+    monkeypatch.setattr(vision, "VISION_MODEL", "glm-ocr")
+
+    releases: list[tuple[str, str | None]] = []
+    monkeypatch.setattr(
+        lifecycle, "release", lambda url, model=None: releases.append((url, model))
+    )
+    monkeypatch.setattr("converter.format._chat_completion", _echo_reformat)
+
+    config.set_enabled("vision", True)
+    config.set_enabled("format", True)
+    result = convert_file(PPTX, tmp_path)
+    assert result.error is None
+
+    assert len(releases) == 2
+    assert releases[0] == ("http://localhost:11434/v1", "glm-ocr")
+    assert releases[1] == (write.WRITE_BASE_URL, write.WRITE_MODEL)
+
+
+def test_convert_file_single_model_default_does_not_release(tmp_path, monkeypatch):
+    import converter.lifecycle as lifecycle
+
+    releases: list[tuple[str, str | None]] = []
+    monkeypatch.setattr(
+        lifecycle, "release", lambda url, model=None: releases.append((url, model))
+    )
+    monkeypatch.setattr("converter.format._chat_completion", _echo_reformat)
+
+    config.set_enabled("vision", True)
+    config.set_enabled("format", True)
+    result = convert_file(PPTX, tmp_path)
+    assert result.error is None
+    assert releases == []
 
 
 if __name__ == "__main__":

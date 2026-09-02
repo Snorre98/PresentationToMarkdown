@@ -189,7 +189,7 @@ def enabled_features() -> list[Feature]:
 # Effective base-URL resolution. Each AI module keeps its own ``*_BASE_URL`` env
 # read with the same defaults, but the probe needs a single place to resolve the
 # endpoint a feature will actually hit, including the fallback chains
-# (FORMAT -> VISION, STRUCTURE -> FORMAT -> VISION).
+# (FORMAT -> WRITE, STRUCTURE -> FORMAT -> WRITE, SUMMARY -> WRITE).
 def _vision_url() -> str:
     return os.environ.get("VISION_BASE_URL", SERVERS["transcriber"].base_url)
 
@@ -198,12 +198,16 @@ def _classify_url() -> str:
     return os.environ.get("VISION_CLASSIFY_BASE_URL", SERVERS["classifier"].base_url)
 
 
+def _write_url() -> str:
+    return os.environ.get("WRITE_BASE_URL", SERVERS["transcriber"].base_url)
+
+
 def _format_url() -> str:
-    return os.environ.get("FORMAT_BASE_URL", _vision_url())
+    return os.environ.get("FORMAT_BASE_URL", _write_url())
 
 
 def _interpret_url() -> str:
-    return os.environ.get("INTERPRET_BASE_URL", _vision_url())
+    return os.environ.get("INTERPRET_BASE_URL", _write_url())
 
 
 def _structure_url() -> str:
@@ -211,7 +215,7 @@ def _structure_url() -> str:
 
 
 def _summary_url() -> str:
-    return os.environ.get("SUMMARY_BASE_URL", SERVERS["transcriber"].base_url)
+    return os.environ.get("SUMMARY_BASE_URL", _write_url())
 
 
 def _embed_url() -> str:

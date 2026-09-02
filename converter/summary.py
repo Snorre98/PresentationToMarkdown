@@ -18,10 +18,9 @@ never fails the conversion.
 Configuration (environment variables):
 
 - ``SUMMARY_ENABLED`` — master switch. Default off.
-- ``SUMMARY_BASE_URL`` — summary chat model server, default
-  ``http://127.0.0.1:8081/v1`` (reuses the vision transcriber — no extra server needed).
-- ``SUMMARY_MODEL`` — summary chat model id, default
-  ``mlx-community/Qwen2.5-VL-7B-Instruct-4bit`` (the vision transcriber).
+- ``SUMMARY_BASE_URL`` — summary chat model server, defaults to ``WRITE_BASE_URL``
+  (reuses the writer, no extra server needed).
+- ``SUMMARY_MODEL`` — summary chat model id, defaults to ``WRITE_MODEL``.
 - ``SUMMARY_API_KEY`` — optional bearer token (unused for local servers).
 - ``EMBED_BASE_URL`` — embeddings server, default ``http://localhost:11434/v1``.
 - ``EMBED_MODEL`` — embeddings model id, default ``gemma-embedding``.
@@ -43,15 +42,16 @@ from converter import config
 from converter.format import _iter_slides
 from converter.logstore import _connection, _lock
 from converter.vision import _chat_completion
+from converter.write import WRITE_API_KEY, WRITE_BASE_URL, WRITE_MODEL
 
 try:
     import sqlite_vec
 except ImportError:  # pragma: no cover - sqlite-vec is a soft dependency
     sqlite_vec = None
 
-SUMMARY_BASE_URL = os.environ.get("SUMMARY_BASE_URL", "http://127.0.0.1:8081/v1")
-SUMMARY_MODEL = os.environ.get("SUMMARY_MODEL", "mlx-community/Qwen2.5-VL-7B-Instruct-4bit")
-SUMMARY_API_KEY = os.environ.get("SUMMARY_API_KEY") or None
+SUMMARY_BASE_URL = os.environ.get("SUMMARY_BASE_URL", WRITE_BASE_URL)
+SUMMARY_MODEL = os.environ.get("SUMMARY_MODEL", WRITE_MODEL)
+SUMMARY_API_KEY = os.environ.get("SUMMARY_API_KEY", WRITE_API_KEY)
 
 EMBED_BASE_URL = os.environ.get("EMBED_BASE_URL", "http://localhost:11434/v1")
 EMBED_MODEL = os.environ.get("EMBED_MODEL", "embeddinggemma")

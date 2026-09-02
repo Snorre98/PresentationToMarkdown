@@ -25,10 +25,10 @@ fails a conversion, and is disabled by default.
 Configuration (environment variables):
 
 - ``STRUCTURE_ENABLED`` — master switch. Default off.
-- ``STRUCTURE_BASE_URL`` — defaults to ``FORMAT_BASE_URL`` then ``VISION_BASE_URL``.
-- ``STRUCTURE_MODEL`` — defaults to ``FORMAT_MODEL`` then ``VISION_MODEL`` (a VLM,
+- ``STRUCTURE_BASE_URL`` — defaults to ``FORMAT_BASE_URL`` then ``WRITE_BASE_URL``.
+- ``STRUCTURE_MODEL`` — defaults to ``FORMAT_MODEL`` then ``WRITE_MODEL`` (a VLM,
   so the image regime needs no extra server).
-- ``STRUCTURE_API_KEY`` — defaults to ``FORMAT_API_KEY`` then ``VISION_API_KEY``.
+- ``STRUCTURE_API_KEY`` — defaults to ``FORMAT_API_KEY`` then ``WRITE_API_KEY``.
 """
 from __future__ import annotations
 

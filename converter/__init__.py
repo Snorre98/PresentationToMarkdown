@@ -25,6 +25,7 @@ from converter.pptx import PPTXConverter
 from converter.pdf import PDFConverter
 from converter.format import polish_text
 from converter.summary import prepend_summary
+from converter.lifecycle import release_readers, release_writers
 
 registry.register(PPTXConverter)
 registry.register(PDFConverter)
@@ -105,10 +106,12 @@ def convert_file(
                 result.md_path.write_text(rewritten, encoding="utf-8")
         except Exception as exc:  # noqa: BLE001 - polish never fails the conversion
             result.warnings.append(f"Markdown polish failed: {exc}")
+        release_readers()
         try:
             prepend_summary(result.md_path, path, result.warnings)
         except Exception as exc:  # noqa: BLE001 - summary never fails the conversion
             result.warnings.append(f"Summary generation failed: {exc}")
+        release_writers()
     return result
 
 

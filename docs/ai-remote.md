@@ -155,13 +155,14 @@ ptm --all \
 | `VISION_BASE_URL` | `http://127.0.0.1:8081/v1` | `http://<mac>:8081/v1` |
 | `VISION_CLASSIFY_BASE_URL` | `http://127.0.0.1:8082/v1` | `http://<mac>:8082/v1` |
 | `EMBED_BASE_URL` | `http://localhost:11434/v1` | `http://<mac>:11434/v1` |
-| `FORMAT_BASE_URL` | `VISION_BASE_URL` | follows automatically |
-| `SUMMARY_BASE_URL` | `http://127.0.0.1:8081/v1` | `http://<mac>:8081/v1` |
+| `WRITE_BASE_URL` | `http://127.0.0.1:8081/v1` | `http://<mac>:8081/v1` |
+| `FORMAT_BASE_URL` | `WRITE_BASE_URL` | follows automatically |
+| `SUMMARY_BASE_URL` | `WRITE_BASE_URL` | follows automatically |
 
-`FORMAT_*` inherits `VISION_*`, so it follows `VISION_BASE_URL` with no extra
-setting. `SUMMARY_BASE_URL` does **not** — it has its own localhost default, so
-set it explicitly when you enable `--summary`. Models (`*_MODEL`) and optional
-`*_API_KEY` vars are unchanged from the defaults.
+`FORMAT_*` and `SUMMARY_*` inherit `WRITE_*`, so they follow `WRITE_BASE_URL`
+with no extra setting. Point `WRITE_BASE_URL` at the Mac (or set
+`FORMAT_BASE_URL`/`SUMMARY_BASE_URL` individually) when you enable those passes.
+Models (`*_MODEL`) and optional `*_API_KEY` vars are unchanged from the defaults.
 
 ## Caveats
 

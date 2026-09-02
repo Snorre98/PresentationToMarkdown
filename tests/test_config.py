@@ -73,12 +73,46 @@ def test_parse_servers_conf():
     assert servers["classifier"].description == "Classifier gate"
 
 
-def test_feature_endpoints_format_falls_back_to_vision():
+def test_feature_endpoints_format_falls_back_to_write():
     vision = config.feature_endpoints("vision")
     assert vision == [("transcriber", "http://127.0.0.1:8081/v1")]
     format_ = config.feature_endpoints("format")
     assert format_[0][0] == "transcriber"
     assert format_[0][1] == vision[0][1]
+
+
+def test_feature_endpoints_follow_write_not_vision(monkeypatch):
+    monkeypatch.setenv("WRITE_BASE_URL", "http://127.0.0.1:9999/v1")
+    monkeypatch.setenv("VISION_BASE_URL", "http://127.0.0.1:8081/v1")
+    assert config.feature_endpoints("vision")[0][1] == "http://127.0.0.1:8081/v1"
+    for key in ("format", "interpret", "structure", "summary"):
+        assert config.feature_endpoints(key)[0][1] == "http://127.0.0.1:9999/v1"
+
+
+def test_writer_models_follow_write_not_vision():
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    script = (
+        "import os\n"
+        "os.environ['VISION_MODEL'] = 'glm-ocr'\n"
+        "os.environ['WRITE_MODEL'] = 'writer-model'\n"
+        "import converter.format as f\n"
+        "import converter.structure as s\n"
+        "import converter.interpret as i\n"
+        "import converter.summary as m\n"
+        "print(f.FORMAT_MODEL, s.STRUCTURE_MODEL, i.INTERPRET_MODEL, m.SUMMARY_MODEL, sep='|')\n"
+    )
+    out = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        check=True,
+        cwd=root,
+    )
+    assert out.stdout.strip().split("|") == ["writer-model"] * 4
 
 
 def test_probe_up(monkeypatch):

@@ -13,9 +13,9 @@ content:
 Configuration (environment variables):
 
 - ``FORMAT_ENABLED`` — master switch for the LLM pass. Default off.
-- ``FORMAT_BASE_URL`` — defaults to ``VISION_BASE_URL``.
-- ``FORMAT_MODEL`` — defaults to ``VISION_MODEL``.
-- ``FORMAT_API_KEY`` — defaults to ``VISION_API_KEY``.
+- ``FORMAT_BASE_URL`` — defaults to ``WRITE_BASE_URL``.
+- ``FORMAT_MODEL`` — defaults to ``WRITE_MODEL``.
+- ``FORMAT_API_KEY`` — defaults to ``WRITE_API_KEY``.
 """
 from __future__ import annotations
 
@@ -23,18 +23,12 @@ import os
 import re
 
 from converter import config
-from converter.vision import (
-    VISION_API_KEY,
-    VISION_BASE_URL,
-    VISION_MODEL,
-    _chat_completion,
-    _words,
-    verify_no_omissions,
-)
+from converter.vision import _chat_completion, _words, verify_no_omissions
+from converter.write import WRITE_API_KEY, WRITE_BASE_URL, WRITE_MODEL
 
-FORMAT_BASE_URL = os.environ.get("FORMAT_BASE_URL", VISION_BASE_URL)
-FORMAT_MODEL = os.environ.get("FORMAT_MODEL", VISION_MODEL)
-FORMAT_API_KEY = os.environ.get("FORMAT_API_KEY", VISION_API_KEY)
+FORMAT_BASE_URL = os.environ.get("FORMAT_BASE_URL", WRITE_BASE_URL)
+FORMAT_MODEL = os.environ.get("FORMAT_MODEL", WRITE_MODEL)
+FORMAT_API_KEY = os.environ.get("FORMAT_API_KEY", WRITE_API_KEY)
 
 FORMAT_MAX_TOKENS = 4096
 
