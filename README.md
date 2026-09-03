@@ -481,9 +481,11 @@ How it works:
    `## Metadata` sections. Bullet counts scale with the number of concepts detected
    in the content (topics capped at 16, takeaways at 12, terms at 8); `## Metadata`
    (source, slide count, date) is always computed locally, never by the model.
-5. If the model output doesn't parse, it is retried once, then a deterministic
-   extractive header (abstract = first slide title, topics = slide titles) is used.
-   Any failure degrades gracefully — conversion never fails because of summaries.
+5. If the model output is *garbled* (no parseable sections, a section with no
+   bullets, or suspiciously low word diversity), it is retried once; otherwise a
+   deterministic extractive header (abstract = first slide title, topics = slide
+   titles) is used. Any failure degrades gracefully — conversion never fails
+   because of summaries.
 
 Enable it with `SUMMARY_ENABLED=1`:
 
@@ -494,17 +496,21 @@ SUMMARY_ENABLED=1 ./.venv/bin/python main.py
 | Var | Default | Purpose |
 | --- | --- | --- |
 | `SUMMARY_ENABLED` | *(unset = off)* | Master switch for the summary pass |
-| `SUMMARY_BASE_URL` | `WRITE_BASE_URL` | Summary chat model server (reuses the writer) |
-| `SUMMARY_MODEL` | `WRITE_MODEL` | Summary chat model id (Qwen2.5-VL-7B by default) |
+| `SUMMARY_BASE_URL` | `http://127.0.0.1:8084/v1` | Summary chat model server (dedicated `summary` server) |
+| `SUMMARY_MODEL` | `mlx-community/Llama-3.2-3B-Instruct-4bit` | Summary chat model id (a small text model) |
 | `SUMMARY_API_KEY` | *(unset)* | Optional bearer token (unused locally) |
 | `EMBED_BASE_URL` | `http://localhost:11434/v1` | Embeddings server (Ollama) |
-| `EMBED_MODEL` | `embeddinggemma` | Embeddings model id |
+| `EMBED_MODEL` | `nomic-embed-text` | Embeddings model id |
 | `EMBED_API_KEY` | *(unset)* | Optional bearer token (unused locally) |
 
-By default the summary reuses the **writer** (`mlx_vlm.server` on `:8081`) as
-its chat model, and embeddings come from the already-running **Ollama** — so no
-new server needs to be started. Override `SUMMARY_*`/`EMBED_*` to point at a
-dedicated model if you prefer.
+By default the summary uses a **dedicated small text model** (ADR-0021) —
+`mlx_lm.server` serving `Llama-3.2-3B-Instruct-4bit` on `:8084` — rather than
+the writer VLM, so no 7B VLM is loaded for a short header. Embeddings come from
+**Ollama**. Start the summary model with
+`mlx_lm.server --model mlx-community/Llama-3.2-3B-Instruct-4bit --port 8084`
+(or `tools/serve.sh start summary` once the `summary` row is registered in
+`servers.conf`). Override `SUMMARY_*`/`EMBED_*` to point at different models if
+you prefer.
 
 ## Audio transcription pass (optional)
 
@@ -593,7 +599,8 @@ VISION_ENABLED=1 VISION_CLASSIFY_ENABLED=1 INTERPRET_ENABLED=1 FORMAT_ENABLED=1 
 ```
 
 This uses only what's already running: the vision transcriber (`:8081`), the
-classifier (`:8082`), and Ollama for embeddings (`embeddinggemma`).
+classifier (`:8082`), the summary chat model (`:8084`), and Ollama for embeddings
+(`nomic-embed-text`).
 
 Audio transcription is deliberately **not part of `--all`** (it needs an audio
 file and the mlx-whisper/ffmpeg toolchain, and is a separate step anyway). Run
@@ -601,7 +608,8 @@ it before or after conversion with `ptm-transcribe`:
 
 The RAG index lives in the same `ptm.sqlite` as the vision log (`deck_documents`,
 `deck_chunks`, and a `deck_chunk_vec` sqlite-vec table). `sqlite-vec` is an added
-dependency; the embedding dimension is auto-detected from the first embedding.
+dependency; the embedding dimension is derived from the first embedding and
+cached (no separate probe), and unchanged chunks are not re-embedded.
 
 ## Known limitations / future ideas
 

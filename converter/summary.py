@@ -10,10 +10,11 @@ The summary format is deterministic: a ``# Summary`` block with fixed
 ``## Abstract``, ``## Key Topics``, ``## Key Takeaways``, ``## Key Terms`` and
 ``## Metadata`` sections whose bullet counts scale with the number of concepts
 detected in the content (capped at 16/12/8). Metadata is
-always computed locally, never by the model. If the model's output does not
-parse/validate, it is retried once and then falls back to a deterministic
-extractive header (slide titles). A failure at any step degrades gracefully and
-never fails the conversion.
+always computed locally, never by the model. If the model's output is *garbled*
+(no parseable sections, a section with no bullets, or low word diversity), it is
+retried once; otherwise it falls back to a deterministic extractive header
+(slide titles). A failure at any step degrades gracefully and never fails the
+conversion.
 
 Configuration (environment variables):
 
