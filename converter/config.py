@@ -332,3 +332,83 @@ def refresh_servers_from_conf(path: str | Path | None = None) -> dict[str, Serve
     parsed = parse_servers_conf(text)
     SERVERS.update(parsed)
     return parsed
+
+
+def _pass_model(key: str) -> str | None:
+    """Resolve the model id a pass will use, via a deferred import (ADR-0016/0021).
+
+    Deferred so ``config`` itself never imports the pass modules (avoids an
+    import cycle) and so a missing/partial import degrades to ``None`` rather
+    than raising.
+    """
+    try:
+        if key == "vision":
+            from converter.vision import VISION_MODEL
+
+            return VISION_MODEL
+        if key == "classify":
+            from converter.classify import VISION_CLASSIFY_MODEL
+
+            return VISION_CLASSIFY_MODEL
+        if key == "interpret":
+            from converter.interpret import INTERPRET_MODEL
+
+            return INTERPRET_MODEL
+        if key == "format":
+            from converter.format import FORMAT_MODEL
+
+            return FORMAT_MODEL
+        if key == "structure":
+            from converter.structure import STRUCTURE_MODEL
+
+            return STRUCTURE_MODEL
+        if key == "summary":
+            from converter.summary import SUMMARY_MODEL
+
+            return SUMMARY_MODEL
+    except Exception:
+        return None
+    return None
+
+
+def _embed_model() -> str | None:
+    try:
+        from converter.summary import EMBED_MODEL
+
+        return EMBED_MODEL
+    except Exception:
+        return None
+
+
+def snapshot(probe: bool = True) -> dict:
+    """Return a JSON-serialisable snapshot of the runtime AI configuration (ADR-0022).
+
+    Captures ``PDF_MODE``, the on/off state of every feature, each enabled pass's
+    resolved base URLs and model id, the embeddings model, and — when ``probe``
+    is true — the ``missing_servers()`` result. Never raises; used to persist a
+    per-run record of "what models/toggles/servers were in effect".
+    """
+    passes: dict[str, dict] = {}
+    for key in FEATURES:
+        enabled = is_enabled(key)
+        endpoints = (
+            [{"server": name, "base_url": url} for name, url in feature_endpoints(key)]
+            if enabled
+            else []
+        )
+        passes[key] = {
+            "enabled": enabled,
+            "endpoints": endpoints,
+            "model": _pass_model(key) if enabled else None,
+        }
+    try:
+        missing = missing_servers() if probe else []
+    except Exception:
+        missing = []
+    return {
+        "pdf_mode": os.environ.get("PDF_MODE", "").strip().lower() or "slide",
+        "features": {key: is_enabled(key) for key in FEATURES},
+        "passes": passes,
+        "embed_model": _embed_model() if is_enabled("summary") else None,
+        "missing_servers": missing,
+    }

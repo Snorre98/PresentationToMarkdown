@@ -34,6 +34,7 @@ import hashlib
 import json
 import os
 import re
+import time
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
@@ -42,7 +43,7 @@ import numpy as np
 
 from converter import config
 from converter.format import _iter_slides
-from converter.logstore import _connection, _lock
+from converter.logstore import _connection, _lock, record
 from converter.vision import _chat_completion, strip_code_fences
 from converter.write import WRITE_API_KEY
 
@@ -570,6 +571,7 @@ def _generate_summary(
     metadata: list[str],
     counts: tuple[int, int, int],
     warnings: list[str],
+    outcomes: dict | None = None,
 ) -> str:
     n_topics, n_takeaways, n_terms = counts
     prompt = _prompt(n_topics, n_takeaways, n_terms)
@@ -590,6 +592,7 @@ def _generate_summary(
         + context
     )
     for attempt in range(2):
+        t0 = time.perf_counter()
         try:
             reply = _chat_completion(
                 [{"role": "user", "content": user}],
@@ -601,7 +604,10 @@ def _generate_summary(
             ).strip()
         except Exception as exc:
             warnings.append(f"Summary model call failed: {exc}")
+            if outcomes is not None:
+                outcomes["error"] = str(exc)
             break
+        latency_ms = int((time.perf_counter() - t0) * 1000)
         reply = strip_code_fences(reply)
         sections = _parse_sections(reply)
         if _valid(sections):
@@ -609,11 +615,16 @@ def _generate_summary(
             topics = _bullets(_find_section(sections, "topic"))
             takeaways = _bullets(_find_section(sections, "takeaway"))
             terms = [l.strip() for l in _find_section(sections, "term") if l.strip().startswith("- ")]
+            if outcomes is not None:
+                outcomes["decision"] = "model"
+                outcomes["latency_ms"] = latency_ms
             return _build_header(abstract, topics, takeaways, terms, metadata, counts)
         if attempt == 0 and _looks_garbled(reply):
             warnings.append("Summary output was garbled; retrying once")
         else:
             break
+    if outcomes is not None and not outcomes.get("error"):
+        outcomes["decision"] = "fallback"
     return _fallback_header(titles, metadata, counts)
 
 
@@ -659,7 +670,19 @@ def prepend_summary(md_path: Path, source_path: Path, warnings: list[str]) -> No
                 ]
             )
 
-        header = _generate_summary(context_chunks, titles, metadata, counts, warnings)
+        header = _generate_summary(
+            context_chunks, titles, metadata, counts, warnings,
+            outcomes := {}
+        )
+        record(
+            source=str(source_path),
+            stage="summary",
+            model=SUMMARY_MODEL,
+            decision=outcomes.get("decision"),
+            latency_ms=outcomes.get("latency_ms"),
+            error=outcomes.get("error"),
+            base_url=SUMMARY_BASE_URL,
+        )
 
         body = text.lstrip("\n")
         md_path.write_text(header + "\n\n" + body.rstrip("\n") + "\n", encoding="utf-8")

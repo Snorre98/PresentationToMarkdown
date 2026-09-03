@@ -163,3 +163,37 @@ def test_missing_servers_reports_enabled_down(monkeypatch):
 def test_missing_servers_empty_when_nothing_enabled(monkeypatch):
     monkeypatch.setattr(config, "probe", lambda url, timeout=1.5: True)
     assert config.missing_servers() == []
+
+
+def test_snapshot_is_json_serialisable_and_describes_state():
+    import json
+
+    config.set_enabled("summary", True)
+    snap = config.snapshot(probe=False)
+    json.dumps(snap)  # must not raise
+
+    assert snap["pdf_mode"] in ("slide", "paper")
+    assert snap["features"]["summary"] is True
+    assert snap["features"]["vision"] is False
+
+    summary_pass = snap["passes"]["summary"]
+    assert summary_pass["enabled"] is True
+    assert summary_pass["endpoints"][0]["server"] == "summary"
+    assert summary_pass["endpoints"][0]["base_url"] == "http://127.0.0.1:8084/v1"
+    assert summary_pass["model"] == "mlx-community/Llama-3.2-3B-Instruct-4bit"
+    assert snap["embed_model"] is not None
+
+
+def test_snapshot_omits_endpoints_when_disabled():
+    snap = config.snapshot(probe=False)
+    assert snap["passes"]["format"]["enabled"] is False
+    assert snap["passes"]["format"]["endpoints"] == []
+    assert snap["passes"]["format"]["model"] is None
+    assert snap["embed_model"] is None
+
+
+def test_snapshot_never_raises_even_with_no_servers(monkeypatch):
+    monkeypatch.setattr(config, "probe", lambda url, timeout=1.5: False)
+    config.set_enabled("vision", True)
+    snap = config.snapshot(probe=True)
+    assert snap["missing_servers"]  # down transcriber recorded

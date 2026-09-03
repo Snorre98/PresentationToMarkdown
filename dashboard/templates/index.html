@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PTM Dashboard</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header>
+  <h1>PTM Dashboard</h1>
+  <div class="meta">
+    <span id="db" class="muted mono"></span>
+    <span><span class="dot" id="dot"></span> <span id="stale"></span></span>
+  </div>
+</header>
+<nav>
+  <button id="tab-runs" class="active">Runs</button>
+  <button id="tab-timeline">Timeline</button>
+  <button id="tab-errors">Errors</button>
+  <button id="tab-models">Models</button>
+  <button id="tab-rag">RAG</button>
+</nav>
+<main id="main"></main>
+<script src="/static/app.js"></script>
+</body>
+</html>

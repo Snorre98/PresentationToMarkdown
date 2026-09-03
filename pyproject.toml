@@ -15,16 +15,21 @@ dependencies = [
     "pymupdf_layout>=1.28.2",
     "sqlite-vec>=0.1.9",
     "numpy>=1.26",
+    "flask>=3.0",
 ]
 
 [project.scripts]
 ptm = "cli:main"
 ptm-start = "start:main"
 ptm-transcribe = "cli_transcribe:main"
+ptm-dashboard = "dashboard:main"
 
 [tool.setuptools]
-packages = ["converter"]
+packages = ["converter", "dashboard"]
 py-modules = ["cli", "cli_common", "cli_transcribe", "lock", "start", "gui"]
+
+[tool.setuptools.package-data]
+dashboard = ["templates/*.html", "static/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

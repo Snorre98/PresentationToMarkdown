@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from converter import config
 from converter.base import (
     ConvertResult,
     Converter,
@@ -26,6 +27,7 @@ from converter.pdf import PDFConverter
 from converter.format import polish_text
 from converter.summary import prepend_summary
 from converter.lifecycle import release_readers, release_writers
+from converter.logstore import phase, run_finish, run_snapshot, run_start
 
 registry.register(PPTXConverter)
 registry.register(PDFConverter)
@@ -89,30 +91,40 @@ def convert_file(
             source_path=path,
             error=f"Unsupported file type: {path.suffix or '(none)'}",
         )
-    resolved = Path(output_dir) if output_dir else _default_output_dir(path)
-    resolved.mkdir(parents=True, exist_ok=True)
-    output_stem: str | None = None
-    if duplicate_if_exists and (resolved / f"{path.stem}.md").exists():
-        output_stem = _next_free_stem(resolved, path.stem)
-    result = converter.convert(
-        path, resolved, progress_callback=progress_callback, output_stem=output_stem
-    )
-    if result.error is None and result.md_path is not None:
-        try:
-            original = result.md_path.read_text(encoding="utf-8")
-            polished = polish_text(original, warnings=result.warnings)
-            rewritten = (polished + "\n") if polished else ""
-            if rewritten != original:
-                result.md_path.write_text(rewritten, encoding="utf-8")
-        except Exception as exc:  # noqa: BLE001 - polish never fails the conversion
-            result.warnings.append(f"Markdown polish failed: {exc}")
-        release_readers()
-        try:
-            prepend_summary(result.md_path, path, result.warnings)
-        except Exception as exc:  # noqa: BLE001 - summary never fails the conversion
-            result.warnings.append(f"Summary generation failed: {exc}")
-        release_writers()
-    return result
+    run_id = run_start(str(path))
+    run_snapshot(run_id, config.snapshot())
+    status = "error"
+    try:
+        resolved = Path(output_dir) if output_dir else _default_output_dir(path)
+        resolved.mkdir(parents=True, exist_ok=True)
+        output_stem: str | None = None
+        if duplicate_if_exists and (resolved / f"{path.stem}.md").exists():
+            output_stem = _next_free_stem(resolved, path.stem)
+        with phase(run_id, "convert", 1):
+            result = converter.convert(
+                path, resolved, progress_callback=progress_callback, output_stem=output_stem
+            )
+        if result.error is None and result.md_path is not None:
+            try:
+                original = result.md_path.read_text(encoding="utf-8")
+                with phase(run_id, "format", 3):
+                    polished = polish_text(original, warnings=result.warnings, source=str(path))
+                rewritten = (polished + "\n") if polished else ""
+                if rewritten != original:
+                    result.md_path.write_text(rewritten, encoding="utf-8")
+            except Exception as exc:  # noqa: BLE001 - polish never fails the conversion
+                result.warnings.append(f"Markdown polish failed: {exc}")
+            release_readers()
+            try:
+                with phase(run_id, "summary", 4):
+                    prepend_summary(result.md_path, path, result.warnings)
+            except Exception as exc:  # noqa: BLE001 - summary never fails the conversion
+                result.warnings.append(f"Summary generation failed: {exc}")
+            release_writers()
+        status = "ok" if result.error is None else "error"
+        return result
+    finally:
+        run_finish(run_id, status)
 
 
 def convert_files(

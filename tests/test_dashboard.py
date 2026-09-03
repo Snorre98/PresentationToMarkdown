@@ -1,22 +1,19 @@
-"""Tests for the read-only conversion-log dashboard (``dashboard.py``).
+"""Tests for the read-only conversion-log dashboard (``dashboard`` package).
 
-Spins the stdlib HTTP server against a throwaway SQLite database and asserts the
-JSON endpoints return the expected rows. The server is imported from the repo
-root (``pythonpath = ["."]`` in ``pyproject.toml``) and never imports
-``converter``.
+Builds the Flask app against a throwaway SQLite database via
+``dashboard.create_app`` and asserts the JSON endpoints return the expected
+rows. The app is imported from the package and never imports ``converter``.
 """
 from __future__ import annotations
 
 import json
 import sqlite3
-import threading
-import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
 
-import dashboard
+from dashboard import create_app
 
 SCHEMA = """
 CREATE TABLE vision_events (
@@ -36,11 +33,58 @@ CREATE TABLE vision_events (
     markdown         TEXT,
     omitted_words    TEXT,
     error            TEXT,
-    base_url         TEXT
+    base_url         TEXT,
+    run_id           INTEGER
 );
 CREATE TABLE recent_files (
     path      TEXT PRIMARY KEY,
     last_used TEXT NOT NULL
+);
+CREATE TABLE conversion_runs (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts          TEXT NOT NULL,
+    source      TEXT NOT NULL,
+    name        TEXT,
+    status      TEXT,
+    ended_at    TEXT,
+    duration_ms INTEGER
+);
+CREATE TABLE run_phases (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id      INTEGER NOT NULL REFERENCES conversion_runs(id) ON DELETE CASCADE,
+    phase       TEXT NOT NULL,
+    ordinal     INTEGER NOT NULL,
+    status      TEXT,
+    started_at  TEXT,
+    ended_at    TEXT,
+    duration_ms INTEGER,
+    detail      TEXT
+);
+CREATE TABLE run_config (
+    run_id   INTEGER PRIMARY KEY REFERENCES conversion_runs(id) ON DELETE CASCADE,
+    snapshot TEXT NOT NULL
+);
+CREATE TABLE deck_documents (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    source       TEXT NOT NULL UNIQUE,
+    source_hash  TEXT NOT NULL,
+    stem         TEXT NOT NULL,
+    slide_count  INTEGER NOT NULL,
+    created_at   TEXT NOT NULL,
+    updated_at   TEXT NOT NULL
+);
+CREATE TABLE deck_chunks (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    document_id  INTEGER NOT NULL REFERENCES deck_documents(id) ON DELETE CASCADE,
+    chunk_index  INTEGER NOT NULL,
+    title        TEXT,
+    content      TEXT NOT NULL,
+    content_hash TEXT NOT NULL,
+    UNIQUE(document_id, chunk_index)
+);
+CREATE TABLE meta (
+    key   TEXT PRIMARY KEY,
+    value TEXT
 );
 """
 
@@ -50,18 +94,18 @@ def _make_db(path: Path) -> Path:
     conn.executescript(SCHEMA)
     now = datetime.now(timezone.utc).isoformat()
     rows = [
-        # source A (recent) — two pages, one error
-        ("/data/a.pdf", 1, "classify", "m", "diagram", 120, "md-a1", None, "2026-09-02T10:00:01+00:00"),
-        ("/data/a.pdf", 2, "transcribe", "m", None, 240, "md-a2", None, "2026-09-02T10:00:02+00:00"),
-        ("/data/a.pdf", 2, "structure", "m", "reworded", None, None, "server down", "2026-09-02T10:00:03+00:00"),
+        # source A — two pages, one error
+        ("/data/a.pdf", 1, "classify", "m", "diagram", 120, "md-a1", None, "2026-09-02T10:00:01+00:00", 1),
+        ("/data/a.pdf", 2, "transcribe", "m", None, 240, "md-a2", None, "2026-09-02T10:00:02+00:00", 1),
+        ("/data/a.pdf", 2, "structure", "m", "rejected", None, None, "server down", "2026-09-02T10:00:03+00:00", 1),
         # source B (not recent)
-        ("/data/b.pdf", 1, "classify", "m", "text", 30, "md-b1", None, "2026-09-02T09:00:00+00:00"),
+        ("/data/b.pdf", 1, "classify", "m", "text", 30, "md-b1", None, "2026-09-02T09:00:00+00:00", None),
     ]
     conn.executemany(
         """
         INSERT INTO vision_events
-            (source, page, stage, model, decision, latency_ms, markdown, error, ts)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (source, page, stage, model, decision, latency_ms, markdown, error, ts, run_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         rows,
     )
@@ -72,37 +116,52 @@ def _make_db(path: Path) -> Path:
             ("/data/a.pdf", "2026-09-02T12:00:00+00:00"),
         ],
     )
+    conn.executemany(
+        "INSERT INTO conversion_runs (id, ts, source, name, status, ended_at, duration_ms) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        [
+            (1, "2026-09-02T10:00:00+00:00", "/data/a.pdf", "a.pdf", "ok", "2026-09-02T10:00:10+00:00", 10000),
+            (2, "2026-09-02T09:00:00+00:00", "/data/b.pdf", "b.pdf", "error", "2026-09-02T09:00:05+00:00", 5000),
+        ],
+    )
+    conn.executemany(
+        "INSERT INTO run_phases (run_id, phase, ordinal, status, started_at, ended_at, duration_ms) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        [
+            (1, "convert", 1, "done", "2026-09-02T10:00:00+00:00", "2026-09-02T10:00:01+00:00", 1000),
+            (1, "structure", 2, "done", "2026-09-02T10:00:02+00:00", "2026-09-02T10:00:03+00:00", 1000),
+        ],
+    )
+    conn.execute(
+        "INSERT INTO run_config (run_id, snapshot) VALUES (?, ?)",
+        (1, json.dumps({"pdf_mode": "slide", "features": {"vision": True}})),
+    )
+    conn.execute(
+        "INSERT INTO deck_documents (id, source, source_hash, stem, slide_count, created_at, updated_at) "
+        "VALUES (1, '/data/a.pdf', 'h', 'a', 3, ?, ?)",
+        (now, now),
+    )
+    conn.execute(
+        "INSERT INTO deck_chunks (document_id, chunk_index, title, content, content_hash) "
+        "VALUES (1, 1, 't', 'c', 'ch')"
+    )
     conn.commit()
     conn.close()
     return path
 
 
 @pytest.fixture
-def server(tmp_path):
+def app(tmp_path):
     db = _make_db(tmp_path / "ptm.sqlite")
-    srv = dashboard.serve(str(db), host="127.0.0.1", port=0)
-    thread = threading.Thread(target=srv.serve_forever, kwargs={"poll_interval": 0.1}, daemon=True)
-    thread.start()
-    base = f"http://127.0.0.1:{srv.server_address[1]}"
-    yield base
-    srv.shutdown()
-    srv.server_close()
-    thread.join(timeout=5)
+    return create_app(str(db))
 
 
-def _get(url: str) -> dict:
-    with urllib.request.urlopen(url, timeout=5) as resp:
-        return json.loads(resp.read().decode("utf-8"))
-
-
-def test_health_reports_event_count(server):
-    health = _get(f"{server}/api/health")
+def test_health_reports_event_count(app):
+    health = app.test_client().get("/api/health").get_json()
     assert health["ok"] is True
     assert health["total_events"] == 4
 
 
-def test_overview_lists_sources_recent_first(server):
-    ov = _get(f"{server}/api/overview")
+def test_overview_lists_sources_recent_first(app):
+    ov = app.test_client().get("/api/overview").get_json()
     assert ov["total_events"] == 4
     names = [s["name"] for s in ov["sources"]]
     assert names == ["a.pdf", "b.pdf"]
@@ -113,26 +172,82 @@ def test_overview_lists_sources_recent_first(server):
     assert a["total_latency_ms"] == 360
 
 
-def test_events_ordered_by_ts_grouped_pages(server):
-    ev = _get(f"{server}/api/events?source=/data/a.pdf")
+def test_events_ordered_by_ts_grouped_pages(app):
+    ev = app.test_client().get("/api/events?source=/data/a.pdf").get_json()
     pages = [e["page"] for e in ev["events"]]
     assert pages == [1, 2, 2]
     assert ev["events"][0]["decision"] == "diagram"
     assert ev["events"][0]["markdown"] == "md-a1"
 
 
-def test_errors_returns_only_non_null(server):
-    err = _get(f"{server}/api/errors")
+def test_events_filter_by_run_id(app):
+    ev = app.test_client().get("/api/events?run_id=1").get_json()
+    assert len(ev["events"]) == 3
+    assert all(e["run_id"] == 1 for e in ev["events"])
+
+
+def test_errors_returns_only_non_null(app):
+    err = app.test_client().get("/api/errors").get_json()
     assert len(err["errors"]) == 1
     assert err["errors"][0]["error"] == "server down"
     assert err["errors"][0]["name"] == "a.pdf"
 
 
-def test_missing_db_degrades_to_empty(server, tmp_path):
-    missing = dashboard._overview(str(tmp_path / "does-not-exist.sqlite"))
-    assert missing["sources"] == []
-    assert missing["total_events"] == 0
-    assert dashboard._errors(str(tmp_path / "does-not-exist.sqlite"))["errors"] == []
+def test_runs_lists_newest_first(app):
+    runs = app.test_client().get("/api/runs").get_json()["runs"]
+    assert [r["id"] for r in runs] == [1, 2]
+    assert runs[0]["status"] == "ok"
+    assert runs[0]["events"] == 3
+    assert runs[0]["errors"] == 1
+
+
+def test_run_phases_include_derived(app):
+    ph = app.test_client().get("/api/runs/1/phases").get_json()
+    assert [p["phase"] for p in ph["phases"]] == ["convert", "structure"]
+    derived = {d["phase"]: d for d in ph["derived"]}
+    assert "classify" in derived
+    assert "transcribe" in derived
+    assert derived["classify"]["count"] == 1
+
+
+def test_run_config_parses_snapshot(app):
+    cfg = app.test_client().get("/api/runs/1/config").get_json()
+    assert cfg["config"]["pdf_mode"] == "slide"
+    assert cfg["config"]["features"]["vision"] is True
+
+
+def test_summary_view(app):
+    s = app.test_client().get("/api/summary").get_json()
+    assert len(s["documents"]) == 1
+    assert s["documents"][0]["slide_count"] == 3
+    assert s["documents"][0]["chunk_count"] == 1
+
+
+def test_models_aggregate_latency(app):
+    m = app.test_client().get("/api/models").get_json()["models"]
+    by_stage = {x["stage"]: x for x in m}
+    assert by_stage["classify"]["count"] == 2
+    assert by_stage["classify"]["total_ms"] == 150
+
+
+def test_structure_surfaces_rejections(app):
+    st = app.test_client().get("/api/structure").get_json()
+    assert len(st["rejections"]) == 1
+    assert st["rejections"][0]["stage"] == "structure"
+
+
+def test_index_returns_html(app):
+    resp = app.test_client().get("/")
+    assert resp.status_code == 200
+    assert b"PTM Dashboard" in resp.data
+
+
+def test_missing_db_degrades_to_empty(tmp_path):
+    app = create_app(str(tmp_path / "does-not-exist.sqlite"))
+    c = app.test_client()
+    assert c.get("/api/overview").get_json()["sources"] == []
+    assert c.get("/api/errors").get_json()["errors"] == []
+    assert c.get("/api/runs").get_json()["runs"] == []
 
 
 if __name__ == "__main__":

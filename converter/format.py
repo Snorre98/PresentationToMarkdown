@@ -21,8 +21,10 @@ from __future__ import annotations
 
 import os
 import re
+import time
 
 from converter import config
+from converter.logstore import record
 from converter.vision import _chat_completion, _words, verify_no_omissions
 from converter.write import WRITE_API_KEY, WRITE_BASE_URL, WRITE_MODEL
 
@@ -149,12 +151,13 @@ def _verify_preserved(original: str, reformatted: str) -> list[str]:
     return problems
 
 
-def _reformat_slide(slide: str) -> str:
+def _reformat_slide(slide: str, index: int = 1, source: str = "") -> str:
     body, trailer = _peel_trailer(slide.split("\n"))
     if not body or not any(_is_editable(line) for line in body):
         return slide
     anchors = [line.strip() for line in body if _is_structural(line)]
     original = "\n".join(body)
+    t0 = time.perf_counter()
     reformatted = _chat_completion(
         [{"role": "user", "content": _PROMPT + "\n\nSlide:\n\n" + original}],
         base_url=FORMAT_BASE_URL,
@@ -163,25 +166,67 @@ def _reformat_slide(slide: str) -> str:
         max_tokens=FORMAT_MAX_TOKENS,
         timeout=600.0,
     ).strip()
+    latency_ms = int((time.perf_counter() - t0) * 1000)
     if not _anchors_intact(anchors, reformatted):
+        record(
+            source=source,
+            page=index,
+            stage="format",
+            model=FORMAT_MODEL,
+            decision="rejected",
+            error="anchors dropped",
+            latency_ms=latency_ms,
+            base_url=FORMAT_BASE_URL,
+        )
         return slide
-    if _verify_preserved(original, reformatted):
+    problems = _verify_preserved(original, reformatted)
+    if problems:
+        record(
+            source=source,
+            page=index,
+            stage="format",
+            model=FORMAT_MODEL,
+            decision="rejected",
+            error="; ".join(problems),
+            latency_ms=latency_ms,
+            base_url=FORMAT_BASE_URL,
+        )
         return slide
     result = reformatted.rstrip()
     if trailer:
         result += "\n\n" + "\n".join(trailer)
+    record(
+        source=source,
+        page=index,
+        stage="format",
+        model=FORMAT_MODEL,
+        decision="amended",
+        latency_ms=latency_ms,
+        base_url=FORMAT_BASE_URL,
+    )
     return result
 
 
-def _llm_pass(md: str, warnings: list[str]) -> str:
+def _llm_pass(md: str, warnings: list[str], source: str = "") -> str:
     try:
-        return "\n\n".join(_reformat_slide(slide) for slide in _iter_slides(md))
+        return "\n\n".join(
+            _reformat_slide(slide, index=idx, source=source)
+            for idx, slide in enumerate(_iter_slides(md), start=1)
+        )
     except Exception as exc:  # noqa: BLE001 - degrade to deterministic-only output
         warnings.append(f"Markdown LLM reformat failed: {exc}; keeping deterministic output")
+        record(
+            source=source,
+            stage="format",
+            model=FORMAT_MODEL,
+            decision="error",
+            error=str(exc),
+            base_url=FORMAT_BASE_URL,
+        )
         return md
 
 
-def polish_text(md: str, warnings: list[str] | None = None) -> str:
+def polish_text(md: str, warnings: list[str] | None = None, source: str = "") -> str:
     """Normalise formatting of converted Markdown, optionally restructuring via an LLM.
 
     Returns the polished text (no trailing newline). Content is preserved: the
@@ -190,5 +235,5 @@ def polish_text(md: str, warnings: list[str] | None = None) -> str:
     """
     text = _deterministic_pass(md)
     if config.is_enabled("format") and text:
-        text = _deterministic_pass(_llm_pass(text, warnings or []))
+        text = _deterministic_pass(_llm_pass(text, warnings or [], source))
     return text

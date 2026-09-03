@@ -26,4 +26,4 @@ Index of architectural decisions for PresentationToMarkdown, in
 | [0019](0019-image-ink-projection-column-detection.md) | Image ink-projection column detection | Accepted |
 | [0020](0020-single-content-source-per-page.md) | Single content source per page (no duplicate text/vision emission) | Accepted |
 | [0021](0021-fast-summary-rag.md) | Dedicated summary model and lean RAG retrieval | Accepted |
-| [0020](0020-single-content-source-per-page.md) | Single content source per page (no duplicate text/vision emission) | Accepted |
+| [0022](0022-flask-dashboard-conversion-telemetry.md) | Flask dashboard and conversion-level run telemetry | Accepted |

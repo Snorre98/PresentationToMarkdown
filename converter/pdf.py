@@ -35,6 +35,7 @@ from converter.base import (
 )
 from converter.classify import maybe_transcribe_image
 from converter.interpret import interpret_diagram
+from converter.logstore import current_run_id, phase
 from converter.ocr_columns import detect_bands, detect_text_bands, transcribe_columns
 from converter.structure import PageData, structure_paper
 
@@ -690,9 +691,10 @@ class PDFConverter(Converter):
                     progress_callback(pno, page_count, path.name)
             doc.close()
             if paper and config.is_enabled("structure"):
-                structured = structure_paper(
-                    paper_pages, warnings=result.warnings, source=source
-                )
+                with phase(current_run_id(), "structure", 2):
+                    structured = structure_paper(
+                        paper_pages, warnings=result.warnings, source=source
+                    )
                 if structured is not None:
                     lines = structured
             md_path = output_dir / f"{stem}.md"
