@@ -16,7 +16,10 @@ model, per page, gated by a deterministic confidence signal:
   image* by the same pass, gated by image readability + transcription quality
   instead of the verbatim word gate.
 - **Skip** — pages already handled by the interpret/vision passes are left
-  alone.
+  alone, and so are dense OCR-garbage text layers (typo-shaped tokens /
+  vowel-less junk): a page whose text layer is not really prose can only fail
+  the verbatim word-gate, so the model call is predicted and skipped pre-call
+  (:func:`converter.base.text_layer_is_garbage`, ADR-0023).
 
 Every model call and gate failure is local to its page: the page keeps its
 deterministic Markdown and a warning is appended. The pass never blocks or
@@ -47,6 +50,7 @@ from converter.format import (
     _is_structural,
 )
 from converter.logstore import record
+from converter.router import Route, structure_regime, structure_text_downgrade
 from converter.vision import (
     _chat_completion,
     _image_content,
@@ -58,6 +62,17 @@ from converter.vision import (
 STRUCTURE_BASE_URL = os.environ.get("STRUCTURE_BASE_URL", FORMAT_BASE_URL)
 STRUCTURE_MODEL = os.environ.get("STRUCTURE_MODEL", FORMAT_MODEL)
 STRUCTURE_API_KEY = os.environ.get("STRUCTURE_API_KEY", FORMAT_API_KEY)
+
+# The text regime is a text-to-text check-and-amend (no image is sent), so it can
+# run on a dedicated small text model rather than the writer VLM (ADR-0024). The
+# image regime still sends the rendered page PNG and stays on ``STRUCTURE_*``.
+STRUCTURE_TEXT_BASE_URL = os.environ.get(
+    "STRUCTURE_TEXT_BASE_URL", config.SERVERS.get("structure-text", config.SERVERS["summary"]).base_url
+)
+STRUCTURE_TEXT_MODEL = os.environ.get(
+    "STRUCTURE_TEXT_MODEL", config.SERVERS.get("structure-text", config.SERVERS["summary"]).model
+)
+STRUCTURE_TEXT_API_KEY = os.environ.get("STRUCTURE_TEXT_API_KEY", STRUCTURE_API_KEY)
 
 STRUCTURE_MAX_TOKENS = 6000
 _TIMEOUT = 600.0
@@ -125,12 +140,13 @@ def _text_coverage(line_meta: list[dict]) -> str:
 
 
 def _page_regime(page: PageData) -> str:
-    """Route a page to the ``text`` / ``image`` / ``skip`` regime."""
-    if any("<details" in line for line in page.md_lines):
-        return "image"
-    if _text_coverage(page.line_meta) == "usable":
-        return "text"
-    return "skip"
+    """Route a page to the ``text`` / ``image`` / ``skip`` regime.
+
+    Delegates to :func:`converter.router.structure_regime` — the single source of
+    truth for the cheap-before-expensive routing signals (ADR-0024) — so the
+    structure pass's dynamics are legible from one place.
+    """
+    return structure_regime(page.line_meta, page.md_lines)
 
 
 def _norm(text: str) -> str:
@@ -291,6 +307,18 @@ def _anchors_for(page: PageData, regime: str) -> list[str]:
     return anchors
 
 
+def _text_model() -> tuple[str, str, str]:
+    """Resolve the text regime's ``(base_url, model, api_key)``.
+
+    The text regime is a text-to-text check-and-amend, so it downgrades off the
+    writer VLM onto a dedicated small text model when one is configured
+    (ADR-0024). The image regime still needs a VLM and stays on ``STRUCTURE_*``.
+    """
+    if structure_text_downgrade() == Route.DOWNGRADE:
+        return STRUCTURE_TEXT_BASE_URL, STRUCTURE_TEXT_MODEL, STRUCTURE_TEXT_API_KEY
+    return STRUCTURE_BASE_URL, STRUCTURE_MODEL, STRUCTURE_API_KEY
+
+
 def _amend_page_text(page: PageData, warnings: list[str], source: str) -> list[str] | None:
     """Text regime: check-and-amend the page, verbatim-gated."""
     anchors = _anchors_for(page, "text")
@@ -299,39 +327,40 @@ def _amend_page_text(page: PageData, warnings: list[str], source: str) -> list[s
     if not numbered.strip():
         return None
     user = _AMEND_PROMPT.format(numbered=numbered, md=original)
+    base_url, model, api_key = _text_model()
     t0 = time.perf_counter()
     try:
         reply = _chat_completion(
             [{"role": "user", "content": user}],
-            base_url=STRUCTURE_BASE_URL,
-            model=STRUCTURE_MODEL,
-            api_key=STRUCTURE_API_KEY,
+            base_url=base_url,
+            model=model,
+            api_key=api_key,
             max_tokens=STRUCTURE_MAX_TOKENS,
             timeout=_TIMEOUT,
         ).strip()
     except Exception as exc:  # noqa: BLE001 - degrade to deterministic output
         if warnings is not None:
             warnings.append(f"Structure pass failed on page {page.pno}: {exc}")
-        _log(source, page, decision="error", error=str(exc), latency_ms=_ms(t0))
+        _log(source, page, model=model, base_url=base_url, decision="error", error=str(exc), latency_ms=_ms(t0))
         return None
     if not reply:
         _reject(page, warnings, "empty reply")
-        _log(source, page, decision="rejected", error="empty reply", latency_ms=_ms(t0))
+        _log(source, page, model=model, base_url=base_url, decision="rejected", error="empty reply", latency_ms=_ms(t0))
         return None
     if not _anchors_intact(anchors, reply):
         _reject(page, warnings, "dropped structural lines")
-        _log(source, page, decision="rejected", error="anchors dropped", latency_ms=_ms(t0))
+        _log(source, page, model=model, base_url=base_url, decision="rejected", error="anchors dropped", latency_ms=_ms(t0))
         return None
     if _heading_count(reply) != 1:
         _reject(page, warnings, "heading invariant")
-        _log(source, page, decision="rejected", error="heading invariant", latency_ms=_ms(t0))
+        _log(source, page, model=model, base_url=base_url, decision="rejected", error="heading invariant", latency_ms=_ms(t0))
         return None
     problems = _verify_preserved(original, reply)
     if problems:
         _reject(page, warnings, "; ".join(problems))
-        _log(source, page, decision="rejected", error="; ".join(problems), latency_ms=_ms(t0))
+        _log(source, page, model=model, base_url=base_url, decision="rejected", error="; ".join(problems), latency_ms=_ms(t0))
         return None
-    _log(source, page, decision="amended", latency_ms=_ms(t0))
+    _log(source, page, model=model, base_url=base_url, decision="amended", latency_ms=_ms(t0))
     return reply.split("\n") + [""]
 
 
@@ -407,8 +436,8 @@ def _log(source: str, page: PageData, **kw) -> None:
         source=source,
         page=page.pno,
         stage="structure",
-        model=STRUCTURE_MODEL,
-        base_url=STRUCTURE_BASE_URL,
+        model=kw.pop("model", STRUCTURE_MODEL),
+        base_url=kw.pop("base_url", STRUCTURE_BASE_URL),
         **kw,
     )
 

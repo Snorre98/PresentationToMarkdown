@@ -27,3 +27,5 @@ Index of architectural decisions for PresentationToMarkdown, in
 | [0020](0020-single-content-source-per-page.md) | Single content source per page (no duplicate text/vision emission) | Accepted |
 | [0021](0021-fast-summary-rag.md) | Dedicated summary model and lean RAG retrieval | Accepted |
 | [0022](0022-flask-dashboard-conversion-telemetry.md) | Flask dashboard and conversion-level run telemetry | Accepted |
+| [0023](0023-pre-call-garbage-self-check.md) | Pre-call OCR-garbage self-check in the structure pass | Accepted |
+| [0024](0024-pipeline-router-and-text-downgrade.md) | Centralized pre-execution pipeline router and structure text-model downgrade | Accepted |

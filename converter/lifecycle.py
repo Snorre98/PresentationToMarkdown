@@ -151,5 +151,10 @@ def release_writers() -> None:
 
     if (WRITE_BASE_URL, WRITE_MODEL) != (VISION_BASE_URL, VISION_MODEL):
         release(WRITE_BASE_URL, WRITE_MODEL)
+    if config.is_enabled("structure"):
+        from converter.structure import STRUCTURE_TEXT_BASE_URL, STRUCTURE_TEXT_MODEL
+
+        if STRUCTURE_TEXT_MODEL != WRITE_MODEL:
+            release(STRUCTURE_TEXT_BASE_URL, STRUCTURE_TEXT_MODEL)
     if config.is_enabled("summary"):
         release(EMBED_BASE_URL, EMBED_MODEL)

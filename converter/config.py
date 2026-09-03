@@ -97,6 +97,13 @@ SERVERS: dict[str, Server] = {
         model="mlx-community/Llama-3.2-3B-Instruct-4bit",
         description="Summary chat (PresentationToMarkdown)",
     ),
+    "structure-text": Server(
+        name="structure-text",
+        runner="mlx-lm",
+        port=8085,
+        model="mlx-community/Llama-3.2-3B-Instruct-4bit",
+        description="Small text model for the structure pass text regime (PresentationToMarkdown)",
+    ),
 }
 
 FEATURES: dict[str, Feature] = {
@@ -221,6 +228,12 @@ def _structure_url() -> str:
     return os.environ.get("STRUCTURE_BASE_URL", _format_url())
 
 
+def _structure_text_url() -> str:
+    return os.environ.get(
+        "STRUCTURE_TEXT_BASE_URL", SERVERS["structure-text"].base_url
+    )
+
+
 def _summary_url() -> str:
     return os.environ.get("SUMMARY_BASE_URL", SERVERS["summary"].base_url)
 
@@ -235,7 +248,7 @@ _FEATURE_ENDPOINTS: dict[str, list[tuple[str, Callable[[], str]]]] = {
     "interpret": [("transcriber", _interpret_url)],
     "format": [("transcriber", _format_url)],
     "summary": [("summary", _summary_url), ("ollama", _embed_url)],
-    "structure": [("transcriber", _structure_url)],
+    "structure": [("transcriber", _structure_url), ("summary", _structure_text_url)],
 }
 
 

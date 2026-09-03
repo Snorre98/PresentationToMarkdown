@@ -16,6 +16,8 @@ from pathlib import Path
 from typing import Callable
 from urllib.parse import quote
 
+from converter._english_words import ENGLISH_WORDS
+
 ProgressCallback = Callable[[int, int, str], None]
 PageProgressCallback = Callable[[int, int, str], None]
 
@@ -144,6 +146,76 @@ def text_layer_quality(texts: list[str]) -> str:
     if ttr < _TEXT_QUALITY_MIN_TTR or mean_len < _TEXT_QUALITY_MIN_MEAN_LEN:
         return "sparse"
     return "usable"
+
+
+# Garbage-layer thresholds for :func:`text_layer_is_garbage`: below the token
+# floor the page is too thin to judge and is trusted, and a page must carry at
+# least this many junk tokens (vowel-less / digit-only / typo near-misses) to be
+# treated as OCR garbage rather than prose with the odd citation.
+_GARBAGE_MIN_TOKENS = 60
+_GARBAGE_MIN_JUNK = 2
+
+
+def text_layer_is_garbage(texts: list[str]) -> bool:
+    """Whether a text layer that *looks* usable is in fact OCR garbage.
+
+    :func:`text_layer_quality` only measures word count, uniqueness and line
+    length, so a garbled layer whose tokens are plausible-length near-misses of
+    real words (``metagoa`` for "metagoal", ``gmnes`` for "games", ``numbdr`` for
+    "number") passes as "usable". The structure pass's verbatim word-gate then
+    correctly rejects any rewrite of it — but only *after* an expensive model
+    call. This self-check predicts that rejection pre-call (ADR-0023).
+
+    A token is junk when it holds no vowel (``gmnes``, pure digits ``1955``) or
+    is one edit (deletion, transposition, substitution, insertion) away from a
+    bundled English word (``unable`` -> "uncerta"). Words longer than the bundled
+    vocabulary are never judged, and pages with too few tokens overall are never
+    flagged, so thin legitimate pages and domain terms cannot false-positive.
+    """
+    words = re.findall(r"[A-Za-z0-9]{4,}", " ".join(texts).lower())
+    if len(words) < _GARBAGE_MIN_TOKENS:
+        return False
+    junk = 0
+    for word in words:
+        core = re.sub(r"[^a-z]", "", word)
+        if not core or not any(c in "aeiouy" for c in core):
+            junk += 1
+        elif core not in ENGLISH_WORDS and _near_miss(core):
+            junk += 1
+        if junk >= _GARBAGE_MIN_JUNK:
+            return True
+    return False
+
+
+_NEAR_MISS_ALPHA = "abcdefghijklmnopqrstuvwxyz"
+
+
+def _near_miss(core: str) -> bool:
+    """Whether ``core`` is one edit (del/trans/sub/ins) from a bundled word.
+
+    Words of 13+ chars are not in the bundled set (by design) and return False,
+    so long domain terms are never treated as garbage.
+    """
+    n = len(core)
+    if n > 12:
+        return False
+    for i in range(n):
+        if core[:i] + core[i + 1 :] in ENGLISH_WORDS:
+            return True
+    for i in range(n - 1):
+        if core[:i] + core[i + 1] + core[i] + core[i + 2 :] in ENGLISH_WORDS:
+            return True
+    for i in range(n):
+        prefix, suffix = core[:i], core[i + 1 :]
+        for c in _NEAR_MISS_ALPHA:
+            if prefix + c + suffix in ENGLISH_WORDS:
+                return True
+    for i in range(n + 1):
+        prefix, suffix = core[:i], core[i:]
+        for c in _NEAR_MISS_ALPHA:
+            if prefix + c + suffix in ENGLISH_WORDS:
+                return True
+    return False
 
 
 def image_digest(blob: bytes) -> str:

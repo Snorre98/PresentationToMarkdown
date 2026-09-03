@@ -507,6 +507,9 @@ is produced by deterministic geometry heuristics. The optional **structure pass*
   word gate.
 - Pages already handled by the interpret/vision passes are skipped, and every
   rejected page keeps its deterministic Markdown with a `[WARN]`.
+- A text layer that is *dense OCR garbage* (typo-shaped tokens / vowel-less
+  junk, detected pre-call — ADR-0023) is skipped without a model call, since a
+  layer that is not really prose can only fail the verbatim word gate.
 
 Enable it together with paper mode:
 
@@ -521,9 +524,14 @@ STRUCTURE_ENABLED=1 PDF_MODE=paper ptm paper.pdf
 | `STRUCTURE_BASE_URL` | `FORMAT_BASE_URL` (then `WRITE_BASE_URL`) | Structure model server |
 | `STRUCTURE_MODEL` | `FORMAT_MODEL` (then `WRITE_MODEL`) | Structure model id (a VLM can read page images) |
 | `STRUCTURE_API_KEY` | `FORMAT_API_KEY` (then `WRITE_API_KEY`) | Optional bearer token (unused locally) |
+| `STRUCTURE_TEXT_BASE_URL` | `structure-text` server (`:8085`) | Small text model for the *text* regime (ADR-0024) |
+| `STRUCTURE_TEXT_MODEL` | `mlx-community/Llama-3.2-3B-Instruct-4bit` | Text-regime model id — no image is sent, so a VLM is unnecessary |
+| `STRUCTURE_TEXT_API_KEY` | `STRUCTURE_API_KEY` | Optional bearer token for the text-regime model |
 
 The pass is PDF-only and therefore **not** part of `--all`; enable it
-explicitly with `--structure`.
+explicitly with `--structure`. The **text regime** (check-and-amend, no image)
+runs on a small text model by default, while the **image regime** (reword from
+the rendered page) stays on the writer VLM.
 
 ## Summary pass (per-presentation RAG)
 
