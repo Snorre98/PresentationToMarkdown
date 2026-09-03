@@ -242,3 +242,52 @@ def test_scanned_page_vision_off_unchanged(tmp_path):
     text = result.md_path.read_text(encoding="utf-8")
     assert "LEFT COLUMN" not in text
     assert "Raw extracted text" not in text
+
+
+def _make_scanned_garbage_pdf(path):
+    """A full-page scan image plus a *garbage* (non-empty) text layer.
+
+    The text layer repeats one token many times so its unique-word ratio is below
+    the usable threshold (ADR-0020) — the exact case that used to be emitted as a
+    duplicate alongside the full-page image transcription."""
+    import pymupdf as fitz
+
+    src = fitz.open()
+    sp = src.new_page(width=612, height=792)
+    for i in range(10):
+        sp.insert_text((50, 220 + 20 * i), "left column text row", fontsize=10)
+        sp.insert_text((330, 220 + 20 * i), "right column text row", fontsize=10)
+    pix = sp.get_pixmap(matrix=fitz.Matrix(1, 1))
+    img = path.parent / "scan_garbage.png"
+    pix.save(str(img))
+    src.close()
+
+    doc = fitz.open()
+    page = doc.new_page(width=612, height=792)
+    page.insert_image(fitz.Rect(0, 0, 612, 792), filename=str(img))
+    for i in range(40):
+        page.insert_text((50, 100 + i * 15), "xxxx xxxx xxxx xxxx", fontsize=6)
+    doc.save(path)
+    doc.close()
+
+
+def test_garbage_text_layer_routes_to_vision_and_skips_fullpage_image(tmp_path, monkeypatch):
+    import converter.pdf as pdf
+    from converter import convert_file
+
+    config.set_enabled("vision", True)
+    path = tmp_path / "scan_garbage.pdf"
+    _make_scanned_garbage_pdf(path)
+    image_calls: list[int] = []
+    monkeypatch.setattr(
+        pdf, "maybe_transcribe_image",
+        lambda *a, **kw: image_calls.append(1) or "IMAGE TRANSCRIPTION",
+    )
+    monkeypatch.setattr(pdf, "transcribe_columns", lambda *a, **kw: "CLEAN PAGE TRANSCRIPTION")
+    result = convert_file(path, tmp_path)
+    assert result.error is None
+    text = result.md_path.read_text(encoding="utf-8")
+    assert "CLEAN PAGE TRANSCRIPTION" in text
+    assert "xxxx" not in text
+    assert "IMAGE TRANSCRIPTION" not in text
+    assert image_calls == []

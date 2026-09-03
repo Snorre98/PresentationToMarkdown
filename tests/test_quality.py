@@ -1,10 +1,11 @@
 """Unit tests for the transcription quality gate and classifier category parsing."""
-from converter.base import _table_to_md
+from converter.base import _table_to_md, text_layer_quality
 from converter.classify import _blockquote, _looks_like_content, _parse_category
 from converter.vision import (
     _laplacian_variance,
     bullet_item_count,
     image_readable,
+    strip_code_fences,
     transcription_quality,
 )
 
@@ -95,6 +96,26 @@ def test_bullet_item_count():
     assert bullet_item_count("plain prose, no lists") == 0
 
 
+def test_strip_code_fences_removes_lang_fence():
+    md = "```markdown\n# Title\n\n- a\n- b\n```"
+    assert strip_code_fences(md) == "# Title\n\n- a\n- b"
+
+
+def test_strip_code_fences_removes_plain_fence():
+    md = "```\nplain text\n```"
+    assert strip_code_fences(md) == "plain text"
+
+
+def test_strip_code_fences_leaves_unfenced_unchanged():
+    md = "# Title\n\n- a\n- b"
+    assert strip_code_fences(md) == md
+
+
+def test_strip_code_fences_trims_surrounding_blank_lines():
+    md = "```markdown\n\n\n# Title\n\n```\n\n"
+    assert strip_code_fences(md) == "# Title"
+
+
 def test_blockquote_wraps_lines():
     assert _blockquote("A process flow.\n\nIt shows X to Y.") == (
         "> A process flow.\n>\n> It shows X to Y."
@@ -105,6 +126,27 @@ def test_table_to_md_handles_none_cells():
     md = _table_to_md([[None, "b"], ["c", "d"]])
     assert "|  | b |" in md[0]
     assert "| c | d |" in md[2]
+
+
+def test_text_layer_quality_usable():
+    texts = [
+        "The quick brown fox jumps over the lazy dog while the sun sets low",
+        "Several unique words are required here in order to pass the quality gate",
+    ]
+    assert text_layer_quality(texts) == "usable"
+
+
+def test_text_layer_quality_empty():
+    assert text_layer_quality([]) == "empty"
+    assert text_layer_quality(["", "  "]) == "empty"
+
+
+def test_text_layer_quality_sparse_repeated_words():
+    assert text_layer_quality(["xxxx xxxx xxxx xxxx"] * 40) == "sparse"
+
+
+def test_text_layer_quality_sparse_too_few_words():
+    assert text_layer_quality(["tiny"]) == "sparse"
 
 
 def test_looks_like_content():

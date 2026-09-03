@@ -91,6 +91,29 @@ _DIAGRAM_PROMPT = (
     "Output only the description (and any verbatim labels)."
 )
 
+
+def strip_code_fences(md: str) -> str:
+    """Strip a leading/trailing ```code fence a model wraps around Markdown.
+
+    The transcription prompts ask for "only the Markdown", but the local VLM
+    often wraps its answer in a ```markdown ... ``` block anyway. This removes one
+    leading fence line (``` or ```lang) and one trailing fence line, plus any
+    surrounding blank lines, so the fence never leaks into the document.
+    """
+    lines = md.splitlines()
+    if lines and lines[0].strip().startswith("```"):
+        lines = lines[1:]
+    while lines and not lines[-1].strip():
+        lines.pop()
+    if lines and lines[-1].strip() == "```":
+        lines.pop()
+    while lines and not lines[0].strip():
+        lines.pop(0)
+    while lines and not lines[-1].strip():
+        lines.pop()
+    return "\n".join(lines)
+
+
 # Words shorter than this, or in this set, are ignored by the omission check.
 _STOPWORDS = {
     "this", "that", "these", "those", "with", "from", "have", "will", "would",
@@ -341,7 +364,7 @@ def transcribe_page(
     messages = [
         {"role": "user", "content": [{"type": "text", "text": _PROMPT}, _image_content(png_bytes)]}
     ]
-    return _chat_completion(
+    result = _chat_completion(
         messages,
         base_url=base_url,
         model=model,
@@ -350,6 +373,10 @@ def transcribe_page(
         timeout=timeout,
         return_usage=return_usage,
     )
+    if return_usage:
+        content, usage = result
+        return strip_code_fences(content), usage
+    return strip_code_fences(result)
 
 
 def transcribe_column(
@@ -370,7 +397,7 @@ def transcribe_column(
     messages = [
         {"role": "user", "content": [{"type": "text", "text": _COLUMN_PROMPT}, _image_content(png_bytes)]}
     ]
-    return _chat_completion(
+    result = _chat_completion(
         messages,
         base_url=base_url,
         model=model,
@@ -379,6 +406,10 @@ def transcribe_column(
         timeout=timeout,
         return_usage=return_usage,
     )
+    if return_usage:
+        content, usage = result
+        return strip_code_fences(content), usage
+    return strip_code_fences(result)
 
 
 def transcribe_image(
@@ -397,7 +428,7 @@ def transcribe_image(
     messages = [
         {"role": "user", "content": [{"type": "text", "text": _IMAGE_PROMPT}, _image_content(image_bytes, mime)]}
     ]
-    return _chat_completion(
+    result = _chat_completion(
         messages,
         base_url=base_url,
         model=model,
@@ -406,6 +437,10 @@ def transcribe_image(
         timeout=timeout,
         return_usage=return_usage,
     )
+    if return_usage:
+        content, usage = result
+        return strip_code_fences(content), usage
+    return strip_code_fences(result)
 
 
 def transcribe_image_meta(
@@ -427,7 +462,7 @@ def transcribe_image_meta(
     messages = [
         {"role": "user", "content": [{"type": "text", "text": _DIAGRAM_PROMPT}, _image_content(image_bytes, mime)]}
     ]
-    return _chat_completion(
+    result = _chat_completion(
         messages,
         base_url=base_url,
         model=model,
@@ -436,3 +471,7 @@ def transcribe_image_meta(
         timeout=timeout,
         return_usage=return_usage,
     )
+    if return_usage:
+        content, usage = result
+        return strip_code_fences(content), usage
+    return strip_code_fences(result)

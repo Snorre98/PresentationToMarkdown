@@ -30,6 +30,7 @@ from converter.base import (
     _table_to_md,
     image_digest,
     repeated_image_hashes,
+    text_layer_quality,
     write_image,
 )
 from converter.classify import maybe_transcribe_image
@@ -50,6 +51,12 @@ _FOOTER_MAX_SIZE = 16.0
 _FOOTER_BOTTOM_BAND = 70.0
 _ROW_TOL = 6.0
 _COMPLEX_DISTINCT_X = 8
+
+# Full-page image detection (ADR-0020): an embedded image covering at least this
+# fraction of the page's width and height is treated as "the page" itself and is
+# handled by the page-level path, never transcribed as a separate figure.
+_FULLPAGE_MIN_WIDTH_FRAC = 0.95
+_FULLPAGE_MIN_HEIGHT_FRAC = 0.90
 
 # Paper mode heuristics.
 _HEADING_MAX_LEN = 40
@@ -284,6 +291,20 @@ def _is_fullpage(rect, page_rect, tol: float = 2.0) -> bool:
     )
 
 
+def _is_fullpage_image(rect, page_rect) -> bool:
+    """Whether an embedded image effectively covers the whole page (area ratio).
+
+    The 2pt-tolerance :func:`_is_fullpage` misses off-by-margin scans (a scan
+    clipped or offset a few points); area ratio is robust to that. Used to decide
+    whether an image is "the page" — handled by the page-level vision/text path —
+    rather than an embedded figure to transcribe separately.
+    """
+    return (
+        rect.width >= _FULLPAGE_MIN_WIDTH_FRAC * page_rect.width
+        and rect.height >= _FULLPAGE_MIN_HEIGHT_FRAC * page_rect.height
+    )
+
+
 def _collect_page_image_digests(doc, skip_xrefs: set[int]) -> list[set[str]]:
     """Return the set of image content digests present on each page.
 
@@ -320,7 +341,7 @@ def _line_in_tables(line: Line, tables) -> bool:
     return False
 
 
-def _page_images(page, doc, assets_dir, stem, counter, warnings, skip_xrefs, dedup, pno, repeated, seen, source, skip_fullpage_ocr=False) -> tuple[list[str], bytes, int, int]:
+def _page_images(page, doc, assets_dir, stem, counter, warnings, skip_xrefs, dedup, pno, repeated, seen, source) -> tuple[list[str], bytes, int, int]:
     refs: list[str] = []
     assets_dir.mkdir(parents=True, exist_ok=True)
     pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
@@ -355,7 +376,7 @@ def _page_images(page, doc, assets_dir, stem, counter, warnings, skip_xrefs, ded
                     continue
                 seen.add(digest)
             refs.append(f"![image]({rel})")
-            if skip_fullpage_ocr and any(_is_fullpage(r, page.rect) for r in page.get_image_rects(xref)):
+            if any(_is_fullpage_image(r, page.rect) for r in page.get_image_rects(xref)):
                 continue
             transcription = maybe_transcribe_image(
                 extracted["image"],
@@ -733,24 +754,19 @@ class PDFConverter(Converter):
         ]
 
         columns = _detect_columns(content, page.rect.width, page.rect.height)
-        scan_like = not content
-        needs_ocr = _page_is_complex(content) or (scan_like and config.is_enabled("vision"))
+        quality = text_layer_quality([ln.text for ln in content])
+        page_via_vision = config.is_enabled("vision") and (
+            quality != "usable"
+            or (not columns and _page_is_complex(content))
+        )
 
         image_refs, page_png, png_w, png_h = _page_images(
             page, doc, assets_dir, stem, counter, warnings, skip_xrefs, dedup, pno, repeated, seen, source,
-            skip_fullpage_ocr=(scan_like and config.is_enabled("vision")),
         )
         out.extend(image_refs)
         out.append("")
 
-        if columns:
-            for col_lines, col_tables in zip(
-                (_ordered_lines(col) for col in columns),
-                _tables_for_columns(tables, columns),
-            ):
-                out.extend(self._emit_group(col_lines, col_tables, paper))
-            out.append("")
-        elif needs_ocr:
+        if page_via_vision:
             labels = _raw_text(content).splitlines()
             bands = detect_bands(
                 page, [ln.bbox for ln in content], page.rect.width, page.rect.height
@@ -785,6 +801,13 @@ class PDFConverter(Converter):
                     out.extend(_strip_transcribed_title(transcription).splitlines())
                 elif _raw_text(content).strip():
                     out.append(_details_block("Raw extracted text", _raw_text(content)))
+        elif columns:
+            for col_lines, col_tables in zip(
+                (_ordered_lines(col) for col in columns),
+                _tables_for_columns(tables, columns),
+            ):
+                out.extend(self._emit_group(col_lines, col_tables, paper))
+            out.append("")
         else:
             out.extend(self._emit_group(content, tables, paper))
 

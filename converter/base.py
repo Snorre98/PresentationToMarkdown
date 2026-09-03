@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import math
+import re
 from abc import ABC, abstractmethod
 from collections import Counter
 from dataclasses import dataclass, field
@@ -116,6 +117,33 @@ def _format_md(text: str, bold: bool = False, italic: bool = False) -> str:
     if italic:
         return f"*{text}*"
     return text
+
+
+# Text-layer quality thresholds: below these the layer is treated as OCR
+# garbage and routed to the vision path (ADR-0020) rather than emitted verbatim.
+_TEXT_QUALITY_MIN_WORDS = 12
+_TEXT_QUALITY_MIN_TTR = 0.35
+_TEXT_QUALITY_MIN_MEAN_LEN = 10.0
+
+
+def text_layer_quality(texts: list[str]) -> str:
+    """Classify a page's text layer as ``usable`` / ``sparse`` / ``empty``.
+
+    ``sparse`` covers both genuinely thin pages and OCR-garbage layers: too few
+    content words (4+ alphanumeric), a low unique-word ratio (repeated OCR
+    artifacts), or fragmentary mean line length. Callers use this to route a
+    page to the vision path instead of emitting the layer verbatim.
+    """
+    words = re.findall(r"[A-Za-z0-9]{4,}", " ".join(texts).lower())
+    if not words:
+        return "empty"
+    if len(words) < _TEXT_QUALITY_MIN_WORDS:
+        return "sparse"
+    ttr = len(set(words)) / len(words)
+    mean_len = sum(len(t.strip()) for t in texts) / max(len(texts), 1)
+    if ttr < _TEXT_QUALITY_MIN_TTR or mean_len < _TEXT_QUALITY_MIN_MEAN_LEN:
+        return "sparse"
+    return "usable"
 
 
 def image_digest(blob: bytes) -> str:

@@ -38,6 +38,7 @@ import time
 from dataclasses import dataclass
 
 from converter import config
+from converter.base import text_layer_quality
 from converter.format import (
     FORMAT_API_KEY,
     FORMAT_BASE_URL,
@@ -60,11 +61,6 @@ STRUCTURE_API_KEY = os.environ.get("STRUCTURE_API_KEY", FORMAT_API_KEY)
 
 STRUCTURE_MAX_TOKENS = 6000
 _TIMEOUT = 600.0
-
-# Confidence-gate thresholds for the raw text layer.
-_MIN_WORDS = 12  # below this many content words the layer is "sparse"
-_MIN_TTR = 0.35  # below this unique-word ratio the text is likely OCR garbage
-_MIN_MEAN_LEN = 10.0  # below this mean line length the text is fragmentary
 
 # Structural block markers a model may legally add as heading text (beyond
 # words that are already grounded in the document's own text).
@@ -116,29 +112,16 @@ class PageData:
 _RAW_DETAILS_MARKERS = ("<details", "</details>", "<summary")
 
 
-def _word_text(text: str) -> list[str]:
-    """Content words of ``text`` (4+ chars) for coverage scoring."""
-    return re.findall(r"[A-Za-z0-9]{4,}", text)
-
-
 def _text_coverage(line_meta: list[dict]) -> str:
     """Classify a page's raw text layer as ``usable`` / ``sparse`` / ``empty``.
 
     The confidence signal: pages with too few words, a low unique-word ratio
     (repeated OCR garbage) or fragmentary line lengths cannot be given semantic
     structure from the text layer and must go to the image regime instead.
+    Delegates to the shared :func:`converter.base.text_layer_quality` so the
+    routing signal in the PDF converter (ADR-0020) stays in sync.
     """
-    words = _word_text(" ".join(m.get("text", "") for m in line_meta))
-    if not words:
-        return "empty"
-    if len(words) < _MIN_WORDS:
-        return "sparse"
-    ttr = len({w.lower() for w in words}) / len(words)
-    texts = [m.get("text", "") for m in line_meta]
-    mean_len = sum(len(t.strip()) for t in texts) / max(len(texts), 1)
-    if ttr < _MIN_TTR or mean_len < _MIN_MEAN_LEN:
-        return "sparse"
-    return "usable"
+    return text_layer_quality([m.get("text", "") for m in line_meta])
 
 
 def _page_regime(page: PageData) -> str:
