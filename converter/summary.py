@@ -18,12 +18,13 @@ never fails the conversion.
 Configuration (environment variables):
 
 - ``SUMMARY_ENABLED`` — master switch. Default off.
-- ``SUMMARY_BASE_URL`` — summary chat model server, defaults to ``WRITE_BASE_URL``
-  (reuses the writer, no extra server needed).
-- ``SUMMARY_MODEL`` — summary chat model id, defaults to ``WRITE_MODEL``.
+- ``SUMMARY_BASE_URL`` — summary chat model server, defaults to the dedicated
+  ``summary`` server (a small text model, ADR-0021) rather than the writer VLM.
+- ``SUMMARY_MODEL`` — summary chat model id, defaults to the ``summary`` server's
+  model (``Llama-3.2-3B-Instruct-4bit``).
 - ``SUMMARY_API_KEY`` — optional bearer token (unused for local servers).
 - ``EMBED_BASE_URL`` — embeddings server, default ``http://localhost:11434/v1``.
-- ``EMBED_MODEL`` — embeddings model id, default ``gemma-embedding``.
+- ``EMBED_MODEL`` — embeddings model id, default ``nomic-embed-text``.
 - ``EMBED_API_KEY`` — optional bearer token (unused for local servers).
 """
 from __future__ import annotations
@@ -41,28 +42,38 @@ import numpy as np
 from converter import config
 from converter.format import _iter_slides
 from converter.logstore import _connection, _lock
-from converter.vision import _chat_completion
-from converter.write import WRITE_API_KEY, WRITE_BASE_URL, WRITE_MODEL
+from converter.vision import _chat_completion, strip_code_fences
+from converter.write import WRITE_API_KEY
 
 try:
     import sqlite_vec
 except ImportError:  # pragma: no cover - sqlite-vec is a soft dependency
     sqlite_vec = None
 
-SUMMARY_BASE_URL = os.environ.get("SUMMARY_BASE_URL", WRITE_BASE_URL)
-SUMMARY_MODEL = os.environ.get("SUMMARY_MODEL", WRITE_MODEL)
+SUMMARY_BASE_URL = os.environ.get(
+    "SUMMARY_BASE_URL", config.SERVERS["summary"].base_url
+)
+SUMMARY_MODEL = os.environ.get(
+    "SUMMARY_MODEL", config.SERVERS["summary"].model
+)
 SUMMARY_API_KEY = os.environ.get("SUMMARY_API_KEY", WRITE_API_KEY)
 
 EMBED_BASE_URL = os.environ.get("EMBED_BASE_URL", "http://localhost:11434/v1")
-EMBED_MODEL = os.environ.get("EMBED_MODEL", "embeddinggemma")
+EMBED_MODEL = os.environ.get("EMBED_MODEL", "nomic-embed-text")
 EMBED_API_KEY = os.environ.get("EMBED_API_KEY") or None
 
-SUMMARY_MAX_TOKENS = 2048
+SUMMARY_MAX_TOKENS = 900
 _EMBED_TIMEOUT = 120.0
 _SUMMARY_TIMEOUT = 600.0
 
 _EMBED_DIM_KEY = "summary_embed_dim"
 _MAX_CONTEXT_CHARS = 12000
+_RETRIEVE_TOP_K = 12
+
+_KNOWN_EMBED_DIMS = {
+    "embeddinggemma": 768,
+    "nomic-embed-text": 768,
+}
 
 _DOCS_CHUNKS_SCHEMA = """
 CREATE TABLE IF NOT EXISTS deck_documents (
@@ -130,6 +141,19 @@ def _l2_normalize(vec: list[float]) -> list[float]:
 
 def _probe_dim() -> int:
     return len(_embed(["probe"])[0])
+
+
+def _embed_dim() -> int:
+    """Resolve the embedding dimension, skipping the probe for known models.
+
+    A probe call is a cold round-trip to the embeddings server; for the default
+    models the dimension is stable, so we reuse a hardcoded value and only probe
+    unknown ``EMBED_MODEL`` ids.
+    """
+    known = _KNOWN_EMBED_DIMS.get(EMBED_MODEL)
+    if known is not None:
+        return known
+    return _probe_dim()
 
 
 def _load_vec(conn) -> bool:
@@ -250,18 +274,6 @@ def _index(source_path: Path, slides: list[str]) -> tuple[int, list[dict]]:
             raise RuntimeError("could not load the sqlite-vec extension")
         _ensure_base_tables(conn)
         dim = _known_dim(conn)
-
-    if dim is None:
-        dim = _probe_dim()
-        with _lock:
-            conn = _connection()
-            _load_vec(conn)
-            _store_dim(conn, dim)
-
-    with _lock:
-        conn = _connection()
-        _load_vec(conn)
-        _ensure_vec_table(conn, dim)
         doc_id = _upsert_document(conn, source_path, source_hash, len(slides))
         existing = dict(
             conn.execute(
@@ -273,6 +285,21 @@ def _index(source_path: Path, slides: list[str]) -> tuple[int, list[dict]]:
 
     to_embed = [r for r in records if existing.get(r["chunk_index"]) != r["content_hash"]]
     vectors = _embed([r["content"] for r in to_embed]) if to_embed else []
+
+    # Derive the vector dimension from the actual embedding output rather than a
+    # separate probe round-trip; the probe cache in ``meta`` covers re-runs.
+    if dim is None:
+        if vectors:
+            dim = len(vectors[0])
+        else:
+            dim = _embed_dim()
+
+    with _lock:
+        conn = _connection()
+        _load_vec(conn)
+        if dim is not None:
+            _store_dim(conn, dim)
+            _ensure_vec_table(conn, dim)
 
     with _lock:
         conn = _connection()
@@ -467,6 +494,28 @@ def _valid(sections: dict[str, list[str]]) -> bool:
     return bool(abstract) and bool(topics) and bool(takeaways)
 
 
+def _looks_garbled(reply: str) -> bool:
+    """Whether a failed summary reply is worth retrying.
+
+    Retrying a model that produced a *thin but clean* answer (or nothing useful)
+    is wasted latency — the deterministic fallback covers that case. Only a reply
+    that looks structurally broken is retried: no parseable sections at all, a
+    heading section that yielded no bullets, or suspiciously low word diversity.
+    """
+    sections = _parse_sections(reply)
+    has_heading = bool(_find_section(sections, "abstract")) or bool(
+        _find_section(sections, "topic")
+    ) or bool(_find_section(sections, "takeaway"))
+    if reply.strip() and not has_heading:
+        return True
+    if has_heading and not any(_bullets(lines) for lines in sections.values()):
+        return True
+    words = re.findall(r"[A-Za-z0-9]+", reply.lower())
+    if words and len(set(words)) / len(words) < 0.4:
+        return True
+    return False
+
+
 def _build_header(
     abstract: str,
     topics: list[str],
@@ -552,6 +601,7 @@ def _generate_summary(
         except Exception as exc:
             warnings.append(f"Summary model call failed: {exc}")
             break
+        reply = strip_code_fences(reply)
         sections = _parse_sections(reply)
         if _valid(sections):
             abstract = " ".join(l.strip() for l in _find_section(sections, "abstract")).strip()
@@ -559,8 +609,10 @@ def _generate_summary(
             takeaways = _bullets(_find_section(sections, "takeaway"))
             terms = [l.strip() for l in _find_section(sections, "term") if l.strip().startswith("- ")]
             return _build_header(abstract, topics, takeaways, terms, metadata, counts)
-        if attempt == 0:
-            warnings.append("Summary output did not validate; retrying once")
+        if attempt == 0 and _looks_garbled(reply):
+            warnings.append("Summary output was garbled; retrying once")
+        else:
+            break
     return _fallback_header(titles, metadata, counts)
 
 
@@ -588,7 +640,7 @@ def prepend_summary(md_path: Path, source_path: Path, warnings: list[str]) -> No
                 "key takeaways, conclusions, and most important points",
                 "important terms and their definitions",
             ]
-            top_k = len(slides)
+            top_k = _RETRIEVE_TOP_K
             query_vectors = _embed(queries)
             with _lock:
                 conn = _connection()

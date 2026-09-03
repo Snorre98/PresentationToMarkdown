@@ -377,13 +377,15 @@ standardized English summary header to each converted presentation. It stores
 per-slide chunks and **sqlite-vec** embeddings in `ptm.sqlite`, retrieves the most
 salient chunks, and has a dedicated summary chat model write the header.
 
-- **Summary model** — reuses the **writer** by default
-  (`SUMMARY_BASE_URL` defaults to `WRITE_BASE_URL`,
-  `SUMMARY_MODEL` to `WRITE_MODEL`, i.e. Qwen2.5-VL-7B on `:8081`), so no extra
-  server is needed; override `SUMMARY_*` to use a dedicated text model instead.
+- **Summary model** — a dedicated small text model
+  (ADR-0021): `SUMMARY_BASE_URL`/`SUMMARY_MODEL` default to a `summary` server
+  (`mlx-community/Llama-3.2-3B-Instruct-4bit` on `:8084`) rather than the writer
+  VLM, so no 7B VLM is loaded for a short header. Override `SUMMARY_*` to use
+  another model.
 - **Embeddings** — served by Ollama (`EMBED_BASE_URL=http://localhost:11434/v1`,
-  `EMBED_MODEL=embeddinggemma`, a 768-dim embedding model). The dimension is
-  auto-detected, so any embedding model works.
+  `EMBED_MODEL=nomic-embed-text`). The dimension is derived from the actual
+  embedding output (and cached), so any embedding model works and there is no
+  separate probe call.
 
 The `sqlite-vec` extension is a Python dependency (`pip install sqlite-vec`) and
 loads on its own; no separate server is needed for the vector store.

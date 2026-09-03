@@ -90,6 +90,13 @@ SERVERS: dict[str, Server] = {
         port=11434,
         description="Embeddings daemon (embeddinggemma / nomic-embed-text)",
     ),
+    "summary": Server(
+        name="summary",
+        runner="mlx-lm",
+        port=8084,
+        model="mlx-community/Llama-3.2-3B-Instruct-4bit",
+        description="Summary chat (PresentationToMarkdown)",
+    ),
 }
 
 FEATURES: dict[str, Feature] = {
@@ -215,7 +222,7 @@ def _structure_url() -> str:
 
 
 def _summary_url() -> str:
-    return os.environ.get("SUMMARY_BASE_URL", _write_url())
+    return os.environ.get("SUMMARY_BASE_URL", SERVERS["summary"].base_url)
 
 
 def _embed_url() -> str:
@@ -227,7 +234,7 @@ _FEATURE_ENDPOINTS: dict[str, list[tuple[str, Callable[[], str]]]] = {
     "classify": [("transcriber", _vision_url), ("classifier", _classify_url)],
     "interpret": [("transcriber", _interpret_url)],
     "format": [("transcriber", _format_url)],
-    "summary": [("transcriber", _summary_url), ("ollama", _embed_url)],
+    "summary": [("summary", _summary_url), ("ollama", _embed_url)],
     "structure": [("transcriber", _structure_url)],
 }
 

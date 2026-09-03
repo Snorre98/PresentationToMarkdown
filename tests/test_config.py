@@ -85,8 +85,10 @@ def test_feature_endpoints_follow_write_not_vision(monkeypatch):
     monkeypatch.setenv("WRITE_BASE_URL", "http://127.0.0.1:9999/v1")
     monkeypatch.setenv("VISION_BASE_URL", "http://127.0.0.1:8081/v1")
     assert config.feature_endpoints("vision")[0][1] == "http://127.0.0.1:8081/v1"
-    for key in ("format", "interpret", "structure", "summary"):
+    for key in ("format", "interpret", "structure"):
         assert config.feature_endpoints(key)[0][1] == "http://127.0.0.1:9999/v1"
+    # Summary uses a dedicated small text model (ADR-0021), not the writer.
+    assert config.feature_endpoints("summary")[0][1] == "http://127.0.0.1:8084/v1"
 
 
 def test_writer_models_follow_write_not_vision():
@@ -102,8 +104,7 @@ def test_writer_models_follow_write_not_vision():
         "import converter.format as f\n"
         "import converter.structure as s\n"
         "import converter.interpret as i\n"
-        "import converter.summary as m\n"
-        "print(f.FORMAT_MODEL, s.STRUCTURE_MODEL, i.INTERPRET_MODEL, m.SUMMARY_MODEL, sep='|')\n"
+        "print(f.FORMAT_MODEL, s.STRUCTURE_MODEL, i.INTERPRET_MODEL, sep='|')\n"
     )
     out = subprocess.run(
         [sys.executable, "-c", script],
@@ -112,7 +113,29 @@ def test_writer_models_follow_write_not_vision():
         check=True,
         cwd=root,
     )
-    assert out.stdout.strip().split("|") == ["writer-model"] * 4
+    assert out.stdout.strip().split("|") == ["writer-model"] * 3
+
+
+def test_summary_model_is_dedicated_not_write():
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    script = (
+        "import os\n"
+        "os.environ['WRITE_MODEL'] = 'writer-model'\n"
+        "import converter.summary as m\n"
+        "print(m.SUMMARY_MODEL, sep='|')\n"
+    )
+    out = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        check=True,
+        cwd=root,
+    )
+    assert out.stdout.strip() == "mlx-community/Llama-3.2-3B-Instruct-4bit"
 
 
 def test_probe_up(monkeypatch):
