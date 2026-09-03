@@ -127,7 +127,13 @@ ptm-start --all
 # transcribe lecture audio to Markdown (decoupled from conversion)
 ptm-transcribe deck.md          # attach to existing Markdown
 ptm-transcribe week-2.mp3       # write week-2.transcript.md (no Markdown needed)
+
+# watch conversion progress in a local web dashboard
+ptm-dashboard --port 9090       # see "Dashboard" below
 ```
+
+These are the four entry points: `ptm`, `ptm-start`, `ptm-transcribe`, and
+`ptm-dashboard`.
 
 **`ptm`** — headless batch conversion, mirroring the GUI: folders are scanned
 recursively for `.pptx`/`.pdf`, the output folder defaults to
@@ -201,17 +207,73 @@ for r in results:
 
 ### Dashboard
 
-A read-only web dashboard for the conversion log (`ptm.sqlite`, ADR-0014) — watch
-per-page AI progress live while a conversion runs:
+A read-only web dashboard for the conversion log (`ptm.sqlite`), served by a
+small Flask app (ADR-0022, which supersedes the stdlib `dashboard.py` of
+ADR-0014). It lets you watch a conversion run live — including the whole-document
+`structure`/`summary` phases that used to appear idle — and inspect runs
+afterwards:
 
 ```bash
-./.venv/bin/python dashboard.py                        # port 8080
-./.venv/bin/python dashboard.py --db /path/to/ptm.sqlite --port 9000
+./.venv/bin/python -m dashboard                           # ptm.sqlite, port 8080
+ptm-dashboard --db /path/to/ptm.sqlite --port 9090        # same, after pip install -e .
+./.venv/bin/python -m dashboard --host 127.0.0.1 --db /path/to/ptm.sqlite --port 9000
 ```
 
-Opens the database read-only (never interferes with the running converter) and
-auto-refreshes every ~2s: an overview per source, a per-page timeline for a
-selected source, and an errors view.
+| Flag | Default | Purpose |
+| --- | --- | --- |
+| `--db PATH` | `<repo root>/ptm.sqlite` | Log database to watch |
+| `--host HOST` | `127.0.0.1` | Bind address (loopback only — a local debug surface) |
+| `--port N` | `8080` | Port to bind |
+
+It opens the database **read-only** (`mode=ro` + `query_only=ON`) on every
+request and never imports `converter`, so it cannot interfere with a running
+conversion (ADR-0014). It auto-refreshes every ~2s with these tabs:
+
+- **Runs** — one row per conversion run (`conversion_runs`): status, duration,
+  event and error counts; click a run to drill in.
+- **Timeline** — the run's phase swimlane (`convert → structure → format →
+  summary`, plus derived `classify`/`transcribe`/`interpret` spans from their
+  events) and the per-page events beneath it. This is where the old
+  "progress bar goes idle during structure/summary" gap (ADR-0013) is fixed.
+- **Errors** — all `vision_events` with an error, with structure/format
+  rejections pinned on top as the main cost driver.
+- **Models** — per-stage/per-model latency aggregates (count, min/avg/p50/p95/
+  max/total) with a histogram, so slow passes and outliers are easy to spot.
+- **RAG** — the per-presentation summary index (`deck_documents` slide counts,
+  `deck_chunks`, embedding dimension), populated when the summary pass runs
+  (ADR-0021).
+
+A per-run **Config** panel (inside the Timeline tab) shows the snapshot captured
+when the conversion started: which feature toggles were on, the resolved base
+URLs and model ids each pass used, `PDF_MODE`, and which servers were down at run
+start (ADR-0022).
+
+### Ports
+
+The local AI passes reserve a block of loopback ports, and the dashboard sits
+right next to them:
+
+| Port | Used by |
+| --- | --- |
+| `:8080` | **Dashboard default** |
+| `:8081` | Transcriber (mlx-vlm, Qwen2.5-VL-7B) |
+| `:8082` | Classifier gate (mlx-vlm, Qwen2.5-VL-3B) |
+| `:8083` | Audio server (dereverb / enhance / isolate / diarize) |
+| `:8084` | Summary chat model (mlx-lm, Llama-3.2-3B) |
+| `:11434` | Ollama (embeddings) |
+
+The dashboard's default `:8080` sits directly below the transcriber, and its
+automatic port-fallback walks up to `+100` (`:8080` → `:8180`) — straight through
+`:8081`/`:8082`/`:8083`/`:8084`. So if `:8080` is already taken and any AI server
+is running, the fallback will collide with those servers. When AI servers are up,
+start the dashboard on a port clear of the whole block:
+
+```bash
+ptm-dashboard --port 9090
+```
+
+If the port you ask for is free it simply binds there; the fallback only kicks
+in when that exact port is already occupied.
 
 ## Output layout
 
@@ -276,9 +338,9 @@ python3 -m venv .venv
 ./.venv/bin/pip install -e .
 ```
 
-This puts `ptm` (headless convert), `ptm-start` (GUI launcher), and
-`ptm-transcribe` (audio→Markdown transcription) on the venv's
-`PATH`. Skip it if you only want the GUI/library. If you'd rather not activate
+This puts `ptm` (headless convert), `ptm-start` (GUI launcher),
+`ptm-transcribe` (audio→Markdown transcription), and `ptm-dashboard` (web
+dashboard) on the venv's `PATH`. Skip it if you only want the GUI/library. If you'd rather not activate
 the venv, `scripts/ptm-start.sh` and `scripts/ptm-transcribe.sh` resolve
 `.venv/bin/ptm-start` / `.venv/bin/ptm-transcribe` for you (each bootstraps with
 `pip install -e .` if the binary is missing).
@@ -286,8 +348,9 @@ the venv, `scripts/ptm-start.sh` and `scripts/ptm-transcribe.sh` resolve
 ### 4. Run it
 
 ```bash
-./.venv/bin/python main.py     # GUI (or: ptm-start)
-ptm deck.pptx                  # headless conversion (if step 3 was run)
+./.venv/bin/python main.py      # GUI (or: ptm-start)
+ptm deck.pptx                   # headless conversion (if step 3 was run)
+ptm-dashboard --port 9090       # web dashboard (if step 3 was run)
 ```
 
 All other commands in this document use the venv interpreter (`.venv/bin/python`);
@@ -357,13 +420,13 @@ The model weights live on the external SSD under `HF_HOME` (see
 - `docs/ai-vision.md` — how to serve the vision model and enable the AI pass
 - `docs/ai-audio.md` — how to serve the ASR/diarization models and enable the audio pass
 - `docs/adr/` — architecture decision records for the CLI entry points
+- `dashboard/` — Flask web dashboard for the conversion log (`app.py`, `templates/`, `static/`, `__main__.py`; ADR-0022)
 - `gui.py` — PySide6 interface (file list, output folder, progress, log)
 - `main.py` — entry point
 - `cli.py` — `ptm` headless batch converter (GUI parity)
 - `cli_transcribe.py` — `ptm-transcribe` standalone audio→Markdown transcription
 - `start.py` — `ptm-start` GUI launcher with AI flags
 - `cli_common.py` — shared AI flag parser + env mapping
-- `dashboard.py` — read-only web dashboard for the conversion log (ADR-0014)
 - `tests/make_test_deck.py` — generates a synthetic deck covering all features
 - `tests/make_test_pdf.py` — generates a synthetic PDF for testing
 - `tests/test_converters.py` — pytest smoke tests for both converters

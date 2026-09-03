@@ -1,6 +1,6 @@
 # 0014. Read-only web dashboard for conversion logs
 
-- Status: Accepted
+- Status: Superseded by [0022](0022-flask-dashboard-conversion-telemetry.md)
 - Date: 2026-09-02
 
 ## Context
