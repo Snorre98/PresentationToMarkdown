@@ -35,6 +35,7 @@ from converter.vision import (
     image_mime,
     image_readable,
     transcribe_image,
+    transcribe_column,
     transcribe_image_meta,
     transcribe_page,
     transcription_quality,
@@ -123,6 +124,7 @@ _category_cache: dict[str, str] = {}
 _transcribe_cache: dict[str, str] = {}
 _meta_transcribe_cache: dict[str, str] = {}
 _page_transcribe_cache: dict[str, str] = {}
+_column_transcribe_cache: dict[str, str] = {}
 _readability_cache: dict[str, str | None] = {}
 
 
@@ -220,6 +222,38 @@ def transcribe_page_cached(
         )
         usage = None
     _page_transcribe_cache[digest] = markdown
+    if return_usage:
+        return markdown, usage
+    return markdown
+
+
+def transcribe_column_cached(
+    png_bytes: bytes,
+    base_url: str | None = None,
+    model: str | None = None,
+    api_key: str | None = None,
+    timeout: float = 600.0,
+    return_usage: bool = False,
+):
+    """Transcribe a single column slice, memoized by content digest.
+
+    Returns the markdown, or ``(markdown, usage)`` when ``return_usage`` is True.
+    """
+    digest = image_digest(png_bytes)
+    if digest in _column_transcribe_cache:
+        if return_usage:
+            return _column_transcribe_cache[digest], None
+        return _column_transcribe_cache[digest]
+    if return_usage:
+        markdown, usage = transcribe_column(
+            png_bytes, base_url=base_url, model=model, api_key=api_key, timeout=timeout, return_usage=True
+        )
+    else:
+        markdown = transcribe_column(
+            png_bytes, base_url=base_url, model=model, api_key=api_key, timeout=timeout
+        )
+        usage = None
+    _column_transcribe_cache[digest] = markdown
     if return_usage:
         return markdown, usage
     return markdown

@@ -22,3 +22,6 @@ Index of architectural decisions for PresentationToMarkdown, in
 | [0015](0015-duplicate-if-exists.md) | Duplicate-if-exists conversion option | Accepted |
 | [0016](0016-reader-writer-role-separation.md) | Reader/writer role separation for the AI passes | Accepted |
 | [0017](0017-model-residency-orchestration.md) | App-level model-residency orchestration across the local servers | Accepted |
+| [0018](0018-column-sliced-ocr.md) | Deterministic column-sliced OCR | Accepted |
+| [0019](0019-image-ink-projection-column-detection.md) | Image ink-projection column detection | Accepted |
+| [0020](0020-single-content-source-per-page.md) | Single content source per page (no duplicate text/vision emission) | Accepted |

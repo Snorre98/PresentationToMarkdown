@@ -32,8 +32,9 @@ from converter.base import (
     repeated_image_hashes,
     write_image,
 )
-from converter.classify import maybe_transcribe_image, transcribe_complex_page
+from converter.classify import maybe_transcribe_image
 from converter.interpret import interpret_diagram
+from converter.ocr_columns import detect_bands, detect_text_bands, transcribe_columns
 from converter.structure import PageData, structure_paper
 
 _BOLD_FLAG = 2**4
@@ -49,15 +50,6 @@ _FOOTER_MAX_SIZE = 16.0
 _FOOTER_BOTTOM_BAND = 70.0
 _ROW_TOL = 6.0
 _COMPLEX_DISTINCT_X = 8
-
-# Multi-column detection (coverage-profile based; see _detect_columns).
-_COLUMN_STEP = 2.0  # x-resolution of the coverage profile
-_COLUMN_GUTTER_COV = 0.02  # x is "gutter" when coverage < 2% of the max
-_COLUMN_MIN_LINES = 3
-_COLUMN_MIN_SPAN = 0.07  # a column must span at least 7% of the page height
-_COLUMN_LEFT_MAX_X0 = 0.18  # the leftmost column must start near the left margin
-_COLUMN_RIGHT_MIN_X0 = 0.35  # the rightmost column must start past 35% of the width
-_COLUMN_MIN_COVERAGE = 0.5  # columns must hold 50%+ of the page's lines
 
 # Paper mode heuristics.
 _HEADING_MAX_LEN = 40
@@ -328,7 +320,7 @@ def _line_in_tables(line: Line, tables) -> bool:
     return False
 
 
-def _page_images(page, doc, assets_dir, stem, counter, warnings, skip_xrefs, dedup, pno, repeated, seen, source) -> tuple[list[str], bytes, int, int]:
+def _page_images(page, doc, assets_dir, stem, counter, warnings, skip_xrefs, dedup, pno, repeated, seen, source, skip_fullpage_ocr=False) -> tuple[list[str], bytes, int, int]:
     refs: list[str] = []
     assets_dir.mkdir(parents=True, exist_ok=True)
     pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
@@ -363,6 +355,8 @@ def _page_images(page, doc, assets_dir, stem, counter, warnings, skip_xrefs, ded
                     continue
                 seen.add(digest)
             refs.append(f"![image]({rel})")
+            if skip_fullpage_ocr and any(_is_fullpage(r, page.rect) for r in page.get_image_rects(xref)):
+                continue
             transcription = maybe_transcribe_image(
                 extracted["image"],
                 extracted.get("ext", "bin"),
@@ -511,60 +505,18 @@ def _page_is_complex(lines: list[Line]) -> bool:
 def _detect_columns(lines: list[Line], page_width: float, page_height: float) -> list[list[Line]]:
     """Return the page's side-by-side text columns, or ``[]`` for one column.
 
-    Builds a vertical coverage profile (for each x, the summed height of every
-    line whose x-extent contains x) and treats low-coverage corridors as
-    "gutters"; the bands between gutters are the columns. Lines are assigned to
-    a band by their ``x0``. This is robust to justified text whose wrapped
-    continuation lines start at arbitrary x positions (their x-extent still
-    covers the gutter at a fixed x), which x0-gap clustering gets wrong.
+    Delegates the coverage-profile band detection to
+    :func:`converter.ocr_columns.detect_text_bands`, then groups ``lines`` into
+    those bands by their ``x0``. Multi-column *text* pages are linearized
+    column-by-column rather than OCR'd; the OCR path reuses the same bands.
     """
-    if len(lines) < 6:
+    bands = detect_text_bands([ln.bbox for ln in lines], page_width, page_height)
+    if len(bands) < 2:
         return []
-    step = _COLUMN_STEP
-    n = max(1, int(page_width / step))
-    cov = [0.0] * n
-    for ln in lines:
-        x0, y0, x1, y1 = ln.bbox
-        i0 = max(0, int(x0 / step))
-        i1 = min(n - 1, int(x1 / step))
-        h = max(y1 - y0, 1.0)
-        for i in range(i0, i1 + 1):
-            cov[i] += h
-    max_cov = max(cov)
-    if max_cov <= 0.0:
-        return []
-    threshold = max_cov * _COLUMN_GUTTER_COV
-    bands: list[tuple[float, float]] = []
-    band_start = 0
-    in_gutter = cov[0] < threshold
-    for i in range(1, n):
-        if cov[i] < threshold and not in_gutter:
-            bands.append((band_start * step, i * step))
-            in_gutter = True
-        elif cov[i] >= threshold and in_gutter:
-            in_gutter = False
-            band_start = i
-    if not in_gutter and (bands or n > 1):
-        bands.append((band_start * step, page_width))
-
     cols: list[list[Line]] = []
     for b0, b1 in bands:
-        band_lines = [ln for ln in lines if b0 <= ln.bbox[0] <= b1]
-        if len(band_lines) < _COLUMN_MIN_LINES:
-            continue
-        ys = [ln.bbox[1] for ln in band_lines]
-        if max(ys) - min(ys) < _COLUMN_MIN_SPAN * page_height:
-            continue
-        cols.append(band_lines)
-    if len(cols) < 2:
-        return []
+        cols.append([ln for ln in lines if b0 <= ln.bbox[0] <= b1])
     cols.sort(key=lambda c: min(ln.bbox[0] for ln in c))
-    if min(ln.bbox[0] for ln in cols[0]) > _COLUMN_LEFT_MAX_X0 * page_width:
-        return []
-    if min(ln.bbox[0] for ln in cols[-1]) < _COLUMN_RIGHT_MIN_X0 * page_width:
-        return []
-    if sum(len(c) for c in cols) < _COLUMN_MIN_COVERAGE * len(lines):
-        return []
     return cols
 
 
@@ -768,12 +720,6 @@ class PDFConverter(Converter):
             out.append(f"# {heading}")
             out.append("")
 
-        image_refs, page_png, png_w, png_h = _page_images(
-            page, doc, assets_dir, stem, counter, warnings, skip_xrefs, dedup, pno, repeated, seen, source
-        )
-        out.extend(image_refs)
-        out.append("")
-
         tables = [t for t in page.find_tables().tables if t.row_count >= 2 and t.col_count >= 2]
 
         content = [
@@ -787,6 +733,16 @@ class PDFConverter(Converter):
         ]
 
         columns = _detect_columns(content, page.rect.width, page.rect.height)
+        scan_like = not content
+        needs_ocr = _page_is_complex(content) or (scan_like and config.is_enabled("vision"))
+
+        image_refs, page_png, png_w, png_h = _page_images(
+            page, doc, assets_dir, stem, counter, warnings, skip_xrefs, dedup, pno, repeated, seen, source,
+            skip_fullpage_ocr=(scan_like and config.is_enabled("vision")),
+        )
+        out.extend(image_refs)
+        out.append("")
+
         if columns:
             for col_lines, col_tables in zip(
                 (_ordered_lines(col) for col in columns),
@@ -794,29 +750,40 @@ class PDFConverter(Converter):
             ):
                 out.extend(self._emit_group(col_lines, col_tables, paper))
             out.append("")
-        elif _page_is_complex(content):
+        elif needs_ocr:
             labels = _raw_text(content).splitlines()
-            interpretation = interpret_diagram(
-                page_png,
-                labels,
-                warnings,
-                log_ctx={"source": source, "page": pno},
-                width=png_w,
-                height=png_h,
+            bands = detect_bands(
+                page, [ln.bbox for ln in content], page.rect.width, page.rect.height
             )
-            if interpretation:
-                out.extend(interpretation.splitlines())
-            else:
-                transcription = transcribe_complex_page(
+            interpretation = None
+            if len(bands) < 2 and config.is_enabled("interpret"):
+                interpretation = interpret_diagram(
                     page_png,
+                    labels,
                     warnings,
                     log_ctx={"source": source, "page": pno},
                     width=png_w,
                     height=png_h,
                 )
+            if interpretation:
+                out.extend(interpretation.splitlines())
+            else:
+                transcription = transcribe_columns(
+                    page,
+                    [(ln.text, ln.bbox) for ln in content],
+                    page.rect.width,
+                    page.rect.height,
+                    page_png,
+                    tables=tables,
+                    warnings=warnings,
+                    log_ctx={"source": source, "page": pno},
+                    width=png_w,
+                    height=png_h,
+                    bands=bands,
+                )
                 if transcription:
                     out.extend(_strip_transcribed_title(transcription).splitlines())
-                else:
+                elif _raw_text(content).strip():
                     out.append(_details_block("Raw extracted text", _raw_text(content)))
         else:
             out.extend(self._emit_group(content, tables, paper))

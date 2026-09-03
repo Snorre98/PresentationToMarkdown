@@ -51,6 +51,19 @@ _PROMPT = (
     "Output only the Markdown."
 )
 
+_COLUMN_PROMPT = (
+    "Transcribe this text column to Markdown, reading top-to-bottom. Be lossless: "
+    "include every piece of text in the column, verbatim, and keep its structure.\n\n"
+    "Rules:\n"
+    "- Do not add a title or heading unless one is clearly present in this column.\n"
+    "- Use `- ` bullets (nested `  - ` for sub-bullets).\n"
+    "- Render tables as pipe tables.\n"
+    "- Preserve bold/italic where present.\n"
+    "- Do not add commentary, summaries, or your own explanations.\n"
+    "- Do not invent text. If text is illegible, leave it out rather than guessing.\n\n"
+    "Output only the Markdown."
+)
+
 _IMAGE_PROMPT = (
     "Transcribe this image to Markdown. Be lossless: include every piece of "
     "text in the image, verbatim, and keep its structure.\n\n"
@@ -327,6 +340,35 @@ def transcribe_page(
     """
     messages = [
         {"role": "user", "content": [{"type": "text", "text": _PROMPT}, _image_content(png_bytes)]}
+    ]
+    return _chat_completion(
+        messages,
+        base_url=base_url,
+        model=model,
+        api_key=api_key,
+        max_tokens=TRANSCRIBE_MAX_TOKENS,
+        timeout=timeout,
+        return_usage=return_usage,
+    )
+
+
+def transcribe_column(
+    png_bytes: bytes,
+    base_url: str | None = None,
+    model: str | None = None,
+    api_key: str | None = None,
+    timeout: float = 600.0,
+    return_usage: bool = False,
+):
+    """Send a single column-slice PNG to the vision model for a Markdown transcription.
+
+    Uses a column-specific prompt (top-to-bottom, no slide title) so a sliced
+    column is read as a continuous text stream rather than a slide.
+
+    Returns the markdown, or ``(markdown, usage)`` when ``return_usage`` is True.
+    """
+    messages = [
+        {"role": "user", "content": [{"type": "text", "text": _COLUMN_PROMPT}, _image_content(png_bytes)]}
     ]
     return _chat_completion(
         messages,
