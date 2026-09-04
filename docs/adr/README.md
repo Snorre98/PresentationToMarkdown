@@ -31,3 +31,4 @@ Index of architectural decisions for PresentationToMarkdown, in
 | [0024](0024-pipeline-router-and-text-downgrade.md) | Centralized pre-execution pipeline router and structure text-model downgrade | Accepted |
 | [0025](0025-web-gui-native-engine.md) | Web GUI with a native engine process | Accepted |
 | [0026](0026-sqlalchemy-orm.md) | SQLAlchemy 2.0 ORM for the ptm.sqlite log/settings/RAG store | Accepted |
+| [0027](0027-browser-file-upload.md) | Browser file upload to the native engine | Accepted |

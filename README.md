@@ -1,8 +1,9 @@
 # Presentation to Markdown
 
-Desktop app and reusable Python library that converts PowerPoint presentations (`.pptx`) and PDF documents (`.pdf`) into Markdown. Personal-use tool built for feeding lecture slides into an Obsidian vault.
+Web app, desktop app and reusable Python library that converts PowerPoint presentations (`.pptx`) and PDF documents (`.pdf`) into Markdown. Personal-use tool built for feeding lecture slides into an Obsidian vault.
 
-- **GUI** — drag-and-drop files, batch convert, watch progress and per-file results in a log
+- **Web GUI** — a full in-browser converter (drag-and-drop, batch convert, live progress, history) driven by a local native **engine** process
+- **Desktop GUI** — PySide6 interface (file list, output folder, progress, log), kept as a fallback
 - **Library** — importable `converter` package, no UI dependencies
 
 ## What it does
@@ -85,7 +86,12 @@ occurrences become a text hyperlink to the same asset instead of a repeated imag
 
 ## How to use
 
-### GUI
+The **web GUI** (below, *Web GUI*) is the primary interface: it converts, browses
+files, and watches history through a native engine process. The **desktop GUI**
+(`main.py` / `ptm-start`) remains a supported fallback, and the **CLI**
+(`ptm`) is the headless equivalent.
+
+### Desktop GUI
 
 ```bash
 ./.venv/bin/python main.py
@@ -343,7 +349,7 @@ Slides are separated by an HTML page break (`<div style="page-break-after: alway
 
 ## Install
 
-Requires **Python 3.10+**. Dependencies: `python-pptx`, `PyMuPDF` (PDF), and `PySide6` (GUI).
+Requires **Python 3.10+**. Dependencies: `python-pptx`, `PyMuPDF` (PDF), `PySide6` (desktop GUI), `flask`/`flask-sock` + `simple-websocket` (web GUI), `SQLAlchemy` + `sqlite-vec` (log/settings/RAG store), and `numpy`.
 
 ### 1. Clone and set up a virtual environment
 
@@ -441,14 +447,15 @@ The model weights live on the external SSD under `HF_HOME` (see
   - `structure.py` — paper-mode document-structure LLM pass (verbatim text regime + image reword)
   - `config.py` — runtime registry of AI feature toggles + local server catalog (ADR-0012)
   - `render.py` — LibreOffice + PyMuPDF rendering for PPTX charts
-  - `logstore.py` — SQLite log of classifier/transcription decisions (`ptm.sqlite`)
+  - `logstore.py` — conversion/vision telemetry façade over the SQLAlchemy ORM (`ptm.sqlite`)
+  - `db/` — SQLAlchemy engine, declarative models, and repository layer (ADR-0026)
   - `summary.py` — per-presentation RAG index (sqlite-vec) + standardized summary header
   - `transcribe.py` — standalone local audio→text (ffmpeg + mlx-whisper subprocess)
   - `audio.py` — speaker-diarization client (isolated PyTorch server)
 - `docs/ai-vision.md` — how to serve the vision model and enable the AI pass
 - `docs/ai-audio.md` — how to serve the ASR/diarization models and enable the audio pass
-- `docs/adr/` — architecture decision records for the CLI entry points
-- `dashboard/` — Flask web app for conversion + the read-only log view (`app.py`, `templates/`, `static/`, `__main__.py`; ADR-0022, ADR-0025)
+- `docs/adr/` — architecture decision records (MADR index)
+- `dashboard/` — Flask web app for conversion + the read-only log view (`app.py`, `db.py`, `templates/`, `static/`, `__main__.py`; ADR-0022, ADR-0025, ADR-0026)
 - `engine.py` — native engine process the web app drives (filesystem, conversion, settings; ADR-0025)
 - `gui.py` — PySide6 interface (file list, output folder, progress, log) — fallback desktop UI
 - `main.py` — entry point

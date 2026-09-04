@@ -1,11 +1,14 @@
 """Tests for the native engine process (``engine.py``, ADR-0025)."""
 from __future__ import annotations
 
+import io
+
 import pytest
 
 
 @pytest.fixture
 def client(monkeypatch, tmp_path):
+    monkeypatch.setenv("PTM_STATE_DIR", str(tmp_path / "state"))
     monkeypatch.setattr("engine._SUPPORTED_EXTENSIONS", {".pptx", ".pdf"})
     monkeypatch.setattr(
         "engine._import_converter",
@@ -101,6 +104,105 @@ def test_engine_config_get(client):
 def test_engine_recent(client):
     r = client.get("/api/recent").get_json()
     assert isinstance(r["recent"], list)
+
+
+def test_engine_upload_supported(client, tmp_path):
+    data = {"files": (io.BytesIO(b"fake-pptx"), "deck.pptx")}
+    r = client.post("/api/fs/upload", data=data, content_type="multipart/form-data").get_json()
+    assert len(r["files"]) == 1
+    assert r["files"][0]["name"] == "deck.pptx"
+    assert r["files"][0]["path"].startswith(str(tmp_path / "state" / "uploads"))
+    assert (tmp_path / "state" / "uploads" / "deck.pptx").exists()
+
+
+def test_engine_upload_rejects_unsupported(client, tmp_path):
+    data = {"files": (io.BytesIO(b"x"), "notes.txt")}
+    r = client.post("/api/fs/upload", data=data, content_type="multipart/form-data").get_json()
+    assert r["files"] == []
+    assert r["errors"] and r["errors"][0]["name"] == "notes.txt"
+    assert not any((tmp_path / "state" / "uploads").glob("*"))
+
+
+def test_engine_upload_neutralizes_path_traversal(client, tmp_path):
+    data = {"files": (io.BytesIO(b"x"), "../../evil.pptx")}
+    r = client.post("/api/fs/upload", data=data, content_type="multipart/form-data").get_json()
+    assert r["files"][0]["name"] == "evil.pptx"
+    assert r["files"][0]["path"].startswith(str(tmp_path / "state" / "uploads"))
+    assert (tmp_path / "state" / "uploads" / "evil.pptx").exists()
+
+
+def test_engine_upload_dedupes_collision(client, tmp_path):
+    client.post(
+        "/api/fs/upload",
+        data={"files": (io.BytesIO(b"x"), "deck.pptx")},
+        content_type="multipart/form-data",
+    ).get_json()
+    r = client.post(
+        "/api/fs/upload",
+        data={"files": (io.BytesIO(b"y"), "deck.pptx")},
+        content_type="multipart/form-data",
+    ).get_json()
+    assert r["files"][0]["name"] == "deck-1.pptx"
+
+
+def test_engine_prune_removes_stale_uploads(client, tmp_path):
+    up = tmp_path / "state" / "uploads"
+    up.mkdir(parents=True)
+    old = up / "stale.pptx"
+    old.write_bytes(b"x")
+    fresh = up / "fresh.pptx"
+    fresh.write_bytes(b"y")
+    import os
+    import time
+
+    now = time.time()
+    os.utime(old, (now - 8 * 24 * 3600, now - 8 * 24 * 3600))
+    import engine
+
+    engine._prune_uploads(now=now)
+    assert not old.exists()
+    assert fresh.exists()
+
+
+def test_engine_shutdown_returns_ok(client, monkeypatch):
+    killed = []
+    monkeypatch.setattr("engine.os.kill", lambda pid, sig: killed.append(pid))
+    monkeypatch.setattr("engine.time.sleep", lambda s: None)
+    r = client.post("/api/shutdown").get_json()
+    assert r["ok"] is True
+
+
+def test_engine_pids_filters_self_and_matches_marker(monkeypatch):
+    import engine
+
+    me = 12345
+    monkeypatch.setattr("engine.os", type("_os", (), {"getpid": lambda: me}))
+    fake_ps = type("_r", (), {"stdout": (
+        f"{me} python -m engine --port 8090\n"
+        "9999 python -m engine --port 8090\n"
+        "8888 /usr/bin/python ptm-engine --host 127.0.0.1\n"
+        "7777 python -m converter.something\n"
+        "6666 python -m engine\n"
+        "5555 python dashboard -m engine.py\n"
+    )})()
+    monkeypatch.setattr("engine.subprocess", type("_sp", (), {
+        "run": lambda *a, **k: fake_ps,
+        "SubprocessError": Exception,
+    })())
+    pids = engine._engine_pids()
+    assert me not in pids
+    assert 9999 in pids
+    assert 8888 in pids
+    assert 7777 not in pids
+
+
+def test_engine_kill_running(monkeypatch):
+    import engine
+
+    monkeypatch.setattr(engine, "_engine_pids", lambda port=None: [9999, 8888])
+    killed = []
+    monkeypatch.setattr(engine, "_kill_pid", lambda pid: (killed.append(pid), True)[1])
+    assert engine._kill_running_engines() == [9999, 8888]
 
 
 if __name__ == "__main__":

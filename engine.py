@@ -26,9 +26,11 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import signal
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 
 from flask import Flask, jsonify, request
@@ -38,6 +40,11 @@ DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8090
 
 _SUPPORTED_EXTENSIONS = {".pptx", ".pdf"}
+
+# Uploaded files are staged under the state dir (ADR-0027) and pruned after
+# this long. Sizes are enforced via Flask's MAX_CONTENT_LENGTH on the app.
+UPLOAD_MAX_AGE_SECONDS = 7 * 24 * 60 * 60
+MAX_UPLOAD_BYTES = 500 * 1024 * 1024
 
 _engine_state = {
     "status": "idle",  # idle | running | done | error
@@ -118,6 +125,158 @@ def _resolve_fs(path: str) -> dict:
     return {"path": str(target.resolve()), "is_dir": target.is_dir()}
 
 
+def _state_dir() -> Path:
+    """Return the app state dir (mirrors ``lock._state_dir``)."""
+    return Path(os.environ.get("PTM_STATE_DIR", Path.home() / ".local" / "state" / "ptm"))
+
+
+def _uploads_dir() -> Path:
+    """Staging directory for browser-uploaded files (ADR-0027)."""
+    return _state_dir() / "uploads"
+
+
+def _safe_upload_name(name: str) -> str:
+    """Reduce a client-supplied filename to a safe basename, or '' when rejected."""
+    base = (name or "").replace("\\", "/").rsplit("/", 1)[-1]
+    if not base or base in (".", "..") or base.startswith("."):
+        return ""
+    return base
+
+
+def _dedup_path(target: Path) -> Path:
+    """Return ``target`` if free, else a ``stem-N.suffix`` sibling that is."""
+    if not target.exists():
+        return target
+    stem, suffix = target.stem, target.suffix
+    for i in range(1, 10000):
+        candidate = target.with_name(f"{stem}-{i}{suffix}")
+        if not candidate.exists():
+            return candidate
+    return target.with_name(f"{stem}-{time.time_ns()}{suffix}")
+
+
+def _fs_upload(parts) -> dict:
+    """Persist uploaded file parts into the staging dir; return native paths."""
+    out_dir = _uploads_dir()
+    try:
+        out_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        return {"files": [], "error": f"cannot create upload dir: {exc}"}
+
+    saved: list[dict] = []
+    errors: list[dict] = []
+    for storage in parts:
+        original = storage.filename or ""
+        safe = _safe_upload_name(original)
+        if not safe:
+            errors.append({"name": original, "error": "invalid filename"})
+            continue
+        suffix = Path(safe).suffix.lower()
+        if suffix not in _SUPPORTED_EXTENSIONS:
+            errors.append({"name": original, "error": f"unsupported type {suffix or '(none)'}"})
+            continue
+        dest = _dedup_path(out_dir / safe)
+        try:
+            storage.save(str(dest))
+            size = dest.stat().st_size
+        except OSError as exc:
+            errors.append({"name": original, "error": str(exc)})
+            continue
+        saved.append({"name": dest.name, "path": str(dest.resolve()), "size": size})
+    return {"files": saved, "errors": errors or None}
+
+
+def _prune_uploads(now: float | None = None) -> None:
+    """Best-effort startup sweep of staged uploads older than the retention window."""
+    out_dir = _uploads_dir()
+    if not out_dir.is_dir():
+        return
+    cutoff = (now if now is not None else time.time()) - UPLOAD_MAX_AGE_SECONDS
+    try:
+        for child in out_dir.iterdir():
+            try:
+                if child.is_file() and child.stat().st_mtime < cutoff:
+                    child.unlink()
+            except OSError:
+                continue
+    except OSError:
+        return
+
+
+_PID_MARKERS = ("-m engine", "ptm-engine")
+
+
+def _engine_pids(port: int | None = None) -> list[int]:
+    """Return the PIDs of running engine processes, excluding this one.
+
+    Matches by command line (``python -m engine`` / ``ptm-engine``); when a
+    port is given it is also used as a cross-check via the process list, but
+    the command-line match is authoritative (keeps AI servers on 8081-8084 /
+    11434 out of the kill set).
+    """
+    pids: set[int] = set()
+    me = os.getpid()
+    try:
+        out = subprocess.run(
+            ["ps", "-ax", "-o", "pid=,command="],
+            capture_output=True, text=True, timeout=5,
+        )
+        for line in out.stdout.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            parts = line.split(None, 1)
+            if not parts:
+                continue
+            try:
+                pid = int(parts[0])
+            except ValueError:
+                continue
+            if pid == me:
+                continue
+            command = parts[1] if len(parts) > 1 else ""
+            if any(marker in command for marker in _PID_MARKERS):
+                pids.add(pid)
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+    if port is not None:
+        try:
+            out = subprocess.run(
+                ["lsof", "-ti", f"tcp:{port}"],
+                capture_output=True, text=True, timeout=5,
+            )
+            for token in out.stdout.split():
+                try:
+                    pid = int(token)
+                except ValueError:
+                    continue
+                if pid != me:
+                    pids.add(pid)
+        except (OSError, subprocess.SubprocessError):
+            pass
+
+    return sorted(pids)
+
+
+def _kill_pid(pid: int) -> bool:
+    """Send SIGTERM to ``pid``; return True on success."""
+    try:
+        os.kill(pid, signal.SIGTERM)
+        return True
+    except OSError:
+        return False
+
+
+def _kill_running_engines(port: int | None = None) -> list[int]:
+    """Terminate every running engine process; return the PIDs that were killed."""
+    killed: list[int] = []
+    for pid in _engine_pids(port):
+        if _kill_pid(pid):
+            killed.append(pid)
+    return killed
+
+
 def _job_execute(wsock, paths: list[str], output_dir: str | None, duplicate: bool) -> None:
     _, config, convert_files = _import_converter()
     from converter.settings import record_recent
@@ -175,6 +334,8 @@ def _job_execute(wsock, paths: list[str], output_dir: str | None, duplicate: boo
 
 def create_app() -> Flask:
     app = Flask("ptm-engine")
+    app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_BYTES
+    _prune_uploads()
     sock = Sock(app)
 
     @app.get("/api/health")
@@ -197,6 +358,19 @@ def create_app() -> Flask:
     @app.post("/api/fs/open")
     def fs_open():
         return jsonify(_fs_open((request.get_json(silent=True) or {}).get("path", "")))
+
+    @app.post("/api/fs/upload")
+    def fs_upload():
+        return jsonify(_fs_upload(request.files.values()))
+
+    @app.post("/api/shutdown")
+    def shutdown():
+        def _stop():
+            time.sleep(0.2)
+            os.kill(os.getpid(), signal.SIGTERM)
+
+        threading.Thread(target=_stop, daemon=True).start()
+        return jsonify({"ok": True})
 
     @app.get("/api/recent")
     def recent():
@@ -276,7 +450,22 @@ def _main(argv: list[str] | None = None) -> int:
     add_ai_flags(parser)
     parser.add_argument("--host", default=DEFAULT_HOST, help="host to bind (default: 127.0.0.1)")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT, help="port to bind (default: 8090)")
+    parser.add_argument(
+        "--kill",
+        action="store_true",
+        help="stop any running ptm-engine processes and exit",
+    )
     args = parser.parse_args(argv)
+
+    if args.kill:
+        port = int(os.environ.get("PTM_ENGINE_PORT", str(args.port)))
+        killed = _kill_running_engines(port)
+        if killed:
+            print(f"Stopped engine process(es): {', '.join(str(p) for p in killed)}", flush=True)
+        else:
+            print("No running ptm-engine process found.", flush=True)
+        return 0
+
     apply_ai_env(args)
 
     app = create_app()

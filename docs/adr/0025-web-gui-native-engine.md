@@ -55,6 +55,10 @@ keeping the PySide6 GUI as a supported fallback rather than replacing it.
 - `POST /api/engine/start` spawns the engine as a child of the UI process, applying
   AI environment variables *before* importing `converter` (ADR-0012 rule, the
   same order `start.py` uses). The child PID is recorded for teardown.
+- Teardown is symmetric: the web UI's **Stop engine** button (`POST
+  /api/engine/stop`) SIGTERMs the recorded child (falling back to the engine's
+  `/api/shutdown` for a hand-started process), and `ptm-engine --kill`
+  terminates any running engine process from the CLI.
 - The engine binds `127.0.0.1` on a default port (`:8090`) with the same `+100`
   port-fallback as the dashboard, kept clear of the AI-server block
   (`:8081`–`:8084`, `:11434`). A manually-started `ptm-engine` is also supported.

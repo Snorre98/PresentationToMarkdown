@@ -553,18 +553,34 @@ def create_app(db_path: str | None = None) -> Flask:
         result = _spawn_engine()
         return jsonify(result)
 
+    @app.post("/api/engine/stop")
+    def api_engine_stop():
+        stopped_pid = _stop_engine()
+        return jsonify({"ok": True, "stopped_pid": stopped_pid})
+
     def _proxy(method: str, path: str):
-        """Forward a GET/POST to the running engine, returning JSON (or a 503)."""
+        """Forward a GET/POST to the running engine, returning JSON (or a 503).
+
+        JSON control-plane calls are re-encoded; everything else (e.g. a
+        multipart file upload, ADR-0027) is forwarded byte-for-byte with its
+        original ``Content-Type``.
+        """
         if not _engine_alive():
             return jsonify({"error": "engine not running"}), 503
         url = _engine_base_url() + path
         try:
-            data = request.get_json(silent=True)
+            content_type = request.content_type or ""
             req = urllib.request.Request(url, method=method)
-            if method == "POST" and data is not None:
-                req.add_header("Content-Type", "application/json")
-                req.data = json.dumps(data).encode("utf-8")
-            with urllib.request.urlopen(req, timeout=60) as resp:
+            if method == "POST":
+                if content_type.startswith("application/json"):
+                    data = request.get_json(silent=True)
+                    if data is not None:
+                        req.add_header("Content-Type", "application/json")
+                        req.data = json.dumps(data).encode("utf-8")
+                else:
+                    req.add_header("Content-Type", content_type)
+                    req.data = request.get_data()
+            with urllib.request.urlopen(req, timeout=120) as resp:
                 return jsonify(json.loads(resp.read().decode("utf-8")))
         except Exception as exc:  # noqa: BLE001
             return jsonify({"error": f"engine unreachable: {exc}"}), 503
@@ -580,6 +596,10 @@ def create_app(db_path: str | None = None) -> Flask:
     @app.post("/api/engine/fs/open")
     def api_fs_open():
         return _proxy("POST", "/api/fs/open")
+
+    @app.post("/api/engine/fs/upload")
+    def api_fs_upload():
+        return _proxy("POST", "/api/fs/upload")
 
     @app.post("/api/engine/fs/resolve")
     def api_fs_resolve():
@@ -616,6 +636,35 @@ def _engine_alive() -> bool:
             return 200 <= resp.status < 300
     except Exception:  # noqa: BLE001
         return False
+
+
+def _stop_engine() -> int | None:
+    """Stop the engine; return the PID stopped (or None if it wasn't running).
+
+    Prefers signalling the recorded child PID (the engine the dashboard
+    spawned). Falls back to the engine's ``/api/shutdown`` for a hand-started
+    ``ptm-engine``. Idempotent: clears tracked state either way.
+    """
+    import signal
+
+    pid: int | None = _engine_state.get("pid")
+    if pid is not None and _engine_alive():
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            pid = None
+    if pid is None and _engine_alive():
+        url = _engine_base_url() + "/api/shutdown"
+        try:
+            req = urllib.request.Request(url, method="POST")
+            with urllib.request.urlopen(req, timeout=2) as resp:
+                resp.read()
+        except Exception:  # noqa: BLE001
+            pass
+    _engine_state["process"] = None
+    _engine_state["pid"] = None
+    _engine_state["started_at"] = None
+    return pid
 
 
 def _spawn_engine() -> dict:

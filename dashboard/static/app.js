@@ -89,15 +89,19 @@ function render() {
 }
 
 function renderEnginePill() {
-  const pill = $("engine-pill"), btn = $("engine-btn");
+  const pill = $("engine-pill"), btn = $("engine-btn"), stop = $("engine-stop-btn");
   if (state.engine.running) {
     pill.className = "pill running";
     pill.textContent = "\u25CF Engine running";
     btn.classList.add("hidden");
+    stop.classList.remove("hidden");
+    stop.onclick = stopEngineButton;
   } else {
     pill.className = "pill stopped";
     pill.textContent = "\u25CB Engine stopped";
     btn.classList.remove("hidden");
+    stop.classList.add("hidden");
+    stop.onclick = null;
   }
 }
 
@@ -178,14 +182,13 @@ function bindConvertEvents() {
   fl.addEventListener("dragleave", () => fl.classList.remove("drag"));
   fl.addEventListener("drop", e => {
     e.preventDefault(); fl.classList.remove("drag");
-    const paths = [...e.dataTransfer.files].map(f => f.path);
-    resolveAndAdd(paths);
+    uploadFiles([...e.dataTransfer.files]);
   });
 
   $("add-files-btn").onclick = () => {
     const input = document.createElement("input");
     input.type = "file"; input.accept = ".pptx,.pdf"; input.multiple = true;
-    input.onchange = () => resolveAndAdd([...input.files].map(f => f.path));
+    input.onchange = () => uploadFiles([...input.files]);
     input.click();
   };
   $("add-folder-btn").onclick = () => openBrowser("", "folder");
@@ -214,6 +217,34 @@ async function startEngineButton() {
   const r = await api("/api/engine/start", { method: "POST" });
   if (r.body && r.body.ok) { state.engine.running = true; state.engine.base_url = r.body.base_url; load(); }
   else alert("Engine failed to start: " + ((r.body && r.body.error) || "unknown"));
+}
+
+async function stopEngineButton() {
+  const r = await api("/api/engine/stop", { method: "POST" });
+  if (r.status !== 200) { alert("Failed to stop the engine."); return; }
+  state.engine.running = false;
+  load();
+}
+
+async function uploadFiles(files) {
+  if (!state.engine.running) { alert("Start the engine first."); return; }
+  if (!files.length) return;
+  const form = new FormData();
+  for (const f of files) form.append("files", f, f.name);
+  const r = await api("/api/engine/fs/upload", { method: "POST", body: form });
+  if (r.status !== 200 || !r.body) {
+    for (const f of files) addLog("err", "Upload failed for " + f.name);
+    renderLog();
+    return;
+  }
+  const seen = new Set(state.files);
+  let added = 0;
+  for (const f of (r.body.files || [])) {
+    if (!seen.has(f.path)) { seen.add(f.path); state.files.push(f.path); added++; }
+  }
+  for (const err of (r.body.errors || [])) addLog("err", "Not added: " + (err.name || "unknown") + " (" + err.error + ")");
+  if (added) { addLog("ok", "Added " + added + " (uploaded to the engine)"); renderLog(); }
+  render();
 }
 
 async function resolveAndAdd(paths) {
