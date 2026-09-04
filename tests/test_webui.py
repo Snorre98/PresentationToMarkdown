@@ -6,6 +6,9 @@ routes degrade gracefully, and the read-only history routes still work.
 """
 from __future__ import annotations
 
+import io
+import json
+
 import pytest
 
 import dashboard.app as appmod
@@ -41,6 +44,56 @@ def test_health_still_serves_read_only(app):
 def test_engine_start_delegates_to_spawn(app):
     r = app.test_client().post("/api/engine/start").get_json()
     assert r["ok"] is True
+
+
+def test_proxy_forwards_all_multipart_parts(app, monkeypatch):
+    from werkzeug.test import EnvironBuilder
+    from werkzeug.wsgi import get_input_stream
+    from werkzeug.formparser import parse_form_data
+
+    builder = EnvironBuilder(
+        method="POST",
+        data={"files": [
+            (io.BytesIO(b"fake-pptx-a"), "a.pptx"),
+            (io.BytesIO(b"fake-pdf-b"), "b.pdf"),
+        ]},
+    )
+    env = builder.get_environ()
+    raw = get_input_stream(env).read()
+    content_type = env.get("CONTENT_TYPE")
+
+    monkeypatch.setattr(appmod, "_engine_alive", lambda: True)
+    captured = {}
+
+    def fake_urlopen(req, timeout=None):
+        captured["data"] = req.data
+        captured["content_type"] = req.get_header("Content-type")
+
+        class _Resp:
+            def read(self):
+                return json.dumps({"files": [], "errors": None}).encode()
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        return _Resp()
+
+    monkeypatch.setattr(appmod.urllib.request, "urlopen", fake_urlopen)
+    r = app.test_client().post("/api/engine/fs/upload", data=raw, content_type=content_type)
+    assert r.status_code == 200
+    assert captured["data"] == raw
+
+    fwd_env = dict(env)
+    fwd_env["wsgi.input"] = io.BytesIO(captured["data"])
+    fwd_env["CONTENT_LENGTH"] = str(len(captured["data"]))
+    _, _, files = parse_form_data(
+        fwd_env, stream_factory=None, max_form_memory_size=None,
+        max_content_length=None, max_form_parts=1000,
+    )
+    assert [f.filename for f in files.getlist("files")] == ["a.pptx", "b.pdf"]
 
 
 def test_engine_stop_returns_ok_when_stopped(app):

@@ -407,6 +407,21 @@ def _duplicate_if_exists() -> bool:
         return False
 
 
+def _vault_root() -> str | None:
+    """Read the persisted ``vault_root`` preference.
+
+    The Obsidian vault root the engine scans when an uploaded file's on-disk
+    original cannot be resolved from ``recent_files`` (ADR-0028 fallback).
+    """
+    try:
+        from converter.settings import get_setting
+
+        value = get_setting("vault_root", "")
+        return value or None
+    except Exception:
+        return None
+
+
 def snapshot(probe: bool = True) -> dict:
     """Return a JSON-serialisable snapshot of the runtime AI configuration (ADR-0022).
 
@@ -436,6 +451,7 @@ def snapshot(probe: bool = True) -> dict:
     return {
         "pdf_mode": os.environ.get("PDF_MODE", "").strip().lower() or "slide",
         "duplicate": _duplicate_if_exists(),
+        "vault_root": _vault_root(),
         "features": {key: is_enabled(key) for key in FEATURES},
         "passes": passes,
         "embed_model": _embed_model() if is_enabled("summary") else None,

@@ -192,24 +192,87 @@ def _resolve_original(name: str, uploads_dir: Path, size: int | None = None) -> 
     ``name`` exactly, else by ``-<digits>``-suffix-stripped stem; staging-dir
     paths and missing files are skipped. When ``size`` is given, size-equal
     candidates are *preferred* within each match class but never required.
-    Returns ``None`` when no such original is known.
+
+    When ``recent_files`` yields no match, falls back to scanning the configured
+    vault root (the ``vault_root`` preference) for the basename, so a
+    freshly-dropped, never-converted file still resolves to its on-disk original
+    and outputs beside it rather than in the staging tree. Returns ``None`` when
+    no such original is known.
     """
     from converter.settings import recent_files
 
+    uploads = str(uploads_dir)
+
+    def _best(candidates) -> Path | None:
+        exact: list[Path] = []
+        stripped: list[Path] = []
+        for raw_path in candidates:
+            if not raw_path:
+                continue
+            path = Path(raw_path)
+            if uploads and (str(path) == uploads or str(path).startswith(uploads.rstrip("/") + "/")):
+                continue
+            if not path.exists():
+                continue
+            kind = _matches(name, path.name)
+            if kind == "exact":
+                exact.append(path)
+            elif kind == "stripped":
+                stripped.append(path)
+
+        def _prefer(bucket: list[Path]) -> Path | None:
+            if not bucket:
+                return None
+            if size is None:
+                return bucket[0]
+            sized = [p for p in bucket if p.stat().st_size == size]
+            return sized[0] if sized else bucket[0]
+
+        return _prefer(exact) or _prefer(stripped) or None
+
     try:
-        candidates = recent_files(limit=100)
+        found = _best(recent_files(limit=100))
     except Exception:  # noqa: BLE001
+        found = None
+    if found is not None:
+        return found
+
+    return _find_in_vault(name, uploads_dir, size)
+
+
+def _vault_root_pref() -> Path | None:
+    """Return the configured vault root as a ``Path``, or ``None`` when unset/invalid."""
+    from converter.settings import get_setting
+
+    try:
+        value = get_setting("vault_root", "")
+    except Exception:  # noqa: BLE001
+        return None
+    if not value:
+        return None
+    root = Path(value).expanduser()
+    return root if root.is_dir() else None
+
+
+def _find_in_vault(name: str, uploads_dir: Path, size: int | None = None) -> Path | None:
+    """Scan the configured vault root for ``name`` (bounded), excluding staging.
+
+    Runs a bounded depth-first walk of the vault root, matching exact basename
+    first then ``-<digits>``-stripped sterns, preferring a size-equal candidate.
+    Uses the same matching semantics as the ``recent_files`` fast path but
+    against the real on-disk tree, so never-seen files resolve to their source.
+    """
+    root = _vault_root_pref()
+    if root is None:
         return None
     uploads = str(uploads_dir)
     exact: list[Path] = []
     stripped: list[Path] = []
-    for raw_path in candidates:
-        if not raw_path:
-            continue
-        path = Path(raw_path)
-        if uploads and (str(path) == uploads or str(path).startswith(uploads.rstrip("/") + "/")):
-            continue
-        if not path.exists():
+    for path in _walk_vault(root, uploads):
+        try:
+            if not path.is_file() or path.suffix.lower() not in _SUPPORTED_EXTENSIONS:
+                continue
+        except OSError:
             continue
         kind = _matches(name, path.name)
         if kind == "exact":
@@ -222,10 +285,50 @@ def _resolve_original(name: str, uploads_dir: Path, size: int | None = None) -> 
             return None
         if size is None:
             return bucket[0]
-        sized = [p for p in bucket if p.stat().st_size == size]
+        sized = [p for p in bucket if _safe_size(p) == size]
         return sized[0] if sized else bucket[0]
 
     return _prefer(exact) or _prefer(stripped) or None
+
+
+def _safe_size(path: Path) -> int | None:
+    try:
+        return path.stat().st_size
+    except OSError:
+        return None
+
+
+_MAX_VAULT_SCAN_FILES = 20000
+
+
+def _walk_vault(root: Path, uploads_dir: str):
+    """Depth-first walk of ``root``, yielding paths and pruning hidden/symlinked dirs.
+
+    Bounded by ``_MAX_VAULT_SCAN_FILES`` (not by depth); hidden entries,
+    symlinked dirs, and the staging dir itself are skipped so the scan stays
+    cheap and never re-enters the uploads tree.
+    """
+    seen = 0
+    stack = [root]
+    while stack and seen < _MAX_VAULT_SCAN_FILES:
+        current = stack.pop()
+        try:
+            with os.scandir(current) as it:
+                for entry in it:
+                    seen += 1
+                    if seen >= _MAX_VAULT_SCAN_FILES:
+                        return
+                    if entry.name.startswith("."):
+                        continue
+                    path = Path(entry.path)
+                    if str(path) == uploads_dir:
+                        continue
+                    if entry.is_dir(follow_symlinks=False):
+                        stack.append(path)
+                    else:
+                        yield path
+        except OSError:
+            continue
 
 
 def _fs_upload(parts) -> dict:
@@ -262,6 +365,8 @@ def _fs_upload(parts) -> dict:
             from converter.settings import set_upload_original
 
             set_upload_original(str(dest.resolve()), str(on_disk.resolve()))
+        else:
+            entry["fallback_dir"] = str((dest.parent / "markdown").resolve())
         saved.append(entry)
     return {"files": saved, "errors": errors or None}
 
@@ -456,7 +561,7 @@ def create_app() -> Flask:
 
     @app.post("/api/fs/upload")
     def fs_upload():
-        return jsonify(_fs_upload(request.files.values()))
+        return jsonify(_fs_upload(request.files.getlist("files")))
 
     @app.post("/api/shutdown")
     def shutdown():
@@ -494,6 +599,8 @@ def create_app() -> Flask:
             mode = "paper" if data["pdf_mode"] == "paper" else "slide"
             os.environ["PDF_MODE"] = mode
             set_setting("pdf_mode", mode)
+        if "vault_root" in data:
+            set_setting("vault_root", str(data["vault_root"]).strip())
         if "duplicate" in data:
             set_setting("duplicate_if_exists", "on" if data["duplicate"] else "off")
         return jsonify(config.snapshot(probe=False))

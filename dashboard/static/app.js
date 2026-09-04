@@ -5,7 +5,7 @@ let state = {
   source: null, runId: null, tab: "convert", lastOk: Date.now(),
   engine: { running: false, base_url: "" },
   engineConfig: null, servers: null,
-  files: [], outputDir: "", duplicate: false, paperMode: false,
+  files: [], outputDir: "", duplicate: false, paperMode: false, vaultRoot: "",
   ws: null, converting: false, logLines: [],
 };
 const $ = (id) => document.getElementById(id);
@@ -53,6 +53,7 @@ async function load() {
       if (cfg.status === 200) {
         state.engineConfig = cfg.body;
         state.paperMode = cfg.body.pdf_mode === "paper";
+        state.vaultRoot = cfg.body.vault_root || "";
         if (typeof cfg.body.duplicate === "boolean") state.duplicate = cfg.body.duplicate;
       }
       if (srv.status === 200) state.servers = srv.body;
@@ -123,6 +124,8 @@ function renderConvert() {
 
   html += '<div class="section-head">Output</div>';
   html += '<div class="row"><input class="field wide" id="output-edit" placeholder="Defaults to &lt;input-folder&gt;/markdown" value="' + esc(state.outputDir) + '"><button class="btn ghost" id="browse-out-btn">Browse</button><button class="btn ghost" id="open-out-btn">Open in Finder</button></div>';
+  html += '<div class="section-head">Vault root</div>';
+  html += '<div class="row"><input class="field wide" id="vault-root-edit" placeholder="Obsidian vault root (used to place uploads beside their source)" value="' + esc(state.vaultRoot || "") + '"><button class="btn ghost" id="browse-vault-btn">Browse</button></div>';
 
   html += '<div class="section-head">Options</div>';
   html += '<div class="checklist">';
@@ -205,6 +208,8 @@ function bindConvertEvents() {
     await api("/api/engine/fs/open", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path: target }) });
   };
   $("output-edit").onchange = e => { state.outputDir = e.target.value; };
+  $("browse-vault-btn").onclick = () => openBrowser("", "vault");
+  $("vault-root-edit").onchange = e => { state.vaultRoot = e.target.value; persistVaultRoot(e.target.value); };
   $("paper-check").onchange = e => { state.paperMode = e.target.checked; setPdfMode(e.target.checked ? "paper" : "slide"); };
   $("duplicate-check").onchange = e => { state.duplicate = e.target.checked; persistDuplicate(e.target.checked); };
   $("check-servers-btn").onclick = async () => {
@@ -245,6 +250,9 @@ async function uploadFiles(files) {
   let added = 0;
   for (const f of (r.body.files || [])) {
     if (!seen.has(f.path)) { seen.add(f.path); state.files.push(f.path); added++; }
+    if (f.fallback_dir && !f.original) {
+      addLog("warn", "Output for " + f.name + " will go to " + f.fallback_dir + " (no on-disk original found; set a Vault root to keep it beside the source).");
+    }
   }
   for (const err of (r.body.errors || [])) addLog("err", "Not added: " + (err.name || "unknown") + " (" + err.error + ")");
   if (added) { addLog("ok", "Added " + added + " (uploaded to the engine)"); renderLog(); }
@@ -300,6 +308,10 @@ function renderBrowser(dir, mode) {
     } else if (mode === "output") {
       state.outputDir = dir.path;
       render();
+    } else if (mode === "vault") {
+      state.vaultRoot = dir.path;
+      persistVaultRoot(dir.path);
+      render();
     }
   };
 }
@@ -331,6 +343,10 @@ async function setPdfMode(mode) {
 
 async function persistDuplicate(v) {
   await api("/api/engine/config", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ duplicate: v }) });
+}
+
+async function persistVaultRoot(path) {
+  await api("/api/engine/config", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ vault_root: path }) });
 }
 
 function addLog(kind, message) {

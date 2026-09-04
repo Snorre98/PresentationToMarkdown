@@ -42,6 +42,8 @@ class _FakeConfig:
     def snapshot(self, probe=False):
         return {
             "pdf_mode": "slide",
+            "duplicate": False,
+            "vault_root": None,
             "features": {"vision": False, "summary": False},
             "passes": {},
             "embed_model": None,
@@ -99,6 +101,30 @@ def test_engine_config_get(client):
     c = client.get("/api/config").get_json()
     assert c["pdf_mode"] in ("slide", "paper")
     assert "features" in c
+    assert "vault_root" in c
+
+
+def test_engine_config_set_vault_root(client, monkeypatch, tmp_path):
+    stored = {}
+    monkeypatch.setattr(
+        "converter.settings.set_setting",
+        lambda key, value: stored.__setitem__(key, value),
+    )
+    r = client.post("/api/config", json={"vault_root": str(tmp_path / "vault")}).get_json()
+    assert r["vault_root"] is not None or "vault_root" in r
+    assert stored.get("vault_root") == str(tmp_path / "vault")
+
+
+def test_engine_upload_no_original_sets_fallback_dir(client, tmp_path):
+    import engine
+
+    # no recent_files, no vault root -> unresolved -> fallback_dir set
+    data = {"files": (io.BytesIO(b"fake"), "fresh.pdf")}
+    r = client.post("/api/fs/upload", data=data, content_type="multipart/form-data").get_json()
+    assert len(r["files"]) == 1
+    f = r["files"][0]
+    assert f["original"] is None
+    assert f["fallback_dir"].endswith("uploads" + "/markdown")
 
 
 def test_engine_recent(client):
@@ -113,6 +139,19 @@ def test_engine_upload_supported(client, tmp_path):
     assert r["files"][0]["name"] == "deck.pptx"
     assert r["files"][0]["path"].startswith(str(tmp_path / "state" / "uploads"))
     assert (tmp_path / "state" / "uploads" / "deck.pptx").exists()
+
+
+def test_engine_upload_multiple_files(client, tmp_path):
+    data = {"files": [
+        (io.BytesIO(b"fake-pptx-a"), "a.pptx"),
+        (io.BytesIO(b"fake-pdf-b"), "b.pdf"),
+    ]}
+    r = client.post("/api/fs/upload", data=data, content_type="multipart/form-data").get_json()
+    assert len(r["files"]) == 2
+    names = {e["name"] for e in r["files"]}
+    assert names == {"a.pptx", "b.pdf"}
+    assert (tmp_path / "state" / "uploads" / "a.pptx").exists()
+    assert (tmp_path / "state" / "uploads" / "b.pdf").exists()
 
 
 def test_engine_upload_rejects_unsupported(client, tmp_path):
@@ -254,6 +293,23 @@ def test_resolve_original_strips_dedup_suffix(monkeypatch, tmp_path):
     assert got == real
 
 
+def test_resolve_original_prefers_size_equal(monkeypatch, tmp_path):
+    import engine
+
+    small = tmp_path / "real" / "deck-1.pdf"
+    small.parent.mkdir()
+    small.write_bytes(b"tiny")
+    big = tmp_path / "real" / "deck-3.pdf"
+    big.write_bytes(b"a much larger payload")
+
+    monkeypatch.setattr(
+        "converter.settings.recent_files",
+        lambda limit=10: [str(big), str(small)],
+    )
+    got = engine._resolve_original("deck-9.pdf", tmp_path / "state" / "uploads", size=len(b"a much larger payload"))
+    assert got == big
+
+
 def test_resolve_original_prefers_exact_over_stripped(monkeypatch, tmp_path):
     import engine
 
@@ -272,23 +328,6 @@ def test_resolve_original_prefers_exact_over_stripped(monkeypatch, tmp_path):
     assert got == real_exact
 
 
-def test_resolve_original_prefers_size_equal(monkeypatch, tmp_path):
-    import engine
-
-    small = tmp_path / "real" / "deck-1.pdf"
-    small.parent.mkdir()
-    small.write_bytes(b"tiny")
-    big = tmp_path / "real" / "deck-3.pdf"
-    big.write_bytes(b"a much larger payload")
-
-    monkeypatch.setattr(
-        "converter.settings.recent_files",
-        lambda limit=10: [str(big), str(small)],
-    )
-    got = engine._resolve_original("deck-9.pdf", tmp_path / "state" / "uploads", size=len(b"a much larger payload"))
-    assert got == big
-
-
 def test_resolve_original_size_is_preference_not_filter(monkeypatch, tmp_path):
     import engine
 
@@ -301,6 +340,81 @@ def test_resolve_original_size_is_preference_not_filter(monkeypatch, tmp_path):
     )
     got = engine._resolve_original("deck.pdf", tmp_path / "state" / "uploads", size=123456789)
     assert got == real
+
+
+def test_resolve_original_vault_root_scan(monkeypatch, tmp_path):
+    import engine
+
+    vault = tmp_path / "vault"
+    real = vault / "lectures" / "cluster presentation 2026-1.pdf"
+    real.parent.mkdir(parents=True)
+    real.write_bytes(b"fresh-drop")
+    uploads = tmp_path / "state" / "uploads"
+
+    monkeypatch.setattr(
+        "converter.settings.recent_files",
+        lambda limit=10: [],
+    )
+    monkeypatch.setattr(
+        "converter.settings.get_setting",
+        lambda key, default="": str(vault) if key == "vault_root" else default,
+    )
+    got = engine._resolve_original("cluster presentation 2026-1.pdf", uploads, size=len(b"fresh-drop"))
+    assert got == real
+
+
+def test_resolve_original_vault_root_scan_miss(monkeypatch, tmp_path):
+    import engine
+
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    (vault / "unrelated.pdf").write_bytes(b"x")
+    uploads = tmp_path / "state" / "uploads"
+
+    monkeypatch.setattr(
+        "converter.settings.recent_files",
+        lambda limit=10: [],
+    )
+    monkeypatch.setattr(
+        "converter.settings.get_setting",
+        lambda key, default="": str(vault) if key == "vault_root" else default,
+    )
+    assert engine._resolve_original("nope.pdf", uploads) is None
+
+
+def test_resolve_original_vault_root_strips_suffix(monkeypatch, tmp_path):
+    import engine
+
+    vault = tmp_path / "vault"
+    real = vault / "deck.pdf"
+    real.parent.mkdir(parents=True)
+    real.write_bytes(b"x")
+    uploads = tmp_path / "state" / "uploads"
+
+    monkeypatch.setattr(
+        "converter.settings.recent_files",
+        lambda limit=10: [],
+    )
+    monkeypatch.setattr(
+        "converter.settings.get_setting",
+        lambda key, default="": str(vault) if key == "vault_root" else default,
+    )
+    got = engine._resolve_original("deck-3.pdf", uploads)
+    assert got == real
+
+
+def test_resolve_original_no_vault_root_returns_none(monkeypatch, tmp_path):
+    import engine
+
+    monkeypatch.setattr(
+        "converter.settings.recent_files",
+        lambda limit=10: [],
+    )
+    monkeypatch.setattr(
+        "converter.settings.get_setting",
+        lambda key, default="": None if key == "vault_root" else default,
+    )
+    assert engine._resolve_original("deck.pdf", tmp_path / "state" / "uploads") is None
 
 
 def test_fs_upload_resolves_original_when_name_collides(client, isolated_db, monkeypatch, tmp_path):
