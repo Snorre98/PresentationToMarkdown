@@ -5,7 +5,7 @@ let state = {
   source: null, runId: null, tab: "convert", lastOk: Date.now(),
   engine: { running: false, base_url: "" },
   engineConfig: null, servers: null,
-  files: [], outputDir: "", duplicate: false,
+  files: [], outputDir: "", duplicate: false, paperMode: false,
   ws: null, converting: false, logLines: [],
 };
 const $ = (id) => document.getElementById(id);
@@ -50,7 +50,11 @@ async function load() {
       const [cfg, srv] = await Promise.all([
         api("/api/engine/config"), api("/api/engine/health/servers"),
       ]);
-      if (cfg.status === 200) state.engineConfig = cfg.body;
+      if (cfg.status === 200) {
+        state.engineConfig = cfg.body;
+        state.paperMode = cfg.body.pdf_mode === "paper";
+        if (typeof cfg.body.duplicate === "boolean") state.duplicate = cfg.body.duplicate;
+      }
       if (srv.status === 200) state.servers = srv.body;
     }
     if (state.runId) {
@@ -122,8 +126,8 @@ function renderConvert() {
 
   html += '<div class="section-head">Options</div>';
   html += '<div class="checklist">';
-  html += '<label><input type="checkbox" id="paper-check"> Paper layout (multi-column whitepapers)</label>';
-  html += '<label><input type="checkbox" id="duplicate-check"> Duplicate if exists (keep prior output)</label>';
+  html += '<label><input type="checkbox" id="paper-check"' + (state.paperMode ? ' checked' : '') + '> Paper layout (multi-column whitepapers)</label>';
+  html += '<label><input type="checkbox" id="duplicate-check"' + (state.duplicate ? ' checked' : '') + '> Duplicate if exists (keep prior output)</label>';
   html += '</div>';
 
   html += '<div class="section-head">AI features</div><div class="checklist" id="ai-checks"></div>';
@@ -201,7 +205,7 @@ function bindConvertEvents() {
     await api("/api/engine/fs/open", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path: target }) });
   };
   $("output-edit").onchange = e => { state.outputDir = e.target.value; };
-  $("paper-check").onchange = e => setPdfMode(e.target.checked ? "paper" : "slide");
+  $("paper-check").onchange = e => { state.paperMode = e.target.checked; setPdfMode(e.target.checked ? "paper" : "slide"); };
   $("duplicate-check").onchange = e => { state.duplicate = e.target.checked; persistDuplicate(e.target.checked); };
   $("check-servers-btn").onclick = async () => {
     const r = await api("/api/engine/health/servers");

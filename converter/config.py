@@ -393,13 +393,28 @@ def _embed_model() -> str | None:
         return None
 
 
+def _duplicate_if_exists() -> bool:
+    """Read the persisted ``duplicate_if_exists`` preference (ADR-0028/GUI parity).
+
+    Deferred import keeps ``config`` free of the settings/db layer at import
+    time (the same idiom as ``_pass_model``/``_embed_model``).
+    """
+    try:
+        from converter.settings import get_setting
+
+        return get_setting("duplicate_if_exists", "off").strip().lower() in _TRUE
+    except Exception:
+        return False
+
+
 def snapshot(probe: bool = True) -> dict:
     """Return a JSON-serialisable snapshot of the runtime AI configuration (ADR-0022).
 
     Captures ``PDF_MODE``, the on/off state of every feature, each enabled pass's
-    resolved base URLs and model id, the embeddings model, and — when ``probe``
-    is true — the ``missing_servers()`` result. Never raises; used to persist a
-    per-run record of "what models/toggles/servers were in effect".
+    resolved base URLs and model id, the embeddings model, the duplicate-if-exists
+    preference, and — when ``probe`` is true — the ``missing_servers()`` result.
+    Never raises; used to persist a per-run record of "what models/toggles/servers
+    were in effect".
     """
     passes: dict[str, dict] = {}
     for key in FEATURES:
@@ -420,6 +435,7 @@ def snapshot(probe: bool = True) -> dict:
         missing = []
     return {
         "pdf_mode": os.environ.get("PDF_MODE", "").strip().lower() or "slide",
+        "duplicate": _duplicate_if_exists(),
         "features": {key: is_enabled(key) for key in FEATURES},
         "passes": passes,
         "embed_model": _embed_model() if is_enabled("summary") else None,

@@ -53,3 +53,27 @@ def test_recent_files_limit(isolated_db):
     got = settings.recent_files(limit=5)
     assert len(got) == 5
     assert got[0] == "file_14.pptx"
+
+
+def test_upload_original_roundtrip(isolated_db):
+    assert settings.get_upload_original("/staged/x.pdf") is None
+    settings.set_upload_original("/staged/x.pdf", "/real/x.pdf")
+    assert settings.get_upload_original("/staged/x.pdf") == "/real/x.pdf"
+
+
+def test_upload_original_delete(isolated_db):
+    settings.set_upload_original("/staged/x.pdf", "/real/x.pdf")
+    settings.delete_upload_original("/staged/x.pdf")
+    assert settings.get_upload_original("/staged/x.pdf") is None
+
+
+def test_upload_original_uses_namespaced_meta_keys(isolated_db):
+    from sqlalchemy import text
+
+    settings.set_upload_original("/staged/x.pdf", "/real/x.pdf")
+    engine = db_engine.get_engine()
+    with engine.connect() as conn:
+        row = conn.execute(
+            text("SELECT value FROM meta WHERE key = 'upload_original:/staged/x.pdf'")
+        ).fetchone()
+    assert row == ("/real/x.pdf",)

@@ -132,6 +132,61 @@ def test_convert_file_default_output_dir(tmp_path):
     assert result.md_path.exists()
 
 
+def test_convert_file_output_dir_resolver(tmp_path):
+    import shutil
+
+    src = tmp_path / "deck.pptx"
+    shutil.copy(PPTX, src)
+    target = tmp_path / "resolved-out"
+    received = []
+
+    def resolver(path):
+        received.append(path)
+        return target
+
+    result = convert_file(src, resolver)
+    assert result.error is None
+    assert received == [src]
+    assert result.md_path == target / "deck.md"
+    assert result.md_path.exists()
+
+
+def test_convert_file_output_dir_resolver_none_falls_back(tmp_path):
+    import shutil
+
+    src = tmp_path / "deck.pptx"
+    shutil.copy(PPTX, src)
+
+    result = convert_file(src, lambda path: None)
+    assert result.error is None
+    assert result.md_path == tmp_path / "markdown" / "deck.md"
+
+
+def test_convert_files_resolves_per_file(tmp_path):
+    import shutil
+
+    src_a = tmp_path / "a" / "one.pptx"
+    src_a.parent.mkdir()
+    shutil.copy(PPTX, src_a)
+    src_b = tmp_path / "b" / "two.pptx"
+    src_b.parent.mkdir()
+    shutil.copy(PPTX, src_b)
+
+    seen = []
+
+    def resolver(path):
+        seen.append(path)
+        return path.parent / "md"
+
+    results = convert_files([src_a, src_b], resolver)
+    assert [r.error for r in results] == [None, None]
+    assert [str(r.md_path) for r in results] == [
+        str(src_a.parent / "md" / "one.md"),
+        str(src_b.parent / "md" / "two.md"),
+    ]
+    assert set(seen) == {src_a, src_b}
+
+
 def test_pptx_link_dest_encodes_spaces(tmp_path):
     import shutil
 

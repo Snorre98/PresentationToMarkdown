@@ -32,3 +32,4 @@ Index of architectural decisions for PresentationToMarkdown, in
 | [0025](0025-web-gui-native-engine.md) | Web GUI with a native engine process | Accepted |
 | [0026](0026-sqlalchemy-orm.md) | SQLAlchemy 2.0 ORM for the ptm.sqlite log/settings/RAG store | Accepted |
 | [0027](0027-browser-file-upload.md) | Browser file upload to the native engine | Accepted |
+| [0028](0028-upload-output-location.md) | Upload output location | Accepted |

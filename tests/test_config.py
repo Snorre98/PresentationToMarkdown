@@ -197,3 +197,19 @@ def test_snapshot_never_raises_even_with_no_servers(monkeypatch):
     config.set_enabled("vision", True)
     snap = config.snapshot(probe=True)
     assert snap["missing_servers"]  # down transcriber recorded
+
+
+def test_snapshot_reports_duplicate_preference(tmp_path, monkeypatch):
+    from converter.db import engine as db_engine
+    from converter import settings
+
+    monkeypatch.setenv("VISION_LOG_DB", str(tmp_path / "config_test.sqlite"))
+    db_engine.reset()
+    try:
+        assert config.snapshot(probe=False)["duplicate"] is False
+        settings.set_setting("duplicate_if_exists", "on")
+        assert config.snapshot(probe=False)["duplicate"] is True
+        settings.set_setting("duplicate_if_exists", "off")
+        assert config.snapshot(probe=False)["duplicate"] is False
+    finally:
+        db_engine.reset()

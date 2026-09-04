@@ -205,5 +205,261 @@ def test_engine_kill_running(monkeypatch):
     assert engine._kill_running_engines() == [9999, 8888]
 
 
+def test_resolve_original_matches_recent_basename(monkeypatch, tmp_path):
+    import engine
+
+    real = tmp_path / "real" / "03 What makes things fun to learn.pdf"
+    real.parent.mkdir()
+    real.write_bytes(b"x")
+    uploads = tmp_path / "state" / "uploads"
+
+    monkeypatch.setattr(
+        "converter.settings.recent_files",
+        lambda limit=10: [
+            str(real),
+            str(uploads / "03 What makes things fun to learn.pdf"),
+        ],
+    )
+    got = engine._resolve_original("03 What makes things fun to learn.pdf", uploads)
+    assert got == real
+
+
+def test_resolve_original_skips_staging_and_missing(monkeypatch, tmp_path):
+    import engine
+
+    uploads = tmp_path / "state" / "uploads"
+    monkeypatch.setattr(
+        "converter.settings.recent_files",
+        lambda limit=10: [
+            str(uploads / "deck.pptx"),
+            str(tmp_path / "gone" / "deck.pptx"),
+        ],
+    )
+    assert engine._resolve_original("deck.pptx", uploads) is None
+
+
+def test_resolve_original_strips_dedup_suffix(monkeypatch, tmp_path):
+    import engine
+
+    real = tmp_path / "real" / "deck.pdf"
+    real.parent.mkdir()
+    real.write_bytes(b"x")
+    uploads = tmp_path / "state" / "uploads"
+
+    monkeypatch.setattr(
+        "converter.settings.recent_files",
+        lambda limit=10: [str(real)],
+    )
+    got = engine._resolve_original("deck-2.pdf", uploads)
+    assert got == real
+
+
+def test_resolve_original_prefers_exact_over_stripped(monkeypatch, tmp_path):
+    import engine
+
+    real_exact = tmp_path / "real" / "deck-2.pdf"
+    real_exact.parent.mkdir()
+    real_exact.write_bytes(b"x")
+    real_plain = tmp_path / "real" / "deck.pdf"
+    real_plain.write_bytes(b"x")
+    uploads = tmp_path / "state" / "uploads"
+
+    monkeypatch.setattr(
+        "converter.settings.recent_files",
+        lambda limit=10: [str(real_plain), str(real_exact)],
+    )
+    got = engine._resolve_original("deck-2.pdf", uploads)
+    assert got == real_exact
+
+
+def test_resolve_original_prefers_size_equal(monkeypatch, tmp_path):
+    import engine
+
+    small = tmp_path / "real" / "deck-1.pdf"
+    small.parent.mkdir()
+    small.write_bytes(b"tiny")
+    big = tmp_path / "real" / "deck-3.pdf"
+    big.write_bytes(b"a much larger payload")
+
+    monkeypatch.setattr(
+        "converter.settings.recent_files",
+        lambda limit=10: [str(big), str(small)],
+    )
+    got = engine._resolve_original("deck-9.pdf", tmp_path / "state" / "uploads", size=len(b"a much larger payload"))
+    assert got == big
+
+
+def test_resolve_original_size_is_preference_not_filter(monkeypatch, tmp_path):
+    import engine
+
+    real = tmp_path / "real" / "deck.pdf"
+    real.parent.mkdir()
+    real.write_bytes(b"whatever size")
+    monkeypatch.setattr(
+        "converter.settings.recent_files",
+        lambda limit=10: [str(real)],
+    )
+    got = engine._resolve_original("deck.pdf", tmp_path / "state" / "uploads", size=123456789)
+    assert got == real
+
+
+def test_fs_upload_resolves_original_when_name_collides(client, isolated_db, monkeypatch, tmp_path):
+    real = tmp_path / "real" / "deck.pdf"
+    real.parent.mkdir()
+    real.write_bytes(b"x")
+    monkeypatch.setattr(
+        "converter.settings.recent_files",
+        lambda limit=10: [str(real)],
+    )
+    data = {"files": (io.BytesIO(b"x"), "deck.pdf")}
+    client.post("/api/fs/upload", data=data, content_type="multipart/form-data").get_json()
+    data2 = {"files": (io.BytesIO(b"x"), "deck.pdf")}
+    r = client.post("/api/fs/upload", data=data2, content_type="multipart/form-data").get_json()
+    assert r["files"][0]["name"].startswith("deck-")
+    assert r["files"][0]["original"] == str(real.resolve())
+
+
+def test_fs_upload_persists_and_returns_original(client, monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        "converter.settings.recent_files",
+        lambda limit=10: [str(tmp_path / "real" / "deck.pdf")],
+    )
+    real = tmp_path / "real" / "deck.pdf"
+    real.parent.mkdir()
+    real.write_bytes(b"x")
+
+    import engine
+
+    data = {"files": (io.BytesIO(b"fake"), "deck.pdf")}
+    r = client.post("/api/fs/upload", data=data, content_type="multipart/form-data").get_json()
+    assert r["files"][0]["original"] == str(real.resolve())
+    from converter.settings import get_upload_original
+
+    assert get_upload_original(r["files"][0]["path"]) == str(real.resolve())
+
+
+def test_fs_upload_no_original_when_unknown(client, tmp_path):
+    data = {"files": (io.BytesIO(b"fake"), "deck.pdf")}
+    r = client.post("/api/fs/upload", data=data, content_type="multipart/form-data").get_json()
+    assert r["files"][0]["original"] is None
+
+
+def test_prune_deletes_upload_original_meta(monkeypatch, tmp_path):
+    import engine
+    import os
+    import time
+
+    up = tmp_path / "state" / "uploads"
+    up.mkdir(parents=True)
+    stale = up / "old.pptx"
+    stale.write_bytes(b"x")
+    from converter.settings import set_upload_original
+
+    set_upload_original(str(stale), "/some/real/old.pptx")
+
+    now = time.time()
+    os.utime(stale, (now - 8 * 24 * 3600, now - 8 * 24 * 3600))
+    engine._prune_uploads(now=now)
+
+    from converter.settings import get_upload_original
+
+    assert get_upload_original(str(stale)) is None
+
+
+@pytest.fixture
+def isolated_db(monkeypatch, tmp_path):
+    monkeypatch.setenv("VISION_LOG_DB", str(tmp_path / "engine_test.sqlite"))
+    from converter.db import engine as db_engine
+
+    db_engine.reset()
+    yield
+    db_engine.reset()
+
+
+def test_fs_upload_persists_and_returns_original(client, isolated_db, monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        "converter.settings.recent_files",
+        lambda limit=10: [str(tmp_path / "real" / "deck.pdf")],
+    )
+    real = tmp_path / "real" / "deck.pdf"
+    real.parent.mkdir()
+    real.write_bytes(b"x")
+
+    data = {"files": (io.BytesIO(b"fake"), "deck.pdf")}
+    r = client.post("/api/fs/upload", data=data, content_type="multipart/form-data").get_json()
+    assert r["files"][0]["original"] == str(real.resolve())
+    from converter.settings import get_upload_original
+
+    assert get_upload_original(r["files"][0]["path"]) == str(real.resolve())
+
+
+def test_fs_upload_no_original_when_unknown(client, isolated_db, tmp_path):
+    data = {"files": (io.BytesIO(b"fake"), "deck.pdf")}
+    r = client.post("/api/fs/upload", data=data, content_type="multipart/form-data").get_json()
+    assert r["files"][0]["original"] is None
+
+
+def test_prune_deletes_upload_original_meta(isolated_db, monkeypatch, tmp_path):
+    import engine
+    import os
+    import time
+
+    monkeypatch.setenv("PTM_STATE_DIR", str(tmp_path / "state"))
+    up = tmp_path / "state" / "uploads"
+    up.mkdir(parents=True)
+    stale = up / "old.pptx"
+    stale.write_bytes(b"x")
+    from converter.settings import set_upload_original
+
+    set_upload_original(str(stale), "/some/real/old.pptx")
+
+    now = time.time()
+    os.utime(stale, (now - 8 * 24 * 3600, now - 8 * 24 * 3600))
+    engine._prune_uploads(now=now)
+
+    from converter.settings import get_upload_original
+
+    assert get_upload_original(str(stale)) is None
+
+
+def test_job_execute_uses_resolver_when_no_output_dir(isolated_db, monkeypatch, tmp_path):
+    from pathlib import Path
+
+    import engine
+
+    real = tmp_path / "real" / "deck.pdf"
+    real.parent.mkdir()
+    real.write_bytes(b"x")
+    staged = str(tmp_path / "state" / "uploads" / "deck.pdf")
+
+    from converter.settings import set_upload_original
+
+    set_upload_original(staged, str(real))
+    monkeypatch.setenv("PTM_STATE_DIR", str(tmp_path / "state"))
+
+    captured = {}
+
+    def fake_convert(paths, output_dir, **kw):
+        captured["output_dir"] = output_dir
+        return []
+
+    monkeypatch.setattr(
+        "engine._import_converter",
+        lambda: (frozenset(), _FakeConfig(), fake_convert),
+    )
+    import converter.settings as settings_mod
+
+    monkeypatch.setattr(settings_mod, "record_recent", lambda p: None)
+
+    class _WS:
+        def send(self, msg):
+            pass
+
+    engine._job_execute(_WS(), [staged], None, False)
+    resolver = captured["output_dir"]
+    assert callable(resolver)
+    assert resolver(Path(staged)) == real.parent / "markdown"
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))

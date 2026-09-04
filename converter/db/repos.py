@@ -241,6 +241,17 @@ def set_meta(key: str, value: str) -> None:
         session.close()
 
 
+def delete_meta(key: str) -> None:
+    session = get_session()
+    try:
+        row = session.get(Meta, key)
+        if row is not None:
+            session.delete(row)
+            session.commit()
+    finally:
+        session.close()
+
+
 def record_recent_path(path: str) -> None:
     session = get_session()
     try:

@@ -48,3 +48,33 @@ def recent_files(limit: int = 10) -> list[str]:
             return repos.recent_paths(limit)
     except Exception:
         return []
+
+
+_UPLOAD_ORIGINAL_PREFIX = "upload_original:"
+
+
+def set_upload_original(staged_path: str, original_path: str) -> None:
+    """Persist the on-disk original for a staged upload (ADR-0028). Never raises."""
+    try:
+        with _lock:
+            repos.set_meta(_UPLOAD_ORIGINAL_PREFIX + staged_path, original_path)
+    except Exception:
+        pass
+
+
+def get_upload_original(staged_path: str) -> str | None:
+    """Return the persisted original path for a staged upload, or ``None``."""
+    try:
+        with _lock:
+            return repos.get_meta(_UPLOAD_ORIGINAL_PREFIX + staged_path)
+    except Exception:
+        return None
+
+
+def delete_upload_original(staged_path: str) -> None:
+    """Forget the persisted original for a staged upload. Never raises."""
+    try:
+        with _lock:
+            repos.delete_meta(_UPLOAD_ORIGINAL_PREFIX + staged_path)
+    except Exception:
+        pass

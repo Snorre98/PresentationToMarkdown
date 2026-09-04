@@ -26,6 +26,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -155,6 +156,78 @@ def _dedup_path(target: Path) -> Path:
     return target.with_name(f"{stem}-{time.time_ns()}{suffix}")
 
 
+_COUNTER_SUFFIX = re.compile(r"-\d+$")
+
+
+def _strip_counter_suffix(stem: str) -> str:
+    """Strip a trailing ``-<digits>`` from a filename *stem* (the ``_dedup_path`` form)."""
+    return _COUNTER_SUFFIX.sub("", stem)
+
+
+def _key(name: str) -> tuple[str, str]:
+    """Return a ``(stem, suffix)`` identity for basename matching."""
+    path = Path(name)
+    return path.stem, path.suffix.lower()
+
+
+def _matches(name: str, candidate: str) -> str | None:
+    """Return 'exact' or 'stripped' when ``candidate`` matches ``name``, else None.
+
+    Exact basename wins; a match of the ``-<digits>``-stripped stems is the
+    fallback (handles the staging dedup suffix AND on-disk ``-N`` files).
+    """
+    if candidate == name:
+        return "exact"
+    c_stem, c_suffix = _key(candidate)
+    n_stem, n_suffix = _key(name)
+    if c_suffix == n_suffix and _strip_counter_suffix(c_stem) == _strip_counter_suffix(n_stem):
+        return "stripped"
+    return None
+
+
+def _resolve_original(name: str, uploads_dir: Path, size: int | None = None) -> Path | None:
+    """Resolve an uploaded file's on-disk original by basename match (ADR-0028).
+
+    Consults ``recent_files`` (most-recent first) for a path that matches
+    ``name`` exactly, else by ``-<digits>``-suffix-stripped stem; staging-dir
+    paths and missing files are skipped. When ``size`` is given, size-equal
+    candidates are *preferred* within each match class but never required.
+    Returns ``None`` when no such original is known.
+    """
+    from converter.settings import recent_files
+
+    try:
+        candidates = recent_files(limit=100)
+    except Exception:  # noqa: BLE001
+        return None
+    uploads = str(uploads_dir)
+    exact: list[Path] = []
+    stripped: list[Path] = []
+    for raw_path in candidates:
+        if not raw_path:
+            continue
+        path = Path(raw_path)
+        if uploads and (str(path) == uploads or str(path).startswith(uploads.rstrip("/") + "/")):
+            continue
+        if not path.exists():
+            continue
+        kind = _matches(name, path.name)
+        if kind == "exact":
+            exact.append(path)
+        elif kind == "stripped":
+            stripped.append(path)
+
+    def _prefer(bucket: list[Path]) -> Path | None:
+        if not bucket:
+            return None
+        if size is None:
+            return bucket[0]
+        sized = [p for p in bucket if p.stat().st_size == size]
+        return sized[0] if sized else bucket[0]
+
+    return _prefer(exact) or _prefer(stripped) or None
+
+
 def _fs_upload(parts) -> dict:
     """Persist uploaded file parts into the staging dir; return native paths."""
     out_dir = _uploads_dir()
@@ -182,7 +255,14 @@ def _fs_upload(parts) -> dict:
         except OSError as exc:
             errors.append({"name": original, "error": str(exc)})
             continue
-        saved.append({"name": dest.name, "path": str(dest.resolve()), "size": size})
+        entry = {"name": dest.name, "path": str(dest.resolve()), "size": size, "original": None}
+        on_disk = _resolve_original(safe, out_dir, size=size)
+        if on_disk is not None:
+            entry["original"] = str(on_disk.resolve())
+            from converter.settings import set_upload_original
+
+            set_upload_original(str(dest.resolve()), str(on_disk.resolve()))
+        saved.append(entry)
     return {"files": saved, "errors": errors or None}
 
 
@@ -197,6 +277,9 @@ def _prune_uploads(now: float | None = None) -> None:
             try:
                 if child.is_file() and child.stat().st_mtime < cutoff:
                     child.unlink()
+                    from converter.settings import delete_upload_original
+
+                    delete_upload_original(str(child))
             except OSError:
                 continue
     except OSError:
@@ -279,7 +362,7 @@ def _kill_running_engines(port: int | None = None) -> list[int]:
 
 def _job_execute(wsock, paths: list[str], output_dir: str | None, duplicate: bool) -> None:
     _, config, convert_files = _import_converter()
-    from converter.settings import record_recent
+    from converter.settings import get_upload_original, record_recent
 
     with _job_lock:
         if _job_running.is_set():
@@ -304,7 +387,17 @@ def _job_execute(wsock, paths: list[str], output_dir: str | None, duplicate: boo
     def on_page_progress(page: int, total: int, name: str) -> None:
         wsock.send(json.dumps({"type": "page", "page": page, "total": total, "name": name}))
 
-    out = Path(output_dir) if output_dir else None
+    if output_dir:
+        out = Path(output_dir)
+    else:
+        def resolve_output(path):
+            original = get_upload_original(str(Path(path).resolve()))
+            if original:
+                return Path(original).parent / "markdown"
+            return None
+
+        out = resolve_output
+
     try:
         results = convert_files(
             [Path(p) for p in paths],
@@ -314,7 +407,9 @@ def _job_execute(wsock, paths: list[str], output_dir: str | None, duplicate: boo
             duplicate_if_exists=duplicate,
         )
         for result in results:
-            record_recent(str(result.source_path.resolve()))
+            src = str(result.source_path.resolve())
+            original = get_upload_original(src)
+            record_recent(original or src)
             if result.error:
                 log("err", f"{result.source_path.name}: {result.error}")
             else:
