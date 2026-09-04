@@ -2,9 +2,12 @@
 from pathlib import Path
 
 import pytest
+from sqlalchemy import text
 
 import converter.summary as summary
-from converter import config, logstore
+from converter import config
+from converter.db import engine as db_engine
+from converter.db import repos
 
 
 @pytest.fixture(autouse=True)
@@ -16,9 +19,10 @@ def _reset_config():
 
 @pytest.fixture
 def isolated_db(tmp_path, monkeypatch):
-    monkeypatch.setattr(logstore, "VISION_LOG_DB", str(tmp_path / "test.sqlite"))
-    monkeypatch.setattr(logstore, "_conn", None)
+    monkeypatch.setenv("VISION_LOG_DB", str(tmp_path / "test.sqlite"))
+    db_engine.reset()
     yield tmp_path / "test.sqlite"
+    db_engine.reset()
 
 
 @pytest.fixture
@@ -156,21 +160,30 @@ def test_generate_summary_retries_once(monkeypatch):
     assert "## Abstract" in header
 
 
+def _count(sql: str) -> int:
+    engine = db_engine.get_engine()
+    with engine.connect() as conn:
+        return conn.execute(text(sql)).scalar()
+
+
 def test_index_and_idempotent_reembed(isolated_db, tmp_path, fake_embed):
     slides = summary._iter_slides(SAMPLE_MD)
     src = tmp_path / "fake_deck.pptx"
     src.write_bytes(b"fake")
     doc_id, chunks = summary._index(src, slides)
     assert len(chunks) == 2
-    conn = logstore._connection()
-    assert conn.execute("SELECT COUNT(*) FROM deck_chunks").fetchone()[0] == 2
-    assert conn.execute("SELECT COUNT(*) FROM deck_chunk_vec").fetchone()[0] == 2
+    assert _count("SELECT COUNT(*) FROM deck_chunks") == 2
+    with repos.raw_connection() as conn:
+        summary._load_vec(conn)
+        assert conn.execute("SELECT COUNT(*) FROM deck_chunk_vec").fetchone()[0] == 2
 
     # Re-indexing unchanged slides must not duplicate chunks or vectors.
     doc_id2, chunks2 = summary._index(src, slides)
     assert doc_id2 == doc_id
-    assert conn.execute("SELECT COUNT(*) FROM deck_chunks").fetchone()[0] == 2
-    assert conn.execute("SELECT COUNT(*) FROM deck_chunk_vec").fetchone()[0] == 2
+    assert _count("SELECT COUNT(*) FROM deck_chunks") == 2
+    with repos.raw_connection() as conn:
+        summary._load_vec(conn)
+        assert conn.execute("SELECT COUNT(*) FROM deck_chunk_vec").fetchone()[0] == 2
 
 
 def test_retrieve_scoped_to_document(isolated_db, tmp_path, fake_embed):
@@ -183,11 +196,11 @@ def test_retrieve_scoped_to_document(isolated_db, tmp_path, fake_embed):
     doc_b, chunks_b = summary._index(src_b, slides)
     assert doc_a != doc_b
 
-    conn = logstore._connection()
-    summary._load_vec(conn)
     query = [[1.0, 0.0, 0.0, 0.0]]
-    found_a = summary._retrieve(conn, doc_a, query, 5)
-    found_b = summary._retrieve(conn, doc_b, query, 5)
+    with repos.raw_connection() as conn:
+        summary._load_vec(conn)
+        found_a = summary._retrieve(conn, doc_a, query, 5)
+        found_b = summary._retrieve(conn, doc_b, query, 5)
     assert {c["chunk_index"] for c in found_a} == {1, 2}
     assert {c["chunk_index"] for c in found_b} == {1, 2}
     assert {c["id"] for c in found_a}.isdisjoint({c["id"] for c in found_b})

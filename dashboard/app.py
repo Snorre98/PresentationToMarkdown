@@ -2,16 +2,16 @@
 
 Builds a small JSON API plus a rendered frontend over the ``ptm.sqlite`` log.
 Every request opens a fresh, read-only SQLite connection (``mode=ro`` +
-``query_only=ON``), so the dashboard never blocks or writes to the conversion's
-WAL database. It imports nothing from ``converter`` — it only reads the file the
-library writes (ADR-0014 / ADR-0022).
+``query_only=ON``) via the SQLAlchemy engine in :mod:`dashboard.db` (ADR-0026),
+so the dashboard never blocks or writes to the conversion's WAL database. It
+imports nothing from ``converter`` — it only reads the file the library writes
+(ADR-0014 / ADR-0022).
 """
 from __future__ import annotations
 
 import argparse
 import json
 import os
-import sqlite3
 import subprocess
 import sys
 import threading
@@ -20,6 +20,8 @@ import urllib.request
 from pathlib import Path
 
 from flask import Flask, jsonify, render_template, request
+
+from dashboard.db import make_readonly_engine
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8080
@@ -32,24 +34,28 @@ _engine_state = {
     "started_at": None,
 }
 
+_ro_engines: dict[str, object] = {}
 
-def _connect(db_path: str) -> sqlite3.Connection:
-    """Open the log database read-only; never interferes with the writer."""
-    return sqlite3.connect(
-        f"file:{db_path}?mode=ro", uri=True, timeout=1.0
-    )
+
+def _ro_engine(db_path: str):
+    engine = _ro_engines.get(db_path)
+    if engine is None:
+        engine = make_readonly_engine(db_path)
+        _ro_engines[db_path] = engine
+    return engine
 
 
 def _query(db_path: str, sql: str, params: tuple = ()) -> list[tuple]:
-    """Run a read-only query, returning [] on any failure (missing/locked DB)."""
+    """Run a read-only query, returning [] on any failure (missing/locked DB).
+
+    Executes through the read-only engine's raw DBAPI connection so the existing
+    SQLite ``?`` placeholders bind natively, while the engine still imposes
+    ``mode=ro`` + ``query_only=ON`` (ADR-0014/0026).
+    """
     try:
-        conn = _connect(db_path)
-        try:
-            conn.execute("PRAGMA query_only=ON;")
-            conn.execute("PRAGMA busy_timeout=1000;")
-            return conn.execute(sql, params).fetchall()
-        finally:
-            conn.close()
+        engine = _ro_engine(db_path)
+        with engine.connect() as conn:
+            return conn.connection.driver_connection.execute(sql, params).fetchall()
     except Exception:
         return []
 

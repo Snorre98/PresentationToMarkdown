@@ -250,5 +250,28 @@ def test_missing_db_degrades_to_empty(tmp_path):
     assert c.get("/api/runs").get_json()["runs"] == []
 
 
+def test_readonly_engine_refuses_writes(tmp_path):
+    """The dashboard's read-only engine must reject writes (query_only + mode=ro)."""
+    from dashboard.db import make_readonly_engine
+    from sqlalchemy import text
+
+    db = _make_db(tmp_path / "ptm.sqlite")
+    engine = make_readonly_engine(str(db))
+    with engine.connect() as conn:
+        assert conn.execute(text("SELECT COUNT(*) FROM vision_events")).scalar() == 4
+        with pytest.raises(Exception):
+            conn.execute(text("INSERT INTO vision_events (ts, source, stage) VALUES ('x', 'y', 'z')"))
+
+
+def test_pre_orm_db_is_readable(tmp_path):
+    """A database built by the pre-ORM raw-sqlite schema stays fully readable."""
+    db = _make_db(tmp_path / "ptm.sqlite")
+    app = create_app(str(db))
+    c = app.test_client()
+    assert c.get("/api/overview").get_json()["total_events"] == 4
+    assert [r["id"] for r in c.get("/api/runs").get_json()["runs"]] == [1, 2]
+    assert c.get("/api/summary").get_json()["documents"][0]["chunk_count"] == 1
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))

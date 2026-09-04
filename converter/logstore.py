@@ -2,13 +2,13 @@
 
 Records every classifier decision and transcription — which source file, page or
 image, how long the call took, and the outcome — so the vision pipeline is easy
-to inspect. This is also the DB that will eventually hold app configuration.
+to inspect. This is also the DB that holds app configuration.
 
-Since the conversion-level telemetry landed (ADR-0022), this module also records
-whole-conversion runs (``conversion_runs``), the phases within a run
-(``run_phases``), a per-run configuration snapshot (``run_config``), and tags
-every ``vision_events`` row with the run it belongs to via a
-``contextvars.ContextVar``.
+Since ADR-0026 this module is a thin façade: the actual persistence is handled by
+the SQLAlchemy ORM in :mod:`converter.db` (``repos`` + ``models`` + ``engine``).
+This module retains the public callable API, the ``contextvars`` run-tagging, and
+the ``_lock``/``VISION_LOG_ENABLED`` semantics so every existing call site
+(``from converter.logstore import record``, etc.) is unaffected.
 
 Configuration (environment variables):
 
@@ -19,14 +19,12 @@ Configuration (environment variables):
 from __future__ import annotations
 
 import contextvars
-import json
 import os
-import sqlite3
 import threading
 import time
 from contextlib import contextmanager
-from datetime import datetime, timezone
-from pathlib import Path
+
+from converter.db import repos
 
 VISION_LOG_ENABLED = os.environ.get("VISION_LOG_ENABLED", "on").strip().lower() in {
     "1",
@@ -38,130 +36,11 @@ VISION_LOG_DB = os.environ.get("VISION_LOG_DB", "ptm.sqlite")
 
 _SCHEMA_VERSION = 2
 
-_SCHEMA = """
-CREATE TABLE IF NOT EXISTS meta (
-    key   TEXT PRIMARY KEY,
-    value TEXT
-);
-CREATE TABLE IF NOT EXISTS vision_events (
-    id               INTEGER PRIMARY KEY AUTOINCREMENT,
-    ts               TEXT NOT NULL,
-    source           TEXT NOT NULL,
-    page             INTEGER,
-    image_ref        TEXT,
-    image_digest     TEXT,
-    stage            TEXT NOT NULL,
-    model            TEXT,
-    decision         TEXT,
-    raw_answer       TEXT,
-    latency_ms       INTEGER,
-    prompt_tokens    INTEGER,
-    generated_tokens INTEGER,
-    markdown         TEXT,
-    omitted_words    TEXT,
-    error            TEXT,
-    base_url         TEXT,
-    run_id           INTEGER
-);
-CREATE INDEX IF NOT EXISTS idx_events_source ON vision_events(source);
-CREATE INDEX IF NOT EXISTS idx_events_digest ON vision_events(image_digest);
-CREATE INDEX IF NOT EXISTS idx_events_run ON vision_events(run_id);
-CREATE TABLE IF NOT EXISTS transcript_segments (
-    id       INTEGER PRIMARY KEY AUTOINCREMENT,
-    ts       TEXT NOT NULL,
-    source   TEXT NOT NULL,
-    start    REAL NOT NULL,
-    end      REAL NOT NULL,
-    speaker  TEXT,
-    text     TEXT NOT NULL,
-    model    TEXT,
-    error    TEXT
-);
-CREATE INDEX IF NOT EXISTS idx_transcript_source ON transcript_segments(source);
-CREATE TABLE IF NOT EXISTS conversion_runs (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    ts          TEXT NOT NULL,
-    source      TEXT NOT NULL,
-    name        TEXT,
-    status      TEXT,
-    ended_at    TEXT,
-    duration_ms INTEGER
-);
-CREATE INDEX IF NOT EXISTS idx_runs_source ON conversion_runs(source);
-CREATE TABLE IF NOT EXISTS run_phases (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    run_id      INTEGER NOT NULL REFERENCES conversion_runs(id) ON DELETE CASCADE,
-    phase       TEXT NOT NULL,
-    ordinal     INTEGER NOT NULL,
-    status      TEXT,
-    started_at  TEXT,
-    ended_at    TEXT,
-    duration_ms INTEGER,
-    detail      TEXT
-);
-CREATE INDEX IF NOT EXISTS idx_phases_run ON run_phases(run_id);
-CREATE TABLE IF NOT EXISTS run_config (
-    run_id   INTEGER PRIMARY KEY REFERENCES conversion_runs(id) ON DELETE CASCADE,
-    snapshot TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS deck_documents (
-    id           INTEGER PRIMARY KEY AUTOINCREMENT,
-    source       TEXT NOT NULL UNIQUE,
-    source_hash  TEXT NOT NULL,
-    stem         TEXT NOT NULL,
-    slide_count  INTEGER NOT NULL,
-    created_at   TEXT NOT NULL,
-    updated_at   TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS deck_chunks (
-    id           INTEGER PRIMARY KEY AUTOINCREMENT,
-    document_id  INTEGER NOT NULL REFERENCES deck_documents(id) ON DELETE CASCADE,
-    chunk_index  INTEGER NOT NULL,
-    title        TEXT,
-    content      TEXT NOT NULL,
-    content_hash TEXT NOT NULL,
-    UNIQUE(document_id, chunk_index)
-);
-"""
-
 _lock = threading.Lock()
-_conn: sqlite3.Connection | None = None
 
 _current_run: contextvars.ContextVar[int | None] = contextvars.ContextVar(
     "ptm_current_run", default=None
 )
-
-
-def _connection() -> sqlite3.Connection:
-    global _conn
-    if _conn is not None:
-        return _conn
-    Path(VISION_LOG_DB).parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(VISION_LOG_DB, timeout=30.0, check_same_thread=False)
-    conn.execute("PRAGMA journal_mode=WAL;")
-    _migrate(conn)
-    conn.executescript(_SCHEMA)
-    conn.execute(
-        "INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', ?)",
-        (str(_SCHEMA_VERSION),),
-    )
-    conn.commit()
-    _conn = conn
-    return conn
-
-
-def _migrate(conn: sqlite3.Connection) -> None:
-    """Idempotent schema upgrades for existing databases (never raises)."""
-    try:
-        cols = {row[1] for row in conn.execute("PRAGMA table_info(vision_events)")}
-        if "run_id" not in cols:
-            conn.execute("ALTER TABLE vision_events ADD COLUMN run_id INTEGER")
-    except Exception:
-        pass
-
-
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
 
 
 def current_run_id() -> int | None:
@@ -191,39 +70,25 @@ def record(
     if not VISION_LOG_ENABLED:
         return
     try:
-        run_id = _current_run.get()
         with _lock:
-            conn = _connection()
-            conn.execute(
-                """
-                INSERT INTO vision_events (
-                    ts, source, page, image_ref, image_digest, stage, model,
-                    decision, raw_answer, latency_ms, prompt_tokens,
-                    generated_tokens, markdown, omitted_words, error, base_url,
-                    run_id
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    _now(),
-                    source,
-                    page,
-                    image_ref,
-                    image_digest,
-                    stage,
-                    model,
-                    decision,
-                    raw_answer,
-                    latency_ms,
-                    prompt_tokens,
-                    generated_tokens,
-                    markdown,
-                    json.dumps(omitted_words) if omitted_words is not None else None,
-                    error,
-                    base_url,
-                    run_id,
-                ),
+            repos.record_vision_event(
+                source=source,
+                stage=stage,
+                run_id=_current_run.get(),
+                page=page,
+                image_ref=image_ref,
+                image_digest=image_digest,
+                model=model,
+                decision=decision,
+                raw_answer=raw_answer,
+                latency_ms=latency_ms,
+                prompt_tokens=prompt_tokens,
+                generated_tokens=generated_tokens,
+                markdown=markdown,
+                omitted_words=omitted_words,
+                error=error,
+                base_url=base_url,
             )
-            conn.commit()
     except Exception:
         pass
 
@@ -243,25 +108,15 @@ def record_segment(
         return
     try:
         with _lock:
-            conn = _connection()
-            conn.execute(
-                """
-                INSERT INTO transcript_segments (
-                    ts, source, start, end, speaker, text, model, error
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    _now(),
-                    source,
-                    start,
-                    end,
-                    speaker,
-                    text,
-                    model,
-                    error,
-                ),
+            repos.record_transcript_segment(
+                source=source,
+                start=start,
+                end=end,
+                text=text,
+                speaker=speaker,
+                model=model,
+                error=error,
             )
-            conn.commit()
     except Exception:
         pass
 
@@ -276,16 +131,7 @@ def run_start(source: str, name: str | None = None) -> int | None:
         return None
     try:
         with _lock:
-            conn = _connection()
-            cur = conn.execute(
-                """
-                INSERT INTO conversion_runs (ts, source, name, status)
-                VALUES (?, ?, ?, 'running')
-                """,
-                (_now(), source, name or Path(source).name or source),
-            )
-            conn.commit()
-            run_id = int(cur.lastrowid)
+            run_id = repos.start_run(source, name)
         _current_run.set(run_id)
         return run_id
     except Exception:
@@ -298,28 +144,7 @@ def run_finish(run_id: int | None, status: str = "ok", error: str | None = None)
         return
     try:
         with _lock:
-            conn = _connection()
-            row = conn.execute(
-                "SELECT ts FROM conversion_runs WHERE id = ?", (run_id,)
-            ).fetchone()
-            duration_ms = None
-            if row:
-                try:
-                    start = datetime.fromisoformat(row[0])
-                    duration_ms = int(
-                        (datetime.now(timezone.utc) - start).total_seconds() * 1000
-                    )
-                except Exception:
-                    duration_ms = None
-            conn.execute(
-                """
-                UPDATE conversion_runs
-                SET status = ?, ended_at = ?, duration_ms = COALESCE(?, duration_ms)
-                WHERE id = ?
-                """,
-                (status, _now(), duration_ms, run_id),
-            )
-            conn.commit()
+            repos.finish_run(run_id, status)
     except Exception:
         pass
     finally:
@@ -334,22 +159,7 @@ def run_phase_begin(
         return None
     try:
         with _lock:
-            conn = _connection()
-            cur = conn.execute(
-                """
-                INSERT INTO run_phases (run_id, phase, ordinal, status, started_at, detail)
-                VALUES (?, ?, ?, 'running', ?, ?)
-                """,
-                (
-                    run_id,
-                    phase,
-                    ordinal,
-                    _now(),
-                    json.dumps(detail) if detail is not None else None,
-                ),
-            )
-            conn.commit()
-            return int(cur.lastrowid)
+            return repos.begin_phase(run_id, phase, ordinal, detail)
     except Exception:
         return None
 
@@ -365,23 +175,7 @@ def run_phase_end(
         return
     try:
         with _lock:
-            conn = _connection()
-            conn.execute(
-                """
-                UPDATE run_phases
-                SET status = ?, ended_at = ?, duration_ms = ?,
-                    detail = COALESCE(?, detail)
-                WHERE id = ?
-                """,
-                (
-                    status,
-                    _now(),
-                    duration_ms,
-                    json.dumps(detail) if detail is not None else None,
-                    phase_id,
-                ),
-            )
-            conn.commit()
+            repos.end_phase(phase_id, status, duration_ms, detail)
     except Exception:
         pass
 
@@ -413,11 +207,6 @@ def run_snapshot(run_id: int | None, snapshot: dict) -> None:
         return
     try:
         with _lock:
-            conn = _connection()
-            conn.execute(
-                "INSERT OR REPLACE INTO run_config (run_id, snapshot) VALUES (?, ?)",
-                (run_id, json.dumps(snapshot)),
-            )
-            conn.commit()
+            repos.snapshot_run(run_id, snapshot)
     except Exception:
         pass

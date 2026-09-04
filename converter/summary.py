@@ -42,8 +42,9 @@ from pathlib import Path
 import numpy as np
 
 from converter import config
+from converter.db import repos
 from converter.format import _iter_slides
-from converter.logstore import _connection, _lock, record
+from converter.logstore import _lock, record
 from converter.vision import _chat_completion, strip_code_fences
 from converter.write import WRITE_API_KEY
 
@@ -76,27 +77,6 @@ _KNOWN_EMBED_DIMS = {
     "embeddinggemma": 768,
     "nomic-embed-text": 768,
 }
-
-_DOCS_CHUNKS_SCHEMA = """
-CREATE TABLE IF NOT EXISTS deck_documents (
-    id           INTEGER PRIMARY KEY AUTOINCREMENT,
-    source       TEXT NOT NULL UNIQUE,
-    source_hash  TEXT NOT NULL,
-    stem         TEXT NOT NULL,
-    slide_count  INTEGER NOT NULL,
-    created_at   TEXT NOT NULL,
-    updated_at   TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS deck_chunks (
-    id           INTEGER PRIMARY KEY AUTOINCREMENT,
-    document_id  INTEGER NOT NULL REFERENCES deck_documents(id) ON DELETE CASCADE,
-    chunk_index  INTEGER NOT NULL,
-    title        TEXT,
-    content      TEXT NOT NULL,
-    content_hash TEXT NOT NULL,
-    UNIQUE(document_id, chunk_index)
-);
-"""
 
 _SLIDE_SUFFIX_RE = re.compile(r"\s*[—–]\s*(Slide|Page)\s+\d+\s*$")
 _BARE_SLIDE_RE = re.compile(r"^(Slide|Page)\s+\d+\s*$")
@@ -159,6 +139,7 @@ def _embed_dim() -> int:
 
 
 def _load_vec(conn) -> bool:
+    """Load the sqlite-vec extension onto ``conn`` (a raw DBAPI connection)."""
     if sqlite_vec is None:
         return False
     try:
@@ -169,38 +150,36 @@ def _load_vec(conn) -> bool:
         return False
 
 
-def _known_dim(conn) -> int | None:
-    row = conn.execute(
-        "SELECT value FROM meta WHERE key = ?", (_EMBED_DIM_KEY,)
-    ).fetchone()
-    return int(row[0]) if row else None
+def _known_dim() -> int | None:
+    value = repos.get_meta(_EMBED_DIM_KEY)
+    return int(value) if value else None
 
 
-def _store_dim(conn, dim: int) -> None:
-    old = _known_dim(conn)
+def _store_dim(dim: int) -> None:
+    old = _known_dim()
     if old is not None and old != dim:
-        conn.execute("DROP TABLE IF EXISTS deck_chunk_vec")
-        conn.execute("DELETE FROM deck_chunks")
-        conn.execute("DELETE FROM deck_documents")
-    conn.execute(
-        "INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)",
-        (_EMBED_DIM_KEY, str(dim)),
-    )
-    conn.commit()
+        with repos.raw_connection() as conn:
+            if _load_vec(conn):
+                conn.execute("DROP TABLE IF EXISTS deck_chunk_vec")
+                conn.commit()
+        repos.clear_chunks()
+    repos.set_meta(_EMBED_DIM_KEY, str(dim))
 
 
-def _ensure_base_tables(conn) -> None:
-    conn.executescript(_DOCS_CHUNKS_SCHEMA)
-    conn.commit()
+def _ensure_base_tables() -> None:
+    """Ensure the base tables exist; a no-op as the engine creates them (ADR-0026)."""
 
 
-def _ensure_vec_table(conn, dim: int) -> None:
-    conn.execute(
-        "CREATE VIRTUAL TABLE IF NOT EXISTS deck_chunk_vec USING vec0("
-        "chunk_id INTEGER PRIMARY KEY, document_id INTEGER partition key, "
-        f"embedding FLOAT[{dim}])"
-    )
-    conn.commit()
+def _ensure_vec_table(dim: int) -> None:
+    with repos.raw_connection() as conn:
+        if not _load_vec(conn):
+            return
+        conn.execute(
+            "CREATE VIRTUAL TABLE IF NOT EXISTS deck_chunk_vec USING vec0("
+            "chunk_id INTEGER PRIMARY KEY, document_id INTEGER partition key, "
+            f"embedding FLOAT[{dim}])"
+        )
+        conn.commit()
 
 
 def _source_hash(path: Path) -> str:
@@ -237,33 +216,17 @@ def _chunk_records(slides: list[str]) -> list[dict]:
     return out
 
 
-def _upsert_document(conn, source_path: Path, source_hash: str, slide_count: int) -> int:
-    source = str(source_path)
-    stem = source_path.stem
-    now = datetime.now(timezone.utc).isoformat()
-    conn.execute(
-        """
-        INSERT INTO deck_documents(source, source_hash, stem, slide_count, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?)
-        ON CONFLICT(source) DO UPDATE SET
-            source_hash = excluded.source_hash,
-            stem = excluded.stem,
-            slide_count = excluded.slide_count,
-            updated_at = excluded.updated_at
-        """,
-        (source, source_hash, stem, slide_count, now, now),
-    )
-    row = conn.execute(
-        "SELECT id FROM deck_documents WHERE source = ?", (source,)
-    ).fetchone()
-    return row[0]
+def _upsert_document(source_path: Path, source_hash: str, slide_count: int) -> int:
+    return repos.upsert_document(source_path, source_hash, slide_count)
 
 
 def _index(source_path: Path, slides: list[str]) -> tuple[int, list[dict]]:
     """Index slides into SQLite, re-embedding only changed chunks.
 
     Returns ``(document_id, [chunk, ...])`` where each chunk holds ``id``,
-    ``chunk_index``, ``title`` and ``content``.
+    ``chunk_index``, ``title`` and ``content``. The ``deck_documents`` /
+    ``deck_chunks`` tables are written through the ORM; the ``deck_chunk_vec``
+    vec0 virtual table stays on the raw DBAPI connection (ADR-0026).
     """
     if sqlite_vec is None:
         raise RuntimeError("sqlite-vec is not installed")
@@ -271,19 +234,13 @@ def _index(source_path: Path, slides: list[str]) -> tuple[int, list[dict]]:
     records = _chunk_records(slides)
 
     with _lock:
-        conn = _connection()
-        if not _load_vec(conn):
-            raise RuntimeError("could not load the sqlite-vec extension")
-        _ensure_base_tables(conn)
-        dim = _known_dim(conn)
-        doc_id = _upsert_document(conn, source_path, source_hash, len(slides))
-        existing = dict(
-            conn.execute(
-                "SELECT chunk_index, content_hash FROM deck_chunks WHERE document_id = ?",
-                (doc_id,),
-            ).fetchall()
-        )
-        conn.commit()
+        with repos.raw_connection() as conn:
+            if not _load_vec(conn):
+                raise RuntimeError("could not load the sqlite-vec extension")
+        _ensure_base_tables()
+        dim = _known_dim()
+        doc_id = _upsert_document(source_path, source_hash, len(slides))
+        existing = repos.existing_chunk_hashes(doc_id)
 
     to_embed = [r for r in records if existing.get(r["chunk_index"]) != r["content_hash"]]
     vectors = _embed([r["content"] for r in to_embed]) if to_embed else []
@@ -297,45 +254,40 @@ def _index(source_path: Path, slides: list[str]) -> tuple[int, list[dict]]:
             dim = _embed_dim()
 
     with _lock:
-        conn = _connection()
-        _load_vec(conn)
         if dim is not None:
-            _store_dim(conn, dim)
-            _ensure_vec_table(conn, dim)
+            _store_dim(dim)
+            _ensure_vec_table(dim)
 
     with _lock:
-        conn = _connection()
-        _load_vec(conn)
+        with repos.raw_connection() as conn:
+            if not _load_vec(conn):
+                raise RuntimeError("could not load the sqlite-vec extension")
+            for record, vec in zip(to_embed, vectors):
+                conn.execute(
+                    "DELETE FROM deck_chunk_vec WHERE chunk_id IN "
+                    "(SELECT id FROM deck_chunks WHERE document_id = ? AND chunk_index = ?)",
+                    (doc_id, record["chunk_index"]),
+                )
+            conn.commit()
         for record, vec in zip(to_embed, vectors):
-            conn.execute(
-                "DELETE FROM deck_chunk_vec WHERE chunk_id IN "
-                "(SELECT id FROM deck_chunks WHERE document_id = ? AND chunk_index = ?)",
-                (doc_id, record["chunk_index"]),
+            chunk_id = repos.upsert_chunk(
+                doc_id,
+                record["chunk_index"],
+                record["title"],
+                record["content"],
+                record["content_hash"],
             )
-            conn.execute(
-                "DELETE FROM deck_chunks WHERE document_id = ? AND chunk_index = ?",
-                (doc_id, record["chunk_index"]),
-            )
-            cur = conn.execute(
-                "INSERT INTO deck_chunks(document_id, chunk_index, title, content, content_hash) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (doc_id, record["chunk_index"], record["title"], record["content"], record["content_hash"]),
-            )
-            chunk_id = cur.lastrowid
-            conn.execute(
-                "INSERT INTO deck_chunk_vec(chunk_id, document_id, embedding) VALUES (?, ?, ?)",
-                (chunk_id, doc_id, sqlite_vec.serialize_float32(vec)),
-            )
-        conn.commit()
-        rows = conn.execute(
-            "SELECT id, chunk_index, title, content FROM deck_chunks "
-            "WHERE document_id = ? ORDER BY chunk_index",
-            (doc_id,),
-        ).fetchall()
-    chunks = [
-        {"id": r[0], "chunk_index": r[1], "title": r[2], "content": r[3]}
-        for r in rows
-    ]
+            with repos.raw_connection() as conn:
+                if not _load_vec(conn):
+                    continue
+                conn.execute(
+                    "INSERT INTO deck_chunk_vec(chunk_id, document_id, embedding) "
+                    "VALUES (?, ?, ?)",
+                    (chunk_id, doc_id, sqlite_vec.serialize_float32(vec)),
+                )
+                conn.commit()
+
+    chunks = repos.all_chunks(doc_id)
     return doc_id, chunks
 
 
@@ -355,16 +307,7 @@ def _retrieve(conn, doc_id: int, query_vectors: list[list[float]], k: int) -> li
                 ids.append(cid)
     if not ids:
         return []
-    placeholders = ",".join("?" for _ in ids)
-    rows = conn.execute(
-        f"SELECT id, chunk_index, title, content FROM deck_chunks "
-        f"WHERE id IN ({placeholders}) ORDER BY chunk_index",
-        ids,
-    ).fetchall()
-    return [
-        {"id": r[0], "chunk_index": r[1], "title": r[2], "content": r[3]}
-        for r in rows
-    ]
+    return repos.chunks_by_ids(ids)
 
 
 _TOPIC_MAX = 16
@@ -655,9 +598,9 @@ def prepend_summary(md_path: Path, source_path: Path, warnings: list[str]) -> No
             top_k = _RETRIEVE_TOP_K
             query_vectors = _embed(queries)
             with _lock:
-                conn = _connection()
-                _load_vec(conn)
-                context_chunks = _retrieve(conn, doc_id, query_vectors, top_k)
+                with repos.raw_connection() as conn:
+                    _load_vec(conn)
+                    context_chunks = _retrieve(conn, doc_id, query_vectors, top_k)
         except Exception as exc:
             warnings.append(f"RAG retrieval unavailable ({exc}); summarizing without it")
             context_chunks = []

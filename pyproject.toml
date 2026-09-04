@@ -14,6 +14,7 @@ dependencies = [
     "PyMuPDF>=1.24",
     "pymupdf_layout>=1.28.2",
     "sqlite-vec>=0.1.9",
+    "SQLAlchemy>=2.0",
     "numpy>=1.26",
     "flask>=3.0",
     "flask-sock>=0.7",

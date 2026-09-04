@@ -1,14 +1,17 @@
 """Tests for the persistent settings/recent-files store (converter.settings)."""
 import pytest
+from sqlalchemy import text
 
-from converter import logstore, settings
+from converter import settings
+from converter.db import engine as db_engine
 
 
 @pytest.fixture
 def isolated_db(tmp_path, monkeypatch):
-    monkeypatch.setattr(logstore, "VISION_LOG_DB", str(tmp_path / "test.sqlite"))
-    monkeypatch.setattr(logstore, "_conn", None)
+    monkeypatch.setenv("VISION_LOG_DB", str(tmp_path / "test.sqlite"))
+    db_engine.reset()
     yield tmp_path / "test.sqlite"
+    db_engine.reset()
 
 
 def test_get_setting_default(isolated_db):
@@ -25,8 +28,11 @@ def test_set_and_get_setting(isolated_db):
 
 def test_settings_share_meta_table_with_logstore(isolated_db):
     settings.set_setting("k", "v")
-    conn = logstore._connection()
-    row = conn.execute("SELECT value FROM meta WHERE key = 'k'").fetchone()
+    engine = db_engine.get_engine()
+    with engine.connect() as conn:
+        row = conn.execute(
+            text("SELECT value FROM meta WHERE key = 'k'")
+        ).fetchone()
     assert row == ("v",)
 
 
