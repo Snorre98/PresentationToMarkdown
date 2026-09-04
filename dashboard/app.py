@@ -10,8 +10,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sqlite3
+import subprocess
 import sys
+import threading
+import time
+import urllib.request
 from pathlib import Path
 
 from flask import Flask, jsonify, render_template, request
@@ -19,6 +24,13 @@ from flask import Flask, jsonify, render_template, request
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8080
 DEFAULT_DB = Path(__file__).resolve().parents[1] / "ptm.sqlite"
+DEFAULT_ENGINE_PORT = 8090
+
+_engine_state = {
+    "process": None,
+    "pid": None,
+    "started_at": None,
+}
 
 
 def _connect(db_path: str) -> sqlite3.Connection:
@@ -512,13 +524,142 @@ def create_app(db_path: str | None = None) -> Flask:
     def api_structure():
         return jsonify(_structure(db))
 
+    # --- Engine (ADR-0025): the native converter subprocess the browser drives.
+    # The browser connects its WebSocket directly to the engine's /ws; here we
+    # only expose the engine URL, spawn it on demand, and proxy its HTTP JSON
+    # control-plane for convenience.
+
+    @app.get("/api/engine")
+    def api_engine():
+        running = _engine_alive()
+        return jsonify(
+            {
+                "running": running,
+                "base_url": _engine_base_url(),
+                "pid": _engine_state["pid"] if running else None,
+            }
+        )
+
+    @app.post("/api/engine/start")
+    def api_engine_start():
+        if _engine_alive():
+            return jsonify({"ok": True, "already": True, "base_url": _engine_base_url()})
+        result = _spawn_engine()
+        return jsonify(result)
+
+    def _proxy(method: str, path: str):
+        """Forward a GET/POST to the running engine, returning JSON (or a 503)."""
+        if not _engine_alive():
+            return jsonify({"error": "engine not running"}), 503
+        url = _engine_base_url() + path
+        try:
+            data = request.get_json(silent=True)
+            req = urllib.request.Request(url, method=method)
+            if method == "POST" and data is not None:
+                req.add_header("Content-Type", "application/json")
+                req.data = json.dumps(data).encode("utf-8")
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                return jsonify(json.loads(resp.read().decode("utf-8")))
+        except Exception as exc:  # noqa: BLE001
+            return jsonify({"error": f"engine unreachable: {exc}"}), 503
+
+    @app.get("/api/engine/fs/list")
+    def api_fs_list():
+        return _proxy("GET", f"/api/fs/list?path={request.args.get('path', '')}")
+
+    @app.get("/api/engine/fs/glob")
+    def api_fs_glob():
+        return _proxy("GET", f"/api/fs/glob?path={request.args.get('path', '')}")
+
+    @app.post("/api/engine/fs/open")
+    def api_fs_open():
+        return _proxy("POST", "/api/fs/open")
+
+    @app.post("/api/engine/fs/resolve")
+    def api_fs_resolve():
+        return _proxy("POST", "/api/fs/resolve")
+
+    @app.get("/api/engine/recent")
+    def api_recent():
+        return _proxy("GET", "/api/recent")
+
+    @app.get("/api/engine/config")
+    def api_config_get():
+        return _proxy("GET", "/api/config")
+
+    @app.post("/api/engine/config")
+    def api_config_set():
+        return _proxy("POST", "/api/config")
+
+    @app.get("/api/engine/health/servers")
+    def api_servers():
+        return _proxy("GET", "/api/health/servers")
+
     return app
+
+
+def _engine_base_url() -> str:
+    port = os.environ.get("PTM_ENGINE_PORT", str(DEFAULT_ENGINE_PORT))
+    return f"http://{DEFAULT_HOST}:{port}"
+
+
+def _engine_alive() -> bool:
+    url = _engine_base_url() + "/api/health"
+    try:
+        with urllib.request.urlopen(url, timeout=1.0) as resp:
+            return 200 <= resp.status < 300
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _spawn_engine() -> dict:
+    """Launch the engine (`engine.py`) as a child of this process.
+
+    The engine inherits this process's environment (already env-configured), so
+    when it imports ``converter`` the AI flags are correct (ADR-0012). The child
+    is detached so it outlives this process; its PID is recorded for reporting.
+    """
+    repo = Path(__file__).resolve().parents[1]
+    python = sys.executable
+    port = os.environ.get("PTM_ENGINE_PORT", str(DEFAULT_ENGINE_PORT))
+    cmd = [python, "-m", "engine", "--host", DEFAULT_HOST, "--port", port]
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            cwd=repo,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except OSError as exc:
+        return {"ok": False, "error": str(exc)}
+    _engine_state["process"] = proc
+    _engine_state["pid"] = proc.pid
+    _engine_state["started_at"] = time.time()
+    deadline = time.time() + 5.0
+    while time.time() < deadline:
+        if _engine_alive():
+            return {"ok": True, "pid": proc.pid, "base_url": _engine_base_url()}
+        time.sleep(0.2)
+    return {
+        "ok": False,
+        "pid": proc.pid,
+        "error": "engine did not become healthy within 5s",
+        "base_url": _engine_base_url(),
+    }
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="ptm-dashboard",
         description="Read-only web dashboard for the PTM conversion log.",
+    )
+    parser.add_argument(
+        "--engine-port",
+        type=int,
+        default=DEFAULT_ENGINE_PORT,
+        help="engine port (default: 8090); also settable via PTM_ENGINE_PORT",
     )
     parser.add_argument(
         "--db",
@@ -537,6 +678,9 @@ def main(argv: list[str] | None = None) -> int:
         help="port to bind (default: 8080)",
     )
     args = parser.parse_args(argv)
+
+    if "PTM_ENGINE_PORT" not in os.environ:
+        os.environ["PTM_ENGINE_PORT"] = str(args.engine_port)
 
     app = create_app(args.db)
     port = args.port

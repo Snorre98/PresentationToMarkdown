@@ -52,3 +52,36 @@ select,button.small{background:var(--panel);border:1px solid var(--border);color
 .kv{display:grid;grid-template-columns:220px 1fr;gap:4px 12px}
 .kv .k{color:var(--muted)}
 .kv .v{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px}
+.pill{display:inline-flex;align-items:center;gap:6px;padding:2px 10px;border-radius:12px;font-size:12px;border:1px solid var(--border);color:var(--muted)}
+.pill.running{color:var(--ok);border-color:var(--ok)}
+.pill.starting{color:var(--warn)}
+.pill.stopped{color:var(--err);border-color:var(--err)}
+.hidden{display:none!important}
+.btn{background:var(--accent);border:none;color:#fff;border-radius:6px;padding:10px 18px;font-size:14px;cursor:pointer;font-weight:600}
+.btn:disabled{opacity:.5;cursor:not-allowed}
+.btn.ghost{background:var(--panel);border:1px solid var(--border);color:var(--text)}
+.btn.danger{background:var(--err)}
+.row{display:flex;gap:12px;align-items:center;margin-bottom:10px;flex-wrap:wrap}
+.field{background:var(--panel);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:8px 10px;font-size:14px}
+.field:focus{outline:none;border-color:var(--accent)}
+.field.wide{flex:1;min-width:220px}
+.checklist{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:6px;margin:8px 0}
+.checklist label{display:flex;align-items:center;gap:8px;color:var(--text);font-size:13px}
+.filelist{border:1px dashed var(--border);border-radius:8px;padding:12px;min-height:120px;background:var(--panel);margin:8px 0}
+.filelist.drag{border-color:var(--accent)}
+.filelist .empty{color:var(--muted)}
+.filelist table{background:transparent;border:none}
+.filelist table td{border-bottom:1px solid var(--border)}
+.browser{display:flex;gap:6px;margin-bottom:8px;align-items:center}
+.browser .crumbs{flex:1;font-size:13px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.browser .crumb{cursor:pointer;color:var(--accent)}
+.logpane{background:#0c0e12;border:1px solid var(--border);border-radius:8px;padding:10px;min-height:160px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;overflow:auto;max-height:320px}
+.logpane .ok{color:var(--ok)}
+.logpane .err{color:var(--err)}
+.logpane .warn{color:var(--warn)}
+.progressbar{height:10px;background:#262b36;border-radius:5px;overflow:hidden;margin:8px 0}
+.progressbar .fill{height:100%;background:var(--accent);transition:width .15s}
+.progressbar .fill.page{background:var(--ok)}
+.gap{margin-bottom:14px}
+.section-head{font-weight:700;color:var(--accent);margin:16px 0 8px;font-size:14px;text-transform:uppercase;letter-spacing:.03em}
+.section-head:first-child{margin-top:0}

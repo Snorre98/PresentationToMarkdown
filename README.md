@@ -128,12 +128,13 @@ ptm-start --all
 ptm-transcribe deck.md          # attach to existing Markdown
 ptm-transcribe week-2.mp3       # write week-2.transcript.md (no Markdown needed)
 
-# watch conversion progress in a local web dashboard
-ptm-dashboard --port 9090       # see "Dashboard" below
+# run the full web UI (convert + watch history); spawns its native engine
+ptm-dashboard --port 9090       # see "Web GUI" below
 ```
 
-These are the four entry points: `ptm`, `ptm-start`, `ptm-transcribe`, and
-`ptm-dashboard`.
+These are the five entry points: `ptm`, `ptm-start`, `ptm-transcribe`,
+`ptm-dashboard`, and `ptm-engine` (the engine is usually started from the web UI
+rather than by hand).
 
 **`ptm`** — headless batch conversion, mirroring the GUI: folders are scanned
 recursively for `.pptx`/`.pdf`, the output folder defaults to
@@ -205,29 +206,52 @@ for r in results:
 - `SUPPORTED_EXTENSIONS` — e.g. `{".pptx", ".pdf"}`
 - `output_dir` is optional; when omitted, each file is written to `<source-folder>/markdown/`.
 
-### Dashboard
+### Web GUI (dashboard + native engine)
 
-A read-only web dashboard for the conversion log (`ptm.sqlite`), served by a
-small Flask app (ADR-0022, which supersedes the stdlib `dashboard.py` of
-ADR-0014). It lets you watch a conversion run live — including the whole-document
-`structure`/`summary` phases that used to appear idle — and inspect runs
-afterwards:
+The web frontend is now a **full converter**, not just a log viewer. A separate
+native **engine** process (ADR-0025) owns what a browser cannot do alone —
+running `convert_files`, browsing the filesystem, opening folders in Finder, and
+persisting settings — while the browser UI drives it over localhost with a
+WebSocket progress stream:
 
 ```bash
-./.venv/bin/python -m dashboard                           # ptm.sqlite, port 8080
-ptm-dashboard --db /path/to/ptm.sqlite --port 9090        # same, after pip install -e .
-./.venv/bin/python -m dashboard --host 127.0.0.1 --db /path/to/ptm.sqlite --port 9000
+./.venv/bin/python -m dashboard --port 9090      # web UI (opens the browser)
+ptm-dashboard --port 9090                         # same, after pip install -e .
 ```
+
+Open the printed URL, then click **Start engine** in the header (or run
+`./.venv/bin/python -m engine --port 8090` / `ptm-engine` yourself). The
+**Convert** tab reproduces the desktop GUI's workflow:
+
+- **Files** — drag-and-drop `.pptx`/`.pdf`, *Add Files* (browser picker),
+  *Add Folder* (server-side directory browser with recursive scan), or *Recent*.
+- **Output** — type a path, *Browse* a server-side folder, or *Open in Finder*
+  (the engine invokes the OS `open`).
+- **Options** — Paper layout and Duplicate-if-exists checkboxes.
+- **AI features** — the same six toggles as the GUI (with `implies`), plus
+  *Check servers* for the up/down probe.
+- **Convert** — runs on the engine; per-file and per-page progress bars and the
+  `[OK]/[ERR]/[WARN]` log stream in live over WebSocket.
+
+The history tabs (Runs / Timeline / Errors / Models / RAG) come from the same
+`ptm.sqlite` the engine writes, so a conversion you start in the browser shows up
+in the history immediately. The desktop GUI (`main.py` / `ptm-start`) remains
+available as a fallback.
+
+### Dashboard (read-only log view)
+
+Beyond conversion, the web app keeps the ADR-0022 read-only log surface:
 
 | Flag | Default | Purpose |
 | --- | --- | --- |
-| `--db PATH` | `<repo root>/ptm.sqlite` | Log database to watch |
-| `--host HOST` | `127.0.0.1` | Bind address (loopback only — a local debug surface) |
-| `--port N` | `8080` | Port to bind |
+| `--db PATH` | `<repo root>/ptm.sqlite` | Log database to read |
+| `--host HOST` | `127.0.0.1` | Bind address (loopback only, a local surface) |
+| `--port N` | `8080` | UI port to bind |
+| `--engine-port N` | `8090` | Engine port (also `PTM_ENGINE_PORT`) |
 
-It opens the database **read-only** (`mode=ro` + `query_only=ON`) on every
-request and never imports `converter`, so it cannot interfere with a running
-conversion (ADR-0014). It auto-refreshes every ~2s with these tabs:
+The UI opens the database **read-only** (`mode=ro` + `query_only=ON`) and never
+imports `converter`; the engine is the sole writer. History tabs auto-refresh
+every ~2s:
 
 - **Runs** — one row per conversion run (`conversion_runs`): status, duration,
   event and error counts; click a run to drill in.
@@ -250,26 +274,29 @@ start (ADR-0022).
 
 ### Ports
 
-The local AI passes reserve a block of loopback ports, and the dashboard sits
+The local AI passes reserve a block of loopback ports, and the web app sits
 right next to them:
 
 | Port | Used by |
 | --- | --- |
-| `:8080` | **Dashboard default** |
+| `:8080` | **Web UI default** |
 | `:8081` | Transcriber (mlx-vlm, Qwen2.5-VL-7B) |
 | `:8082` | Classifier gate (mlx-vlm, Qwen2.5-VL-3B) |
 | `:8083` | Audio server (dereverb / enhance / isolate / diarize) |
 | `:8084` | Summary chat model (mlx-lm, Llama-3.2-3B) |
+| `:8090` | **Native engine default** |
 | `:11434` | Ollama (embeddings) |
 
-The dashboard's default `:8080` sits directly below the transcriber, and its
+The web UI's default `:8080` sits directly below the transcriber, and its
 automatic port-fallback walks up to `+100` (`:8080` → `:8180`) — straight through
-`:8081`/`:8082`/`:8083`/`:8084`. So if `:8080` is already taken and any AI server
-is running, the fallback will collide with those servers. When AI servers are up,
-start the dashboard on a port clear of the whole block:
+`:8081`/`:8082`/`:8083`/`:8084` and the engine's `:8090`. So if `:8080` is already
+taken and any AI server (or the engine) is running, the fallback will collide.
+When AI servers are up, start the web app (and, if you launch it by hand, the
+engine) on ports clear of the whole block:
 
 ```bash
-ptm-dashboard --port 9090
+ptm-dashboard --port 9090                 # web UI
+./.venv/bin/python -m engine --port 9091  # engine (only if started by hand)
 ```
 
 If the port you ask for is free it simply binds there; the fallback only kicks
@@ -339,8 +366,9 @@ python3 -m venv .venv
 ```
 
 This puts `ptm` (headless convert), `ptm-start` (GUI launcher),
-`ptm-transcribe` (audio→Markdown transcription), and `ptm-dashboard` (web
-dashboard) on the venv's `PATH`. Skip it if you only want the GUI/library. If you'd rather not activate
+`ptm-transcribe` (audio→Markdown transcription), `ptm-dashboard` (web UI), and
+`ptm-engine` (native engine) on the venv's `PATH`. Skip it if you only want the
+GUI/library. If you'd rather not activate
 the venv, `scripts/ptm-start.sh` and `scripts/ptm-transcribe.sh` resolve
 `.venv/bin/ptm-start` / `.venv/bin/ptm-transcribe` for you (each bootstraps with
 `pip install -e .` if the binary is missing).
@@ -348,9 +376,9 @@ the venv, `scripts/ptm-start.sh` and `scripts/ptm-transcribe.sh` resolve
 ### 4. Run it
 
 ```bash
-./.venv/bin/python main.py      # GUI (or: ptm-start)
+./.venv/bin/python main.py      # desktop GUI (or: ptm-start)
 ptm deck.pptx                   # headless conversion (if step 3 was run)
-ptm-dashboard --port 9090       # web dashboard (if step 3 was run)
+ptm-dashboard --port 9090       # web UI (if step 3 was run)
 ```
 
 All other commands in this document use the venv interpreter (`.venv/bin/python`);
@@ -420,8 +448,9 @@ The model weights live on the external SSD under `HF_HOME` (see
 - `docs/ai-vision.md` — how to serve the vision model and enable the AI pass
 - `docs/ai-audio.md` — how to serve the ASR/diarization models and enable the audio pass
 - `docs/adr/` — architecture decision records for the CLI entry points
-- `dashboard/` — Flask web dashboard for the conversion log (`app.py`, `templates/`, `static/`, `__main__.py`; ADR-0022)
-- `gui.py` — PySide6 interface (file list, output folder, progress, log)
+- `dashboard/` — Flask web app for conversion + the read-only log view (`app.py`, `templates/`, `static/`, `__main__.py`; ADR-0022, ADR-0025)
+- `engine.py` — native engine process the web app drives (filesystem, conversion, settings; ADR-0025)
+- `gui.py` — PySide6 interface (file list, output folder, progress, log) — fallback desktop UI
 - `main.py` — entry point
 - `cli.py` — `ptm` headless batch converter (GUI parity)
 - `cli_transcribe.py` — `ptm-transcribe` standalone audio→Markdown transcription

@@ -1,0 +1,46 @@
+"""Tests for the web UI's engine gateway (``dashboard`` app, ADR-0025).
+
+The engine integration routes proxy to a running engine and expose its status.
+These tests verify the gateway behaviours without a real engine: the health/start
+routes degrade gracefully, and the read-only history routes still work.
+"""
+from __future__ import annotations
+
+import pytest
+
+import dashboard.app as appmod
+from dashboard import create_app
+
+
+@pytest.fixture
+def app(tmp_path, monkeypatch):
+    monkeypatch.setattr(appmod, "_engine_alive", lambda: False)
+    monkeypatch.setattr(appmod, "_spawn_engine", lambda: {"ok": True, "pid": 1, "base_url": "http://127.0.0.1:8090"})
+    return create_app(str(tmp_path / "ptm.sqlite"))
+
+
+def test_engine_status_reports_stopped(app):
+    r = app.test_client().get("/api/engine").get_json()
+    assert r["running"] is False
+    assert r["base_url"].startswith("http://")
+
+
+def test_proxy_returns_503_when_engine_stopped(app):
+    c = app.test_client()
+    assert c.get("/api/engine/config").status_code == 503
+    assert c.get("/api/engine/fs/list?path=/").status_code == 503
+    assert c.get("/api/engine/recent").status_code == 503
+
+
+def test_health_still_serves_read_only(app):
+    h = app.test_client().get("/api/health").get_json()
+    assert h["ok"] is True
+
+
+def test_engine_start_delegates_to_spawn(app):
+    r = app.test_client().post("/api/engine/start").get_json()
+    assert r["ok"] is True
+
+
+if __name__ == "__main__":
+    raise SystemExit(pytest.main([__file__, "-v"]))

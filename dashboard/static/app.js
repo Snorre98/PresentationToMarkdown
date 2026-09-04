@@ -2,7 +2,11 @@ const REFRESH = 2000;
 let state = {
   runs: null, errors: null, events: null, phases: null, models: null,
   rag: null, structure: null, config: null,
-  source: null, runId: null, tab: "runs", lastOk: Date.now(),
+  source: null, runId: null, tab: "convert", lastOk: Date.now(),
+  engine: { running: false, base_url: "" },
+  engineConfig: null, servers: null,
+  files: [], outputDir: "", duplicate: false,
+  ws: null, converting: false, logLines: [],
 };
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
@@ -17,7 +21,6 @@ const tsLabel = (t) => {
   if (!t) return "";
   try { return new Date(t).toLocaleString(); } catch (e) { return t; }
 };
-const clip = (s) => (!s ? "" : (s.length > 400 ? s.slice(0, 400) + "\u2026" : s));
 function badge(decision) {
   const d = (decision || "").toLowerCase();
   const cls = d === "decorative" ? "decorative" : d === "diagram" ? "diagram" : d === "text" ? "text" : d === "error" ? "err" : "";
@@ -28,23 +31,37 @@ function statusBadge(s) {
   return '<span class="badge ' + cls + '">' + esc(s || "\u2014") + '</span>';
 }
 
+async function api(path, opts) {
+  const r = await fetch(path, opts || {});
+  const ct = r.headers.get("content-type") || "";
+  const body = ct.includes("json") ? await r.json() : await r.text();
+  return { status: r.status, body };
+}
+
 async function load() {
   try {
-    const [runs, errs, models] = await Promise.all([
-      fetch("/api/runs").then(r => r.json()),
-      fetch("/api/errors").then(r => r.json()),
-      fetch("/api/models").then(r => r.json()),
+    const [runs, errs, models, eng] = await Promise.all([
+      api("/api/runs"), api("/api/errors"), api("/api/models"), api("/api/engine"),
     ]);
-    state.runs = runs; state.errors = errs; state.models = models;
+    state.runs = runs.body; state.errors = errs.body; state.models = models.body;
+    state.engine.running = eng.body.running;
+    state.engine.base_url = eng.body.base_url;
+    if (state.engine.running) {
+      const [cfg, srv] = await Promise.all([
+        api("/api/engine/config"), api("/api/engine/health/servers"),
+      ]);
+      if (cfg.status === 200) state.engineConfig = cfg.body;
+      if (srv.status === 200) state.servers = srv.body;
+    }
     if (state.runId) {
       const [ev, ph, cf, st] = await Promise.all([
-        fetch("/api/events?run_id=" + state.runId).then(r => r.json()),
-        fetch("/api/runs/" + state.runId + "/phases").then(r => r.json()),
-        fetch("/api/runs/" + state.runId + "/config").then(r => r.json()),
-        fetch("/api/structure").then(r => r.json()),
+        api("/api/events?run_id=" + state.runId),
+        api("/api/runs/" + state.runId + "/phases"),
+        api("/api/runs/" + state.runId + "/config"),
+        api("/api/structure"),
       ]);
-      state.events = ev.events || []; state.phases = ph;
-      state.config = cf.config; state.structure = st;
+      state.events = (ev.body && ev.body.events) || []; state.phases = ph.body;
+      state.config = cf.body.config; state.structure = st.body;
     }
     state.lastOk = Date.now();
     render();
@@ -65,11 +82,277 @@ function setTab(t) {
 }
 
 function render() {
-  if (state.tab === "runs") renderRuns();
-  else if (state.tab === "timeline") renderTimeline();
-  else if (state.tab === "errors") renderErrors();
-  else if (state.tab === "models") renderModels();
-  else if (state.tab === "rag") renderRag();
+  renderEnginePill();
+  const h = { convert: renderConvert, runs: renderRuns, timeline: renderTimeline,
+              errors: renderErrors, models: renderModels, rag: renderRag }[state.tab];
+  if (h) h();
+}
+
+function renderEnginePill() {
+  const pill = $("engine-pill"), btn = $("engine-btn");
+  if (state.engine.running) {
+    pill.className = "pill running";
+    pill.textContent = "\u25CF Engine running";
+    btn.classList.add("hidden");
+  } else {
+    pill.className = "pill stopped";
+    pill.textContent = "\u25CB Engine stopped";
+    btn.classList.remove("hidden");
+  }
+}
+
+function renderConvert() {
+  $("db").textContent = "";
+  let html = '';
+
+  if (!state.engine.running) {
+    html += '<div class="cost"><h3>Engine is not running</h3><p>Start the native engine to convert files, browse folders, and open results in Finder.</p><button class="btn" id="start-engine-btn">Start engine</button></div>';
+  }
+
+  html += '<div class="section-head">Files</div>';
+  html += '<div class="browser"><button class="btn ghost" id="add-files-btn">Add Files</button><button class="btn ghost" id="add-folder-btn">Add Folder</button><button class="btn ghost" id="recent-btn">Recent</button><button class="btn ghost" id="clear-files-btn">Clear</button></div>';
+  html += '<div class="filelist" id="filelist">' + renderFileList() + '</div>';
+
+  html += '<div class="section-head">Output</div>';
+  html += '<div class="row"><input class="field wide" id="output-edit" placeholder="Defaults to &lt;input-folder&gt;/markdown" value="' + esc(state.outputDir) + '"><button class="btn ghost" id="browse-out-btn">Browse</button><button class="btn ghost" id="open-out-btn">Open in Finder</button></div>';
+
+  html += '<div class="section-head">Options</div>';
+  html += '<div class="checklist">';
+  html += '<label><input type="checkbox" id="paper-check"> Paper layout (multi-column whitepapers)</label>';
+  html += '<label><input type="checkbox" id="duplicate-check"> Duplicate if exists (keep prior output)</label>';
+  html += '</div>';
+
+  html += '<div class="section-head">AI features</div><div class="checklist" id="ai-checks"></div>';
+  html += '<div class="row"><span id="server-status" class="muted"></span><button class="btn ghost" id="check-servers-btn">Check servers</button></div>';
+
+  html += '<div class="section-head">Convert</div>';
+  html += '<div class="row"><button class="btn" id="convert-btn">Convert</button><span id="convert-status" class="muted"></span></div>';
+  html += '<div class="progressbar" id="file-bar" style="display:none"><div class="fill" id="file-fill"></div></div>';
+  html += '<div class="progressbar" id="page-bar" style="display:none"><div class="fill page" id="page-fill"></div></div>';
+  html += '<div class="section-head">Log</div><div class="logpane" id="logpane"></div>';
+
+  $("main").innerHTML = html;
+  bindConvertEvents();
+  renderAiChecks();
+  renderServerStatus();
+  renderLog();
+}
+
+function renderFileList() {
+  const files = state.files;
+  if (!files.length) return '<div class="empty">Drop .pptx / .pdf files here, or use Add Files / Add Folder.</div>';
+  let h = '<table><thead><tr><th>File</th><th></th></tr></thead><tbody>';
+  for (let i = 0; i < files.length; i++) {
+    h += '<tr><td class="mono">' + esc(files[i]) + '</td><td style="width:80px;text-align:right"><button class="btn ghost" data-rm="' + i + '">Remove</button></td></tr>';
+  }
+  return h + '</tbody></table>';
+}
+
+function renderAiChecks() {
+  const f = state.engineConfig && state.engineConfig.features;
+  if (!f) { $("ai-checks").innerHTML = '<span class="muted">Start the engine to see AI toggles.</span>'; return; }
+  let h = '';
+  for (const key of Object.keys(f)) {
+    h += '<label><input type="checkbox" data-ai="' + esc(key) + '"' + (f[key] ? ' checked' : '') + '> ' + esc(key) + '</label>';
+  }
+  $("ai-checks").innerHTML = h;
+  document.querySelectorAll("[data-ai]").forEach(cb => cb.onchange = () => setAiFeature(cb.dataset.ai, cb.checked));
+}
+
+function renderServerStatus() {
+  const s = state.servers;
+  if (!s) { $("server-status").textContent = ""; return; }
+  const parts = s.servers.map(x => x.up ? '<span class="badge ok">' + esc(x.name) + '</span>' : '<span class="badge err">' + esc(x.name) + '</span>');
+  $("server-status").innerHTML = (parts.length ? "Servers: " + parts.join(" ") : "AI disabled — no servers needed.");
+}
+
+function renderLog() {
+  $("logpane").innerHTML = state.logLines.map(l => '<div class="' + esc(l.kind) + '">' + esc(l.message) + '</div>').join('')
+    || '<div class="muted">Log appears here during conversion.</div>';
+  $("logpane").scrollTop = $("logpane").scrollHeight;
+}
+
+function bindConvertEvents() {
+  const fl = $("filelist");
+  fl.addEventListener("dragover", e => { e.preventDefault(); fl.classList.add("drag"); });
+  fl.addEventListener("dragleave", () => fl.classList.remove("drag"));
+  fl.addEventListener("drop", e => {
+    e.preventDefault(); fl.classList.remove("drag");
+    const paths = [...e.dataTransfer.files].map(f => f.path);
+    resolveAndAdd(paths);
+  });
+
+  $("add-files-btn").onclick = () => {
+    const input = document.createElement("input");
+    input.type = "file"; input.accept = ".pptx,.pdf"; input.multiple = true;
+    input.onchange = () => resolveAndAdd([...input.files].map(f => f.path));
+    input.click();
+  };
+  $("add-folder-btn").onclick = () => openBrowser("", "folder");
+  $("recent-btn").onclick = loadRecent;
+  $("clear-files-btn").onclick = () => { state.files = []; render(); };
+  $("browse-out-btn").onclick = () => openBrowser("", "output");
+  $("open-out-btn").onclick = async () => {
+    const target = state.outputDir || (state.files[0] ? state.files[0].replace(/[^/]+$/, "") + "markdown" : "");
+    if (!target) return;
+    await api("/api/engine/fs/open", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path: target }) });
+  };
+  $("output-edit").onchange = e => { state.outputDir = e.target.value; };
+  $("paper-check").onchange = e => setPdfMode(e.target.checked ? "paper" : "slide");
+  $("duplicate-check").onchange = e => { state.duplicate = e.target.checked; persistDuplicate(e.target.checked); };
+  $("check-servers-btn").onclick = async () => {
+    const r = await api("/api/engine/health/servers");
+    if (r.status === 200) { state.servers = r.body; renderServerStatus(); }
+  };
+  $("convert-btn").onclick = startConvert;
+  const se = $("start-engine-btn");
+  if (se) se.onclick = startEngineButton;
+  document.querySelectorAll("[data-rm]").forEach(b => b.onclick = () => { state.files.splice(Number(b.dataset.rm), 1); render(); });
+}
+
+async function startEngineButton() {
+  const r = await api("/api/engine/start", { method: "POST" });
+  if (r.body && r.body.ok) { state.engine.running = true; state.engine.base_url = r.body.base_url; load(); }
+  else alert("Engine failed to start: " + ((r.body && r.body.error) || "unknown"));
+}
+
+async function resolveAndAdd(paths) {
+  const seen = new Set(state.files);
+  for (const p of paths) {
+    const r = await api("/api/engine/fs/resolve", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path: p }) });
+    if (r.status !== 200 || !r.body || r.body.error) { addLog("err", "Not added: " + p); continue; }
+    if (r.body.is_dir) {
+      const g = await api("/api/engine/fs/glob?path=" + encodeURIComponent(r.body.path));
+      for (const f of (g.body && g.body.files) || []) { if (!seen.has(f)) { seen.add(f); state.files.push(f); } }
+    } else if (!seen.has(r.body.path)) {
+      seen.add(r.body.path); state.files.push(r.body.path);
+    }
+  }
+  render();
+}
+
+async function openBrowser(path, mode) {
+  const r = await api("/api/engine/fs/list?path=" + encodeURIComponent(path || "/"));
+  if (r.status !== 200 || !r.body || r.body.error) { alert((r.body && r.body.error) || "cannot browse"); return; }
+  renderBrowser(r.body, mode);
+}
+
+function renderBrowser(dir, mode) {
+  let html = '<div class="browser"><button class="btn ghost" id="up-btn">Up</button><button class="btn ghost" id="choose-here-btn">Choose this folder</button><span class="crumbs" id="bcrumbs">' + esc(dir.path) + '</span></div>';
+  html += '<div class="filelist"><table><thead><tr><th>Name</th><th></th></tr></thead><tbody>';
+  for (const e of dir.entries) {
+    const icon = e.is_dir ? "\u25B6 " : "";
+    let action = "";
+    if (e.is_dir) action = '<button class="btn ghost" data-nav="' + esc(e.path) + '">Open</button>';
+    else if (e.supported) action = '<button class="btn ghost" data-addfile="' + esc(e.path) + '">Add</button>';
+    html += '<tr><td class="' + (e.is_dir ? "" : "mono") + '">' + icon + esc(e.name) + '</td><td style="width:140px;text-align:right">' + action + '</td></tr>';
+  }
+  html += '</tbody></table></div>';
+  $("main").innerHTML = html;
+  document.querySelectorAll("[data-nav]").forEach(b => b.onclick = () => openBrowser(b.dataset.nav, mode));
+  document.querySelectorAll("[data-addfile]").forEach(b => b.onclick = () => {
+    if (!state.files.includes(b.dataset.addfile)) state.files.push(b.dataset.addfile);
+    render();
+  });
+  $("up-btn").onclick = () => openBrowser(dir.parent, mode);
+  $("choose-here-btn").onclick = () => {
+    if (mode === "folder") {
+      api("/api/engine/fs/glob?path=" + encodeURIComponent(dir.path)).then(g => {
+        const seen = new Set(state.files);
+        for (const f of (g.body && g.body.files) || []) { if (!seen.has(f)) { seen.add(f); state.files.push(f); } }
+        render();
+      });
+    } else if (mode === "output") {
+      state.outputDir = dir.path;
+      render();
+    }
+  };
+}
+
+async function loadRecent() {
+  const r = await api("/api/engine/recent");
+  if (r.status !== 200) return;
+  const recent = (r.body.recent || []).slice(0, 10);
+  if (!recent.length) { addLog("warn", "No recent files."); renderLog(); return; }
+  let html = '<div class="browser"><button class="btn ghost" id="done-btn">Done</button></div><div class="filelist"><table><thead><tr><th>Recent file</th><th></th></tr></thead><tbody>';
+  for (const p of recent) {
+    html += '<tr><td class="mono">' + esc(p) + '</td><td style="width:140px;text-align:right"><button class="btn ghost" data-add="' + esc(p) + '">Add</button></td></tr>';
+  }
+  html += '</tbody></table></div>';
+  $("main").innerHTML = html;
+  $("done-btn").onclick = render;
+  document.querySelectorAll("[data-add]").forEach(b => b.onclick = () => { if (!state.files.includes(b.dataset.add)) state.files.push(b.dataset.add); render(); });
+}
+
+async function setAiFeature(key, value) {
+  await api("/api/engine/config", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ features: { [key]: value } }) });
+  const r = await api("/api/engine/config");
+  if (r.status === 200) { state.engineConfig = r.body; renderAiChecks(); }
+}
+
+async function setPdfMode(mode) {
+  await api("/api/engine/config", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pdf_mode: mode }) });
+}
+
+async function persistDuplicate(v) {
+  await api("/api/engine/config", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ duplicate: v }) });
+}
+
+function addLog(kind, message) {
+  state.logLines.push({ kind, message });
+}
+
+function startConvert() {
+  if (!state.engine.running) { alert("Start the engine first."); return; }
+  if (!state.files.length) { alert("Add at least one .pptx or .pdf file."); return; }
+  state.logLines = [];
+  state.converting = true;
+  $("convert-btn").disabled = true;
+  $("convert-status").textContent = "Connecting...";
+  $("file-bar").style.display = "block";
+  $("page-bar").style.display = "block";
+
+  const wsUrl = state.engine.base_url.replace(/^http/, "ws") + "/ws";
+  const ws = new WebSocket(wsUrl);
+  state.ws = ws;
+  ws.onopen = () => {
+    $("convert-status").textContent = "Converting...";
+    ws.send(JSON.stringify({ type: "start", paths: state.files, output_dir: state.outputDir || null, duplicate: state.duplicate }));
+  };
+  ws.onmessage = (e) => {
+    const msg = JSON.parse(e.data);
+    if (msg.type === "file") {
+      const pct = msg.total ? (msg.idx / msg.total * 100) : 0;
+      $("file-fill").style.width = pct + "%";
+      addLog("warn", "[" + msg.idx + "/" + msg.total + "] " + msg.name);
+    } else if (msg.type === "page") {
+      const noun = msg.name.toLowerCase().endsWith(".pptx") ? "Slide" : "Page";
+      $("page-fill").style.width = (msg.total ? msg.page / msg.total * 100 : 0) + "%";
+      $("page-bar").setAttribute("title", noun + " " + msg.page + "/" + msg.total);
+    } else if (msg.type === "log") {
+      addLog(msg.kind, msg.message);
+    } else if (msg.type === "done") {
+      addLog("warn", "Done: " + msg.ok + " of " + msg.total + " converted.");
+      if (msg.error) addLog("err", msg.error);
+      finishConvert();
+    } else if (msg.type === "error") {
+      addLog("err", msg.message);
+      finishConvert();
+    }
+    renderLog();
+  };
+  ws.onerror = () => { addLog("err", "WebSocket error."); finishConvert(); };
+  ws.onclose = () => { if (state.converting) { addLog("err", "Connection closed."); finishConvert(); } };
+}
+
+function finishConvert() {
+  state.converting = false;
+  $("convert-btn").disabled = false;
+  $("convert-status").textContent = "";
+  $("file-fill").style.width = "0%";
+  $("page-fill").style.width = "0%";
+  if (state.ws) { try { state.ws.close(); } catch (e) {} state.ws = null; }
+  load();
 }
 
 function renderRuns() {
@@ -203,11 +486,8 @@ function renderModels() {
 
 async function renderRag() {
   $("db").textContent = (state.runs && state.runs.db) || "";
-  try {
-    const rag = await fetch("/api/summary").then(r => r.json());
-    state.rag = rag;
-  } catch (e) { state.rag = null; }
-  const rag = state.rag;
+  let rag;
+  try { rag = (await api("/api/summary")).body; } catch (e) { rag = null; }
   if (!rag) { $("main").innerHTML = '<div class="empty">RAG unavailable.</div>'; return; }
   let html = '<div class="stat"><div><div class="k">Embedding dim</div><div class="v">' + (rag.embed_dim != null ? rag.embed_dim : "\u2014") + '</div></div><div><div class="k">Documents</div><div class="v">' + (rag.documents || []).length + '</div></div></div>';
   const docs = rag.documents || [];
@@ -222,7 +502,7 @@ async function renderRag() {
   $("main").innerHTML = html;
 }
 
-["runs", "timeline", "errors", "models", "rag"].forEach(t => $("tab-" + t).onclick = () => setTab(t));
+["convert", "runs", "timeline", "errors", "models", "rag"].forEach(t => $("tab-" + t).onclick = () => setTab(t));
 load();
 setInterval(load, REFRESH);
 setInterval(tick, 1000);
