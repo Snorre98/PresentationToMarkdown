@@ -101,7 +101,7 @@ class HealthCheckThread(QThread):
                     continue
                 seen.add(name)
                 results.append(
-                    (name, config.probe(url), config.SERVERS[name].serve_command)
+                    (name, config.probe(url), config.SERVERS[name].start_command)
                 )
         self.checked.emit(results)
 

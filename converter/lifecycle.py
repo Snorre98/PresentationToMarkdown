@@ -20,6 +20,7 @@ import urllib.request
 from urllib.parse import urlparse
 
 from converter import config
+from converter import fleet
 
 _TIMEOUT = 5.0
 
@@ -47,13 +48,18 @@ def _host_port(base_url: str) -> tuple[str, int] | None:
 
 
 def resolve_runner(base_url: str) -> str | None:
-    """Map an effective base URL to a ``config.SERVERS`` runner by host:port.
+    """Map an effective base URL to a runner by host:port (ADR-0017, ADR-0029).
 
-    Normalizes ``localhost`` ↔ ``127.0.0.1`` so a user-set
-    ``VISION_BASE_URL=http://localhost:11434/v1`` still resolves to the
-    ``ollama`` server whose catalog host is ``127.0.0.1``. Returns ``None`` when
-    no catalog entry matches (the caller then tries both unloads).
+    Prefers the control daemon's ``list`` projection (the manifest is the
+    source of truth for what runs where); falls back to the static
+    ``config.SERVERS`` catalog when the daemon is unreachable. Normalizes
+    ``localhost`` ↔ ``127.0.0.1`` so a user-set
+    ``VISION_BASE_URL=http://localhost:11434/v1`` still resolves. Returns
+    ``None`` when no catalog entry matches (the caller then tries both unloads).
     """
+    runner = fleet.runner_for(base_url)
+    if runner:
+        return runner
     hp = _host_port(base_url)
     if hp is None:
         return None

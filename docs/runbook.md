@@ -47,7 +47,7 @@ Both speaker labels and deep denoise/dereverb run in one PyTorch service on
 
 All four are managed by one script, `scripts/audio_serve.sh` (start/stop/status +
 install + optional launchd always-on — the same lifecycle the vision models get
-from `macos-dev-config/tools/serve.sh`).
+from the `macos-dev-config` control daemon).
 
 ### Option A — Stub (for testing, no PyTorch, no Hugging Face)
 

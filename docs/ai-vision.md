@@ -21,17 +21,19 @@ MLX/GGUF "lanes", SSD storage layout, and LAN serving. In short:
 Serve it (OpenAI-compatible API on `:8081`):
 
 ```sh
-# on-demand via macos-dev-config (see its inference-readme.md):
-tools/serve.sh start transcriber
+# on-demand via the macos-dev-config control daemon (ADR-0029):
+curl -X POST http://127.0.0.1:9300/start/transcriber
 
 # or the underlying command:
 mlx_vlm.server --model mlx-community/Qwen2.5-VL-7B-Instruct-4bit --port 8081
 ```
 
-`tools/serve.sh reach transcriber` prints the exact base URL for `VISION_BASE_URL`.
-Add `SERVE_HOST=0.0.0.0` (or `--host 0.0.0.0`) only if you need to reach it from
-another device on the LAN. For a server that must be up at boot with no manual
-step, use the always-on `launchd/` agents in `macos-dev-config` instead.
+`curl http://127.0.0.1:9300/reach/transcriber` prints the daemon's base URL for
+`VISION_BASE_URL`. Add `--host 0.0.0.0` (raw command) only if you need to reach
+it from another device on the LAN — the daemon itself binds `127.0.0.1` and its
+pre-bind gate refuses ungated non-localhost binds (ADR-0021). The always-on
+`classifier`/`transcriber` LaunchAgents were retired; the daemon starts these
+runners on demand.
 
 > Qwen2.5-VL-7B is the *default*, not the only option — override it with
 > `VISION_MODEL`, and see [Improving the vision model](#improving-the-vision-model)
@@ -195,7 +197,7 @@ classifier (:8082) ───────┼─ DIAGRAM ─────▶ high-l
 Serve it on its own port (mlx-vlm runs one chat model per process):
 
 ```sh
-tools/serve.sh start classifier                 # on-demand, or:
+curl -X POST http://127.0.0.1:9300/start/classifier   # on-demand via the daemon, or:
 mlx_vlm.server --model mlx-community/Qwen2.5-VL-3B-Instruct-4bit --port 8082
 ```
 
@@ -424,5 +426,7 @@ FROM vision_events WHERE image_digest = ? ORDER BY id;
 ## Reference
 
 - Serving, model formats, and storage: **`macos-dev-config/inference-readme.md`**
-- On-demand serving: **`macos-dev-config/tools/serve.sh`** (`serve.sh start transcriber classifier`)
+- On-demand serving: **the `macos-dev-config` control daemon**
+  (`curl -X POST 127.0.0.1:9300/start/<name>`; contract in
+  `macos-dev-config/docs/contracts/daemon-http.md`)
 - Ollama daemon tuning: **`macos-dev-config/ollama/README.md`**

@@ -14,17 +14,20 @@ conversion. Endpoint/model constants (``*_BASE_URL`` / ``*_MODEL`` /
 module only *resolves* their effective base URLs (with the same documented
 fallback chain) so the health probe can check the right endpoint.
 
-The server catalog is a small built-in table seeded from ``servers.conf``
-(transcriber ``:8081``, classifier ``:8082``, ollama ``:11434``) and can be
-refreshed from the sibling ``macos-dev-config/servers.conf`` when present.
+Serving control goes through the **macos-dev-config control daemon** (ADR-0029):
+the server catalog is a small built-in table whose entries mirror the daemon's
+fleet manifest (``models.json``), and endpoint resolution prefers the daemon's
+``list`` projection over those static defaults (``converter.fleet``). The static
+defaults remain as the offline fallback — never a second authority.
 """
 from __future__ import annotations
 
 import os
 import urllib.request
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Callable
+
+from converter import fleet
 
 _TRUE = {"1", "true", "yes", "on"}
 
@@ -35,12 +38,17 @@ def _env_true(value: str | None) -> bool:
 
 @dataclass(frozen=True)
 class Server:
-    """One local model server the AI passes depend on.
+    """One local model server the AI passes depend on (ADR-0029).
 
-    ``name`` matches the ``serve.sh`` registry (``tools/serve.sh start <name>``).
+    ``daemon`` names the manifest daemon/model this feature is served by (the
+    control daemon's fleet manifest, ``macos-dev-config/models.json``); the
+    static ``host``/``port``/``runner``/``model`` fields are the offline
+    fallback projection of the same entry, used only when the daemon is
+    unreachable. ``name`` is the feature label, stable across the migration.
     """
 
     name: str
+    daemon: str = ""
     runner: str = ""
     host: str = "127.0.0.1"
     port: int = 0
@@ -48,12 +56,19 @@ class Server:
     description: str = ""
 
     @property
+    def daemon_name(self) -> str:
+        """The manifest name start/status/release target (defaults to ``name``)."""
+        return self.daemon or self.name
+
+    @property
     def base_url(self) -> str:
+        """The static fallback base URL (daemon-derived at runtime, ADR-0029)."""
         return f"http://{self.host}:{self.port}/v1"
 
     @property
-    def serve_command(self) -> str:
-        return f"tools/serve.sh start {self.name}"
+    def start_command(self) -> str:
+        """The on-demand start command via the control daemon's ``start`` verb."""
+        return fleet.start_command(self.daemon_name)
 
 
 @dataclass(frozen=True)
@@ -67,11 +82,13 @@ class Feature:
     implies: tuple[str, ...] = ()
 
 
-# Built-in catalog — mirrors the rows in macos-dev-config/servers.conf that the
-# AI passes actually reference. Refresh with refresh_servers_from_conf().
+# Built-in catalog — the fallback projection of the fleet manifest's PtM-serving
+# daemons (macos-dev-config/models.json, ADR-0029). The daemon list is preferred
+# at runtime; these static rows only matter when the daemon is unreachable.
 SERVERS: dict[str, Server] = {
     "transcriber": Server(
         name="transcriber",
+        daemon="transcriber",
         runner="mlx-vlm",
         port=8081,
         model="mlx-community/Qwen2.5-VL-7B-Instruct-4bit",
@@ -79,30 +96,40 @@ SERVERS: dict[str, Server] = {
     ),
     "classifier": Server(
         name="classifier",
+        daemon="classifier",
         runner="mlx-vlm",
         port=8082,
         model="mlx-community/Qwen2.5-VL-3B-Instruct-4bit",
         description="Classifier gate (PresentationToMarkdown)",
     ),
-    "ollama": Server(
-        name="ollama",
-        runner="ollama",
-        port=11434,
-        description="Embeddings daemon (embeddinggemma / nomic-embed-text)",
-    ),
     "summary": Server(
         name="summary",
+        # Served by the manifest's `text` daemon (Llama-3.2-3B, :8083) — the same
+        # model PtM's summary pass always used; the manifest's own `summary`
+        # daemon (1B) belongs to the writing-assistant engine (ADR-0029).
+        daemon="text",
         runner="mlx-lm",
-        port=8084,
+        port=8083,
         model="mlx-community/Llama-3.2-3B-Instruct-4bit",
         description="Summary chat (PresentationToMarkdown)",
     ),
     "structure-text": Server(
         name="structure-text",
+        # Also served by the manifest's `text` daemon (:8083) — the pre-migration
+        # :8085 was a live port conflict with the manifest's mistral-24b daemon.
+        daemon="text",
         runner="mlx-lm",
-        port=8085,
+        port=8083,
         model="mlx-community/Llama-3.2-3B-Instruct-4bit",
         description="Small text model for the structure pass text regime (PresentationToMarkdown)",
+    ),
+    "nomic-embed": Server(
+        name="nomic-embed",
+        daemon="nomic-embed",
+        runner="llama.cpp",
+        port=8090,
+        model="nomic-embed-text",
+        description="Embeddings daemon (nomic-embed-text GGUF)",
     ),
 }
 
@@ -204,16 +231,26 @@ def enabled_features() -> list[Feature]:
 # read with the same defaults, but the probe needs a single place to resolve the
 # endpoint a feature will actually hit, including the fallback chains
 # (FORMAT -> WRITE, STRUCTURE -> FORMAT -> WRITE, SUMMARY -> WRITE).
+#
+# Chain: env override → control-daemon ``list`` (macos-dev-config manifest) →
+# static catalog fallback (ADR-0029). The daemon lookup is cached by
+# ``converter.fleet`` and never raises.
+def _resolve(server_name: str, fallback_url: str) -> str:
+    """Daemon-derived base URL for ``server_name``, else ``fallback_url``."""
+    url = fleet.base_url(SERVERS[server_name].daemon_name)
+    return url or fallback_url
+
+
 def _vision_url() -> str:
-    return os.environ.get("VISION_BASE_URL", SERVERS["transcriber"].base_url)
+    return os.environ.get("VISION_BASE_URL", _resolve("transcriber", SERVERS["transcriber"].base_url))
 
 
 def _classify_url() -> str:
-    return os.environ.get("VISION_CLASSIFY_BASE_URL", SERVERS["classifier"].base_url)
+    return os.environ.get("VISION_CLASSIFY_BASE_URL", _resolve("classifier", SERVERS["classifier"].base_url))
 
 
 def _write_url() -> str:
-    return os.environ.get("WRITE_BASE_URL", SERVERS["transcriber"].base_url)
+    return os.environ.get("WRITE_BASE_URL", _resolve("transcriber", SERVERS["transcriber"].base_url))
 
 
 def _format_url() -> str:
@@ -230,16 +267,16 @@ def _structure_url() -> str:
 
 def _structure_text_url() -> str:
     return os.environ.get(
-        "STRUCTURE_TEXT_BASE_URL", SERVERS["structure-text"].base_url
+        "STRUCTURE_TEXT_BASE_URL", _resolve("structure-text", SERVERS["structure-text"].base_url)
     )
 
 
 def _summary_url() -> str:
-    return os.environ.get("SUMMARY_BASE_URL", SERVERS["summary"].base_url)
+    return os.environ.get("SUMMARY_BASE_URL", _resolve("summary", SERVERS["summary"].base_url))
 
 
 def _embed_url() -> str:
-    return os.environ.get("EMBED_BASE_URL", "http://localhost:11434/v1")
+    return os.environ.get("EMBED_BASE_URL", _resolve("nomic-embed", SERVERS["nomic-embed"].base_url))
 
 
 _FEATURE_ENDPOINTS: dict[str, list[tuple[str, Callable[[], str]]]] = {
@@ -247,8 +284,8 @@ _FEATURE_ENDPOINTS: dict[str, list[tuple[str, Callable[[], str]]]] = {
     "classify": [("transcriber", _vision_url), ("classifier", _classify_url)],
     "interpret": [("transcriber", _interpret_url)],
     "format": [("transcriber", _format_url)],
-    "summary": [("summary", _summary_url), ("ollama", _embed_url)],
-    "structure": [("transcriber", _structure_url), ("summary", _structure_text_url)],
+    "summary": [("summary", _summary_url), ("nomic-embed", _embed_url)],
+    "structure": [("transcriber", _structure_url), ("structure-text", _structure_text_url)],
 }
 
 
@@ -273,10 +310,12 @@ def probe(base_url: str, timeout: float = 1.5) -> bool:
 
 
 def missing_servers(keys: list[str] | None = None) -> list[tuple[str, str, str]]:
-    """Return ``(server_name, base_url, serve_command)`` for down servers.
+    """Return ``(server_name, base_url, start_command)`` for down servers.
 
     Only servers required by the enabled features (deduped by base URL) are
-    checked. Pass ``keys`` to probe a specific subset instead.
+    checked. Health comes from the control daemon's ``status`` verb first; an
+    endpoint already up (started outside the daemon) is caught by the direct
+    probe fallback. ``start_command`` is the daemon ``start`` curl (ADR-0029).
     """
     keys = keys if keys is not None else enabled_keys()
     checked: set[str] = set()
@@ -286,65 +325,14 @@ def missing_servers(keys: list[str] | None = None) -> list[tuple[str, str, str]]
             if base_url in checked:
                 continue
             checked.add(base_url)
-            if not probe(base_url):
-                missing.append(
-                    (server_name, base_url, SERVERS[server_name].serve_command)
-                )
+            if fleet.status(SERVERS[server_name].daemon_name) == "up":
+                continue
+            if probe(base_url):
+                continue
+            missing.append(
+                (server_name, base_url, SERVERS[server_name].start_command)
+            )
     return missing
-
-
-def _default_servers_conf() -> Path | None:
-    """Locate the sibling macos-dev-config registry, or ``None`` if absent."""
-    env = os.environ.get("PTM_SERVERS_CONF")
-    if env:
-        return Path(env)
-    repo_root = Path(__file__).resolve().parents[1]
-    candidate = repo_root.parent / "macos-dev-config" / "servers.conf"
-    return candidate if candidate.exists() else None
-
-
-def parse_servers_conf(text: str) -> dict[str, Server]:
-    """Parse a ``serve.sh`` registry into ``{name: Server}``.
-
-    Lines are ``name | runner | model | port | host | extra-args | description``;
-    blank lines and ``#`` comments are ignored.
-    """
-    servers: dict[str, Server] = {}
-    for raw in text.splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#"):
-            continue
-        parts = [p.strip() for p in line.split("|")]
-        if len(parts) < 5 or not parts[0]:
-            continue
-        name = parts[0]
-        servers[name] = Server(
-            name=name,
-            runner=parts[1] if len(parts) > 1 else "",
-            model=parts[2] if len(parts) > 2 else "",
-            port=int(parts[3]) if len(parts) > 3 and parts[3].isdigit() else 0,
-            host=parts[4] if len(parts) > 4 and parts[4] else "127.0.0.1",
-            description=parts[6] if len(parts) > 6 else "",
-        )
-    return servers
-
-
-def refresh_servers_from_conf(path: str | Path | None = None) -> dict[str, Server] | None:
-    """Merge a ``servers.conf`` registry into ``SERVERS``; return it or ``None``.
-
-    Uses ``PTM_SERVERS_CONF`` or the sibling ``macos-dev-config`` path by
-    default. Never raises.
-    """
-    resolved = Path(path) if path is not None else _default_servers_conf()
-    if resolved is None:
-        return None
-    try:
-        text = resolved.read_text(encoding="utf-8")
-    except OSError:
-        return None
-    parsed = parse_servers_conf(text)
-    SERVERS.update(parsed)
-    return parsed
 
 
 def _pass_model(key: str) -> str | None:

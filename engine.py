@@ -617,7 +617,7 @@ def create_app() -> Flask:
                 seen.add(name)
                 results.append(
                     {"name": name, "up": config.probe(url), "url": url,
-                     "command": config.SERVERS[name].serve_command}
+                     "command": config.SERVERS[name].start_command}
                 )
         return jsonify({"servers": results, "missing": config.missing_servers()})
 

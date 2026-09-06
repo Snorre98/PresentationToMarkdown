@@ -59,18 +59,22 @@ def test_reset_rereads_environment(monkeypatch):
     assert not config.is_enabled("vision")
 
 
-def test_parse_servers_conf():
-    text = (
-        "# comment\n"
-        "transcriber | mlx-vlm | mlx-community/Qwen2.5-VL-7B-Instruct-4bit | 8081 | 127.0.0.1 | | Vision transcriber\n"
-        "classifier  | mlx-vlm | mlx-community/Qwen2.5-VL-3B-Instruct-4bit | 8082 | 127.0.0.1 | | Classifier gate\n"
+def test_server_catalog_maps_features_to_manifest_daemons():
+    # ADR-0029: the catalog is the offline projection of the fleet manifest
+    # (macos-dev-config/models.json); each feature names the manifest daemon it
+    # is served by, and health/start go through the control daemon.
+    assert config.SERVERS["transcriber"].daemon_name == "transcriber"
+    assert config.SERVERS["transcriber"].port == 8081
+    assert (
+        config.SERVERS["transcriber"].start_command
+        == "curl -X POST http://127.0.0.1:9300/start/transcriber"
     )
-    servers = config.parse_servers_conf(text)
-    assert set(servers) == {"transcriber", "classifier"}
-    assert servers["transcriber"].port == 8081
-    assert servers["transcriber"].base_url == "http://127.0.0.1:8081/v1"
-    assert servers["transcriber"].serve_command == "tools/serve.sh start transcriber"
-    assert servers["classifier"].description == "Classifier gate"
+    assert config.SERVERS["summary"].daemon_name == "text"  # summary rides the `text` daemon
+    assert config.SERVERS["summary"].port == 8083
+    assert config.SERVERS["structure-text"].daemon_name == "text"
+    assert config.SERVERS["structure-text"].port == 8083  # was :8085 — collided with mistral-24b
+    assert config.SERVERS["nomic-embed"].port == 8090  # was ollama :11434
+    assert config.SERVERS["classifier"].description == "Classifier gate (PresentationToMarkdown)"
 
 
 def test_feature_endpoints_format_falls_back_to_write():
@@ -87,8 +91,8 @@ def test_feature_endpoints_follow_write_not_vision(monkeypatch):
     assert config.feature_endpoints("vision")[0][1] == "http://127.0.0.1:8081/v1"
     for key in ("format", "interpret", "structure"):
         assert config.feature_endpoints(key)[0][1] == "http://127.0.0.1:9999/v1"
-    # Summary uses a dedicated small text model (ADR-0021), not the writer.
-    assert config.feature_endpoints("summary")[0][1] == "http://127.0.0.1:8084/v1"
+    # Summary is served by the manifest's `text` daemon (:8083, ADR-0029).
+    assert config.feature_endpoints("summary")[0][1] == "http://127.0.0.1:8083/v1"
 
 
 def test_writer_models_follow_write_not_vision():
@@ -157,7 +161,11 @@ def test_missing_servers_reports_enabled_down(monkeypatch):
     monkeypatch.setattr(config, "probe", lambda url, timeout=1.5: False)
     config.set_enabled("vision", True)
     missing = config.missing_servers()
-    assert ("transcriber", "http://127.0.0.1:8081/v1", "tools/serve.sh start transcriber") in missing
+    assert (
+        "transcriber",
+        "http://127.0.0.1:8081/v1",
+        "curl -X POST http://127.0.0.1:9300/start/transcriber",
+    ) in missing
 
 
 def test_missing_servers_empty_when_nothing_enabled(monkeypatch):
@@ -179,7 +187,7 @@ def test_snapshot_is_json_serialisable_and_describes_state():
     summary_pass = snap["passes"]["summary"]
     assert summary_pass["enabled"] is True
     assert summary_pass["endpoints"][0]["server"] == "summary"
-    assert summary_pass["endpoints"][0]["base_url"] == "http://127.0.0.1:8084/v1"
+    assert summary_pass["endpoints"][0]["base_url"] == "http://127.0.0.1:8083/v1"
     assert summary_pass["model"] == "mlx-community/Llama-3.2-3B-Instruct-4bit"
     assert snap["embed_model"] is not None
 
