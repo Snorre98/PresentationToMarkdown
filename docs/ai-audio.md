@@ -19,8 +19,8 @@ cleaned audio is **persisted** as a `.clean.flac`.
 | --- | --- | --- | --- |
 | ASR (default) | `mlx-community/whisper-large-v3-turbo` | `mlx-whisper` (MLX) | 809M params, ~4–5× realtime on Apple Silicon |
 | ASR (max quality) | `mlx-community/whisper-large-v3-mlx` | `mlx-whisper` (MLX) | 1.55B params, ~1× realtime |
-| Enhancement | DeepFilterNet (denoise + dereverb) | PyTorch server (`:8083`) | optional, ~8 MB, no gating |
-| Diarization | `pyannote/speaker-diarization-3.1` | PyTorch server (`:8083`) | optional, gated HF model |
+| Enhancement | DeepFilterNet (denoise + dereverb) | PyTorch server (`:8089`, manifest `audio` daemon) | optional, ~8 MB, no gating |
+| Diarization | `pyannote/speaker-diarization-3.1` | PyTorch server (`:8089`, manifest `audio` daemon) | optional, gated HF model |
 
 ### 1. Install the ASR toolchain
 
@@ -38,7 +38,7 @@ itself — it invokes `mlx_whisper` as a subprocess.
 ### 2. (Optional) Serve the audio-model server
 
 Speaker labels and deep enhancement run in a single PyTorch service (its own
-venv, on `:8083`), because `pyannote-audio` and `deepfilternet` are deliberately
+venv, on `:8089`), because `pyannote-audio` and `deepfilternet` are deliberately
 kept out of `converter` (ADR-0006, ADR-0008):
 
 ```bash
@@ -129,7 +129,7 @@ instead of the cleaned file.
 | `AUDIO_ISOLATE_ENABLED` | *(unset = off)* | Voice isolation (SepFormer) via the audio server |
 | `AUDIO_ENHANCE_BASE_URL` | `AUDIO_DIARIZE_BASE_URL` | Enhancement endpoint |
 | `AUDIO_DIARIZE_ENABLED` | *(unset = off)* | Enable speaker labelling via the diarization server |
-| `AUDIO_DIARIZE_BASE_URL` | `http://127.0.0.1:8083/v1` | Audio server base URL |
+| `AUDIO_DIARIZE_BASE_URL` | `http://127.0.0.1:8089/v1` | Audio server base URL |
 | `AUDIO_DIARIZE_API_KEY` | *(unset)* | Optional bearer token |
 
 ## How the audio is found

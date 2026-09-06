@@ -34,3 +34,4 @@ Index of architectural decisions for PresentationToMarkdown, in
 | [0027](0027-browser-file-upload.md) | Browser file upload to the native engine | Accepted |
 | [0028](0028-upload-output-location.md) | Upload output location | Accepted |
 | [0029](0029-serving-via-control-daemon.md) | Serving control via the macos-dev-config control daemon | Accepted |
+| [0035](0035-audio-on-fleet-manifest.md) | Audio server on the fleet manifest | Accepted |

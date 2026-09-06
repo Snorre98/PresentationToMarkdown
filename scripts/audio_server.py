@@ -479,6 +479,12 @@ class _Handler(BaseHTTPRequestHandler):
             self._send(400, {"error": f"invalid JSON: {exc}"})
             return None
 
+    def do_GET(self):  # noqa: N802 - stdlib handler method name
+        if self.path.rstrip("/") == "/health":
+            self._send(200, {"ok": True})
+            return
+        self._send(404, {"error": "not found"})
+
     def do_POST(self):  # noqa: N802 - stdlib handler method name
         route = self.path.rstrip("/")
         if route == "/v1/diarize":

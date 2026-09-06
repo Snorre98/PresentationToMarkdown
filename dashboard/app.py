@@ -26,7 +26,8 @@ from dashboard.db import make_readonly_engine
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8080
 DEFAULT_DB = Path(__file__).resolve().parents[1] / "ptm.sqlite"
-DEFAULT_ENGINE_PORT = 8090
+# 9091: the manifest reserves 808x/809x for model daemons (nomic-embed owns 8090)
+DEFAULT_ENGINE_PORT = 9091
 
 _engine_state = {
     "process": None,
@@ -714,7 +715,7 @@ def main(argv: list[str] | None = None) -> int:
         "--engine-port",
         type=int,
         default=DEFAULT_ENGINE_PORT,
-        help="engine port (default: 8090); also settable via PTM_ENGINE_PORT",
+        help="engine port (default: 9091); also settable via PTM_ENGINE_PORT",
     )
     parser.add_argument(
         "--db",

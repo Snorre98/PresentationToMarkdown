@@ -13,12 +13,13 @@ which stage (dereverb, enhance, isolate, diarize, ASR) changes the transcript.
 ## 1. Prerequisites
 
 - `ffmpeg` and `mlx_whisper` on `PATH` (see [runbook §1](runbook.md#1-prerequisites-one-time)).
-- The audio server, with the **two new dependencies installed**:
+- The audio server, with the **two new dependencies installed** (it is the
+  manifest's `audio` daemon on `:8089`, managed by the control daemon, ADR-0035):
 
   ```bash
   scripts/audio_serve.sh install    # re-run: now also installs nara_wpe + speechbrain
-  scripts/audio_serve.sh status     # running on :8083?
-  scripts/audio_serve.sh start      # if not
+  scripts/audio_serve.sh status     # daemon state — running on :8089?
+  scripts/audio_serve.sh start      # if not (blocks on the daemon's 60s health bound)
   ```
 
   > ⚠️ **Unverified pin:** `requirements-audio.txt` now pins `speechbrain==1.0.2`
@@ -173,13 +174,13 @@ the fastest way to pin down *which* server stage is broken.
 ffmpeg -f lavfi -i "sine=frequency=440:duration=2" -ar 16000 -ac 1 /tmp/ptm-probe.wav
 
 # 2. each endpoint (diarize needs the gated pyannote model -> HF_TOKEN)
-curl -s http://127.0.0.1:8083/v1/dereverb -H 'Content-Type: application/json' \
+curl -s http://127.0.0.1:8089/v1/dereverb -H 'Content-Type: application/json' \
   -d '{"path":"/tmp/ptm-probe.wav","output":"/tmp/ptm-probe.dereverb.flac"}'
-curl -s http://127.0.0.1:8083/v1/enhance -H 'Content-Type: application/json' \
+curl -s http://127.0.0.1:8089/v1/enhance -H 'Content-Type: application/json' \
   -d '{"path":"/tmp/ptm-probe.wav","output":"/tmp/ptm-probe.enhanced.flac"}'
-curl -s http://127.0.0.1:8083/v1/isolate -H 'Content-Type: application/json' \
+curl -s http://127.0.0.1:8089/v1/isolate -H 'Content-Type: application/json' \
   -d '{"path":"/tmp/ptm-probe.wav","output":"/tmp/ptm-probe.isolated.flac"}'
-curl -s http://127.0.0.1:8083/v1/diarize -H 'Content-Type: application/json' \
+curl -s http://127.0.0.1:8089/v1/diarize -H 'Content-Type: application/json' \
   -d '{"path":"/tmp/ptm-probe.wav","min_speakers":1,"max_speakers":2}'
 
 # 3. each should return {"ok": true} (or a speaker-turn list), and the written

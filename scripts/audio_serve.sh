@@ -1,29 +1,31 @@
 #!/usr/bin/env bash
 # audio_serve.sh — lifecycle manager for the audio-model server.
 #
-# One front door for the isolated PyTorch audio service (pyannote diarization +
-# DeepFilterNet enhancement) that the audio pass talks to on :8083. Mirrors the
-# serve.sh UX the vision models use (start/stop/status + optional launchd
-# always-on), but scoped to the audio server and its no-PyTorch stub.
+# The audio server is a manifest daemon (`audio`, :8089) owned by the
+# macos-dev-config control daemon (ADR-0035): start/stop/status/log here proxy
+# the daemon's verbs, exactly like the AI passes do (ADR-0029). What remains
+# local is the venv bootstrap (`install`) and the no-PyTorch test stub
+# (`stub-start`/`stub-stop`/`stub-status`/`stub-log`), which is not a manifest
+# service.
 #
 # Usage:
 #   audio_serve.sh install            # create ~/tools/audio-env (py3.11) + install deps
-#   audio_serve.sh start [--port N]   # start the real server in the background
-#   audio_serve.sh stop               # stop the real server
-#   audio_serve.sh status             # running? on which port?
-#   audio_serve.sh log                # tail -f the real server log
+#   audio_serve.sh start              # start the audio daemon via the control daemon
+#   audio_serve.sh stop               # stop the audio daemon
+#   audio_serve.sh status             # daemon state (up/down/starting/...)
+#   audio_serve.sh log                # tail -f the daemon-side server log
 #   audio_serve.sh stub-start [--port N]   # start the stub (no PyTorch/HF)
 #   audio_serve.sh stub-stop
 #   audio_serve.sh stub-status
 #   audio_serve.sh stub-log
-#   audio_serve.sh launchd-install [--port N]  # reboot-persistent LaunchAgent
-#   audio_serve.sh launchd-uninstall
 #
 # Env overrides:
+#   DAEMON_URL        control daemon base URL (default: http://127.0.0.1:9300)
+#   MACOS_DEV_CONFIG_ROOT  macos-dev-config repo (default: sibling dir)
 #   AUDIO_VENV        venv path (default: ~/tools/audio-env)
-#   PTM_AUDIO_PORT    default port (default: 8083); --port wins
-#   PTM_AUDIO_HOST    bind address (default: 127.0.0.1)
-#   PTM_STATE_DIR     pid/log dir (default: ~/.local/state/ptm)
+#   PTM_AUDIO_PORT    stub port (default: 8089)
+#   PTM_AUDIO_HOST    stub bind address (default: 127.0.0.1)
+#   PTM_STATE_DIR     pid/log dir for the stub (default: ~/.local/state/ptm)
 #   AUDIO_ENV_FILE    token file (default: <repo>/.env); HF_TOKEN env wins
 #
 # The HF token is read from HF_TOKEN or a git-ignored .env — never hard-coded,
@@ -39,9 +41,12 @@ REQUIREMENTS="$ROOT/requirements-audio.txt"
 
 VENV="${AUDIO_VENV:-$HOME/tools/audio-env}"
 STATE_DIR="${PTM_STATE_DIR:-$HOME/.local/state/ptm}"
-DEFAULT_PORT="${PTM_AUDIO_PORT:-8083}"
+DEFAULT_PORT="${PTM_AUDIO_PORT:-8089}"
 HOST="${PTM_AUDIO_HOST:-127.0.0.1}"
 ENV_FILE="${AUDIO_ENV_FILE:-$ROOT/.env}"
+DAEMON_URL="${DAEMON_URL:-http://127.0.0.1:9300}"
+DEV_CONFIG_ROOT="${MACOS_DEV_CONFIG_ROOT:-$(dirname "$ROOT")/macos-dev-config}"
+DEV_AUDIO_LOG="$DEV_CONFIG_ROOT/var/serve-audio.log"
 
 # ── Logging (shared serve.sh convention) ───────────────────────────────────────
 _c() { [ -t 1 ] && printf '\033[%sm' "$1" || true; }
@@ -280,94 +285,73 @@ _log() {   # $1 = audio | stub
   [ -f "$logfile" ] && tail -f "$logfile" || die "no log yet — start it first"
 }
 
-# ── launchd ────────────────────────────────────────────────────────────────────
-_launchd_plist_path() { printf '%s/Library/LaunchAgents/com.ptm.audio.plist' "$HOME"; }
+# ── Control-daemon lifecycle (the real server; ADR-0035) ──────────────────────
+# The daemon is the sole lifecycle authority for the `audio` manifest daemon
+# (start/stop/status verbs, blocking start with a 60s health bound). These
+# helpers proxy it; the server binds the manifest's :8089.
+_daemon_get() {   # $1 = path -> parsed JSON or empty on failure
+  curl -sf --max-time 5 "$DAEMON_URL$1" 2>/dev/null
+}
 
-_launchd_install() {
-  local py="$(_venv_python)"
-  [ -x "$py" ] || die "no venv at $VENV — run: audio_serve.sh install"
-  local port="$(_parse_port "$@")"
-  local logfile="$(_logfile audio)"
-  local plist token tokenxml
-  plist="$(_launchd_plist_path)"
-  mkdir -p "$(dirname "$plist")"
+_daemon_post() {  # $1 = path -> parsed JSON or empty on failure
+  curl -sf --max-time 90 -X POST "$DAEMON_URL$1" 2>/dev/null
+}
 
-  token="$(_resolve_token)"
-  if [ -z "$token" ]; then
-    warn "HF_TOKEN not set — the agent will start without it (/v1/diarize will 401)."
-    warn "Set HF_TOKEN or $ENV_FILE, then re-run launchd-install to embed it."
+_daemon_start() {
+  local rsp
+  rsp="$(_daemon_post /start/audio)"
+  if [ -n "$rsp" ]; then
+    ok "audio daemon: $(printf '%s' "$rsp" | sed -n 's/.*"state"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p') — http://127.0.0.1:8089/v1"
+    return 0
   fi
-  # Escape for the plist <string> body.
-  tokenxml="$(printf '%s' "$token" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g')"
-
-  cat > "$plist" <<EOF
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>com.ptm.audio</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>$py</string>
-        <string>$REAL_SERVER</string>
-        <string>--port</string>
-        <string>$port</string>
-        <string>--host</string>
-        <string>$HOST</string>
-    </array>
-    <key>EnvironmentVariables</key>
-    <dict>
-        <key>HOME</key>
-        <string>$HOME</string>
-        <key>PATH</key>
-        <string>$(dirname "$py"):/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
-        <key>HF_TOKEN</key>
-        <string>$tokenxml</string>
-    </dict>
-    <key>WorkingDirectory</key>
-    <string>$ROOT</string>
-    <key>RunAtLoad</key>
-    <true/>
-    <key>KeepAlive</key>
-    <true/>
-    <key>ThrottleInterval</key>
-    <integer>10</integer>
-    <key>StandardOutPath</key>
-    <string>$logfile</string>
-    <key>StandardErrorPath</key>
-    <string>$logfile</string>
-</dict>
-</plist>
-EOF
-
-  launchctl unload "$plist" >/dev/null 2>&1
-  launchctl load "$plist" || die "launchctl load failed"
-  ok "audio server LaunchAgent installed and loaded: $plist"
-  ok "reboot-persistent on http://$HOST:$port (log: $logfile)"
+  warn "audio daemon: start failed — is the control daemon up on $DAEMON_URL?"
+  warn "start it: launchctl start com.macosdev.fleetdaemon (or run macos-dev-config/bin/fleetdaemon)"
+  return 1
 }
 
-_launchd_uninstall() {
-  local plist="$(_launchd_plist_path)"
-  launchctl unload "$plist" >/dev/null 2>&1
-  rm -f "$plist"
-  rm -f "$(_pidfile audio)"
-  ok "audio server LaunchAgent removed: $plist"
+_daemon_stop() {
+  local rsp
+  rsp="$(_daemon_post /stop/audio)"
+  if [ -n "$rsp" ]; then
+    ok "audio daemon: stopped"
+    return 0
+  fi
+  warn "audio daemon: stop failed — is the control daemon up on $DAEMON_URL?"
+  return 1
 }
+
+_daemon_status() {
+  local rsp state
+  rsp="$(_daemon_get /status/audio)"
+  state="$(printf '%s' "$rsp" | sed -n 's/.*"state"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
+  if [ -n "$state" ]; then
+    case "$state" in
+      up)   ok "audio daemon: running — http://127.0.0.1:8089/v1" ;;
+      *)    warn "audio daemon: state '$state' — start it: audio_serve.sh start" ;;
+    esac
+    [ "$state" = up ]
+    return
+  fi
+  warn "audio daemon: unknown — is the control daemon up on $DAEMON_URL?"
+  return 1
+}
+
+# ── launchd (superseded) ───────────────────────────────────────────────────────
+# The real server is daemon-managed now (ADR-0035); the com.ptm.audio LaunchAgent
+# was retired. launchd-install/uninstall are gone — the fleet daemon's agent is
+# the always-on authority.
 
 # ── Dispatch ───────────────────────────────────────────────────────────────────
 case "${1:-help}" in
   install)          _install ;;
-  start)            shift; _start audio "$@" ;;
-  stop)             _stop audio ;;
-  status)           _status audio ;;
-  log)              _log audio ;;
+  start)            _daemon_start ;;
+  stop)             _daemon_stop ;;
+  status)           _daemon_status ;;
+  log)              [ -f "$DEV_AUDIO_LOG" ] && tail -f "$DEV_AUDIO_LOG" || die "no daemon log yet — start it first" ;;
   stub-start)       shift; _start stub "$@" ;;
   stub-stop)        _stop stub ;;
   stub-status)      _status stub ;;
   stub-log)         _log stub ;;
-  launchd-install)  shift; _launchd_install "$@" ;;
-  launchd-uninstall) _launchd_uninstall ;;
-  -h|--help|help)   sed -n '9,19p' "$0" | sed 's/^# \{0,1\}//' ;;
-  *) die "unknown command: ${1:-} (install|start|stop|status|log|stub-start|stub-stop|stub-status|stub-log|launchd-install|launchd-uninstall)" ;;
+  -h|--help|help)   sed -n '9,21p' "$0" | sed 's/^# \{0,1\}//' ;;
+  *) die "unknown command: ${1:-} (install|start|stop|status|log|stub-start|stub-stop|stub-status|stub-log)" ;;
 esac

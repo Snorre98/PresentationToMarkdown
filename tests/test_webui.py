@@ -18,7 +18,7 @@ from dashboard import create_app
 @pytest.fixture
 def app(tmp_path, monkeypatch):
     monkeypatch.setattr(appmod, "_engine_alive", lambda: False)
-    monkeypatch.setattr(appmod, "_spawn_engine", lambda: {"ok": True, "pid": 1, "base_url": "http://127.0.0.1:8090"})
+    monkeypatch.setattr(appmod, "_spawn_engine", lambda: {"ok": True, "pid": 1, "base_url": "http://127.0.0.1:9091"})
     return create_app(str(tmp_path / "ptm.sqlite"))
 
 

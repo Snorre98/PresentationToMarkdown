@@ -25,7 +25,8 @@ Verify: `mlx_whisper --help` and `ffmpeg -version` both return.
 ## 2. The audio-model server (diarization + enhancement)
 
 Both speaker labels and deep denoise/dereverb run in one PyTorch service on
-`:8083`. Four endpoints:
+`:8089` — a manifest daemon (`audio`) owned by the `macos-dev-config` control
+daemon (ADR-0035), like every other ML service (ADR-0029). Four endpoints:
 
 ```json
 // POST /v1/diarize — who spoke when
@@ -45,9 +46,10 @@ Both speaker labels and deep denoise/dereverb run in one PyTorch service on
 -> {"ok": true}
 ```
 
-All four are managed by one script, `scripts/audio_serve.sh` (start/stop/status +
-install + optional launchd always-on — the same lifecycle the vision models get
-from the `macos-dev-config` control daemon).
+The real server is managed by the control daemon; `scripts/audio_serve.sh`
+proxies its verbs (start/stop/status/log) and keeps the one-time venv install +
+the no-PyTorch test stub (the same lifecycle the vision models get from the
+`macos-dev-config` control daemon).
 
 ### Option A — Stub (for testing, no PyTorch, no Hugging Face)
 
@@ -60,15 +62,15 @@ scripts/audio_serve.sh stub-stop
 Fakes speaker turns and copies audio, so the whole pipeline runs end-to-end
 without installing PyTorch or touching Hugging Face. (Under the hood it runs
 `.venv/bin/python scripts/stub_audio_server.py`; pass `--port N` to override the
-default `8083`.)
+default `8089`.)
 
-### Option B — Real server (isolated venv)
+### Option B — Real server (isolated venv, daemon-managed)
 
 ```bash
 scripts/audio_serve.sh install             # one-time: create ~/tools/audio-env (py3.11) + deps
-scripts/audio_serve.sh start               # start in the background
-scripts/audio_serve.sh status              # running? on which port?
-scripts/audio_serve.sh log                 # tail -f the server log
+scripts/audio_serve.sh start               # blocks on the daemon's start (60s health bound)
+scripts/audio_serve.sh status              # daemon state (up/down/starting/…)
+scripts/audio_serve.sh log                 # tail -f the daemon-side server log
 scripts/audio_serve.sh stop
 ```
 
@@ -93,17 +95,16 @@ account at all.** So:
 > request (~100–200 MB, ungated). WPE is pure NumPy — no model, no download.
 
 `start` reads `HF_TOKEN` from the environment, or from a git-ignored `.env` in
-the repo root (see §2.1, Step 4). State lives in `~/.local/state/ptm`
-(`audio.pid` / `audio.log`); override with `PTM_STATE_DIR`, the port with
-`PTM_AUDIO_PORT` or `--port N`, and DeepFilterNet's noise-attenuation limit with
-`AUDIO_ENHANCE_ATTEN_DB` (server-side; default `12.0` dB, `0` = full suppression).
+the repo root (see §2.1, Step 4). The server binds the manifest's `:8089`; the
+stub's state lives in `~/.local/state/ptm` (`stub.pid` / `stub.log`; override
+with `PTM_STATE_DIR`, the stub port with `PTM_AUDIO_PORT` or `--port N`), and
+DeepFilterNet's noise-attenuation limit with `AUDIO_ENHANCE_ATTEN_DB`
+(server-side; default `12.0` dB, `0` = full suppression).
 
-**Always-on (survive reboot):**
-
-```bash
-scripts/audio_serve.sh launchd-install     # LaunchAgent, RunAtLoad + KeepAlive
-scripts/audio_serve.sh launchd-uninstall   # remove it
-```
+**Always-on (survive reboot):** the `com.macosdev.fleetdaemon` LaunchAgent is
+the always-on authority for every manifest daemon, the audio server included
+(ADR-0035). There is no separate audio LaunchAgent anymore; `launchd-install`
+was removed.
 
 ### 2.1 Hugging Face setup (only for `--diarize` / speaker labels)
 
@@ -322,7 +323,7 @@ PTM_RUN_AUDIO_INTEGRATION=1 ./.venv/bin/python -m pytest tests/test_transcribe_i
 | --- | --- |
 | `[WARN] Audio transcription failed: mlx_whisper not found` | `uv tool install mlx-whisper`, or set `AUDIO_MLX_WHISPER_BIN` |
 | `[WARN] … ffmpeg not found` | `brew install ffmpeg` |
-| `[WARN] Audio enhancement failed: …` | Server down → start `scripts/audio_server.py`, or set `AUDIO_ENHANCE_ENABLED=0` |
+| `[WARN] Audio enhancement failed: …` | Server down → `scripts/audio_serve.sh start` (daemon-managed `audio`, :8089), or set `AUDIO_ENHANCE_ENABLED=0` |
 | `[WARN] Audio dereverberation failed: …` | Server down → start it, or set `AUDIO_DEREVERB_ENABLED=0` |
 | `[WARN] Voice isolation failed: …` | Server down or SepFormer not installed → start it / install `speechbrain`, or drop `--isolate` |
 | `[WARN] Diarization failed: …` | Server down → start it, or drop `--diarize` |

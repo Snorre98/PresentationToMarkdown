@@ -226,7 +226,7 @@ ptm-dashboard --port 9090                         # same, after pip install -e .
 ```
 
 Open the printed URL, then click **Start engine** in the header (or run
-`./.venv/bin/python -m engine --port 8090` / `ptm-engine` yourself). The
+`./.venv/bin/python -m engine --port 9091` / `ptm-engine` yourself). The
 **Convert** tab reproduces the desktop GUI's workflow:
 
 - **Files** — drag-and-drop `.pptx`/`.pdf`, *Add Files* (browser picker),
@@ -253,7 +253,7 @@ Beyond conversion, the web app keeps the ADR-0022 read-only log surface:
 | `--db PATH` | `<repo root>/ptm.sqlite` | Log database to read |
 | `--host HOST` | `127.0.0.1` | Bind address (loopback only, a local surface) |
 | `--port N` | `8080` | UI port to bind |
-| `--engine-port N` | `8090` | Engine port (also `PTM_ENGINE_PORT`) |
+| `--engine-port N` | `9091` | Engine port (also `PTM_ENGINE_PORT`) |
 
 The UI opens the database **read-only** (`mode=ro` + `query_only=ON`) and never
 imports `converter`; the engine is the sole writer. History tabs auto-refresh
@@ -280,25 +280,28 @@ start (ADR-0022).
 
 ### Ports
 
-The local AI passes reserve a block of loopback ports, and the web app sits
-right next to them:
+The local ML services are registered on the `macos-dev-config` fleet manifest
+and owned by its control daemon (`:9300`; ADR-0029/0035) — the table below is
+the projection PtM uses:
 
 | Port | Used by |
 | --- | --- |
 | `:8080` | **Web UI default** |
 | `:8081` | Transcriber (mlx-vlm, Qwen2.5-VL-7B) |
 | `:8082` | Classifier gate (mlx-vlm, Qwen2.5-VL-3B) |
-| `:8083` | Audio server (dereverb / enhance / isolate / diarize) |
-| `:8084` | Summary chat model (mlx-lm, Llama-3.2-3B) |
-| `:8090` | **Native engine default** |
-| `:11434` | Ollama (embeddings) |
+| `:8083` | `text` daemon (mlx-lm, Llama-3.2-3B) — serves the summary + structure passes |
+| `:8084` | Manifest `summary` daemon (writing assistant; not PtM) |
+| `:8085` | `mistral-24b` daemon |
+| `:8089` | Audio server (dereverb / enhance / isolate / diarize; manifest `audio`) |
+| `:8090` | `nomic-embed` embeddings daemon (llama.cpp) |
+| `:9090` | **Web UI (recommended)** |
+| `:9091` | **Native engine default** |
 
 The web UI's default `:8080` sits directly below the transcriber, and its
 automatic port-fallback walks up to `+100` (`:8080` → `:8180`) — straight through
-`:8081`/`:8082`/`:8083`/`:8084` and the engine's `:8090`. So if `:8080` is already
-taken and any AI server (or the engine) is running, the fallback will collide.
-When AI servers are up, start the web app (and, if you launch it by hand, the
-engine) on ports clear of the whole block:
+the manifest's ML block. So if `:8080` is already taken and any ML daemon is
+running, the fallback will collide. When ML daemons are up, start the web app
+(and, if you launch it by hand, the engine) on ports clear of the whole block:
 
 ```bash
 ptm-dashboard --port 9090                 # web UI
@@ -683,7 +686,7 @@ releases the lock. See [docs/runbook.md](docs/runbook.md).
 | `AUDIO_ENHANCE_ENABLED` | `1` | DeepFilterNet denoise via the audio server |
 | `AUDIO_ISOLATE_ENABLED` | *(unset = off)* | Voice isolation (SepFormer) via the audio server |
 | `AUDIO_DIARIZE_ENABLED` | *(unset = off)* | Enable speaker labelling |
-| `AUDIO_DIARIZE_BASE_URL` | `http://127.0.0.1:8083/v1` | Diarization service base URL |
+| `AUDIO_DIARIZE_BASE_URL` | `http://127.0.0.1:8089/v1` | Diarization service base URL (env override; daemon-resolved by default, ADR-0035) |
 
 ### Running all AI passes at once
 

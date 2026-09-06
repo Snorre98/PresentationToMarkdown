@@ -59,7 +59,8 @@ keeping the PySide6 GUI as a supported fallback rather than replacing it.
   /api/engine/stop`) SIGTERMs the recorded child (falling back to the engine's
   `/api/shutdown` for a hand-started process), and `ptm-engine --kill`
   terminates any running engine process from the CLI.
-- The engine binds `127.0.0.1` on a default port (`:8090`) with the same `+100`
+- The engine binds `127.0.0.1` on a default port (`:9091` since ADR-0035 — the
+  manifest reserves 808x/809x for model daemons) with the same `+100`
   port-fallback as the dashboard, kept clear of the AI-server block
   (`:8081`–`:8084`, `:11434`). A manually-started `ptm-engine` is also supported.
 
@@ -80,7 +81,7 @@ window geometry and OS-chrome specifics are browser-native and not reproduced.
 
 - A full web converter with server-side file browsing and a native "open in
   Finder" action, reachable from a browser on the same machine.
-- Two localhost services (UI `:8080`, engine `:8090`) whose ports must be
+- Two localhost services (UI `:8080`, engine `:9091`) whose ports must be
   coordinated with the AI-server block; documented in the README.
 - New dependencies: `flask-sock` + `simple-websocket`.
 - The engine becomes the second place (after `cli.py`) that drives `convert_files`;

@@ -38,7 +38,9 @@ from flask import Flask, jsonify, request
 from flask_sock import Sock
 
 DEFAULT_HOST = "127.0.0.1"
-DEFAULT_PORT = 8090
+# 9091: the manifest reserves 808x/809x for model daemons (nomic-embed owns 8090),
+# so the engine binds in the 909x range next to the dashboard (9090) — ADR-0035.
+DEFAULT_PORT = 9091
 
 _SUPPORTED_EXTENSIONS = {".pptx", ".pdf"}
 
@@ -399,8 +401,8 @@ def _engine_pids(port: int | None = None) -> list[int]:
 
     Matches by command line (``python -m engine`` / ``ptm-engine``); when a
     port is given it is also used as a cross-check via the process list, but
-    the command-line match is authoritative (keeps AI servers on 8081-8084 /
-    11434 out of the kill set).
+    the command-line match is authoritative (keeps the manifest's model daemons
+    out of the kill set).
     """
     pids: set[int] = set()
     me = os.getpid()
@@ -651,7 +653,7 @@ def _main(argv: list[str] | None = None) -> int:
     )
     add_ai_flags(parser)
     parser.add_argument("--host", default=DEFAULT_HOST, help="host to bind (default: 127.0.0.1)")
-    parser.add_argument("--port", type=int, default=DEFAULT_PORT, help="port to bind (default: 8090)")
+    parser.add_argument("--port", type=int, default=DEFAULT_PORT, help="port to bind (default: 9091)")
     parser.add_argument(
         "--kill",
         action="store_true",

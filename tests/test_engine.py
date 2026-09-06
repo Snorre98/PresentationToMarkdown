@@ -217,8 +217,8 @@ def test_engine_pids_filters_self_and_matches_marker(monkeypatch):
     me = 12345
     monkeypatch.setattr("engine.os", type("_os", (), {"getpid": lambda: me}))
     fake_ps = type("_r", (), {"stdout": (
-        f"{me} python -m engine --port 8090\n"
-        "9999 python -m engine --port 8090\n"
+        f"{me} python -m engine --port 9091\n"
+        "9999 python -m engine --port 9091\n"
         "8888 /usr/bin/python ptm-engine --host 127.0.0.1\n"
         "7777 python -m converter.something\n"
         "6666 python -m engine\n"

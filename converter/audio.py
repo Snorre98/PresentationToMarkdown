@@ -25,7 +25,9 @@ client:
 Configuration (environment variables):
 
 - ``AUDIO_DIARIZE_ENABLED`` — diarization master switch. Default off.
-- ``AUDIO_DIARIZE_BASE_URL`` — service base URL, default ``http://127.0.0.1:8083/v1``.
+- ``AUDIO_DIARIZE_BASE_URL`` — service base URL override. Default: the manifest's
+  ``audio`` daemon (``:8089``, ADR-0035) via the control daemon's ``list``
+  projection, falling back to ``http://127.0.0.1:8089/v1`` when unreachable.
 - ``AUDIO_DIARIZE_API_KEY`` — optional bearer token.
 - ``AUDIO_ENHANCE_ENABLED`` — enhancement master switch. Default on.
 - ``AUDIO_ENHANCE_BASE_URL`` — enhancement base URL, defaults to ``AUDIO_DIARIZE_BASE_URL``.
@@ -40,13 +42,30 @@ import os
 import urllib.error
 import urllib.request
 
+from converter import fleet
+
 AUDIO_DIARIZE_ENABLED = os.environ.get("AUDIO_DIARIZE_ENABLED", "").strip().lower() in {
     "1",
     "true",
     "yes",
     "on",
 }
-AUDIO_DIARIZE_BASE_URL = os.environ.get("AUDIO_DIARIZE_BASE_URL", "http://127.0.0.1:8083/v1")
+
+
+def _audio_base_url() -> str:
+    """Resolve the audio server base URL: env override → daemon list → fallback.
+
+    The audio server is a manifest daemon (``audio``, ``:8089``, ADR-0035); the
+    control daemon's ``list`` projection wins over the static fallback, mirroring
+    the AI-pass endpoint resolution in ``converter.config`` (ADR-0029).
+    """
+    env = os.environ.get("AUDIO_DIARIZE_BASE_URL")
+    if env:
+        return env.rstrip("/")
+    return fleet.base_url("audio") or "http://127.0.0.1:8089/v1"
+
+
+AUDIO_DIARIZE_BASE_URL = _audio_base_url()
 AUDIO_DIARIZE_API_KEY = os.environ.get("AUDIO_DIARIZE_API_KEY") or None
 
 AUDIO_ENHANCE_ENABLED = os.environ.get("AUDIO_ENHANCE_ENABLED", "1").strip().lower() in {
