@@ -35,3 +35,4 @@ Index of architectural decisions for PresentationToMarkdown, in
 | [0028](0028-upload-output-location.md) | Upload output location | Accepted |
 | [0029](0029-serving-via-control-daemon.md) | Serving control via the macos-dev-config control daemon | Accepted |
 | [0035](0035-audio-on-fleet-manifest.md) | Audio server on the fleet manifest | Accepted |
+| [0036](0036-terminal-tui.md) | Terminal UI (ptm-tui) — one native terminal surface for the whole app | Accepted |
