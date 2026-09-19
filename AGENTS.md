@@ -2,11 +2,12 @@
 
 ## Project
 
-Desktop app and reusable Python library that converts PowerPoint (`.pptx`) and PDF (`.pdf`) documents into Markdown.
+Desktop app and reusable Python library that converts PowerPoint (`.pptx`), PDF (`.pdf`), and LaTeX projects into Markdown.
 
 - The importable library lives in the `converter/` package and has no UI dependencies.
 - One Markdown file is produced per source document, with images extracted to a sidecar `assets/<name>/` folder and deduplicated by content hash. Recurring images (logos/watermarks) are inlined once, then hyperlinked.
 - Both formats preserve **bold** and *italic*; output includes pipe tables, bullet/numbered lists, and per-slide/page headings carrying the slide or page number. PPTX also emits speaker notes as blockquotes; PDF also links a per-page rendered PNG as visual ground truth.
+- A LaTeX **project** is a folder containing `.tex` source; it converts to one `.md` named after the folder via pandoc (a required binary for `.tex`), with `\input`/`\include`/`\import` flattened, a `# Title` + `*Authors*` block, `##` sections, content-hash-deduped figures, display math rendered to PNG (pdflatex), and inline `$…$` left as passthrough. LaTeX runs **no AI passes except the RAG summary** (ADR-0038).
 - Multi-column PDFs (whitepapers, academic papers) are linearized column-by-column automatically; opt-in **paper mode** (`--paper` / `PDF_MODE=paper` / GUI checkbox) renders them as continuous documents with a title/authors block, `##` section headings, and stripped running headers. Slide decks keep the per-page default (`--slide`).
 - GUI (`gui.py`, `main.py`, `ptm-start`) — drag-and-drop, batch convert, background-thread progress, per-file `[OK]`/`[ERR]`/`[WARN]` log.
 - CLI (`cli.py` / `ptm`) — headless batch conversion mirroring the GUI; `cli_transcribe.py` / `ptm-transcribe` — decoupled local audio→Markdown transcription.
@@ -46,7 +47,7 @@ No lint, typecheck, or formatter is configured (no ruff/black/mypy/pre-commit in
 - `converter/` — conversion library, no UI dependencies
   - `__init__.py` — public API (`convert_file`, `convert_files`, `ConvertResult`) and extension-based dispatch
   - `base.py` — shared `Converter` interface, `ConverterRegistry`, and reusable Markdown helpers
-  - `pptx.py`, `pdf.py` — the two concrete converters
+  - `pptx.py`, `pdf.py`, `latex.py` — the concrete converters (`latex.py` shells out to pandoc, ADR-0038)
   - `vision.py`, `classify.py`, `interpret.py`, `format.py`, `structure.py`, `summary.py` — optional AI post-passes
   - `config.py` — runtime registry of AI feature toggles + local server catalog (ADR-0012)
   - `render.py` — LibreOffice + PyMuPDF rendering for PPTX charts
@@ -65,7 +66,7 @@ No lint, typecheck, or formatter is configured (no ruff/black/mypy/pre-commit in
 
 - Python 3.10+ (`requires-python = ">=3.10"`).
 - Every module starts with `from __future__ import annotations` and a module-level docstring; type hints use PEP 604 unions (`str | None`).
-- New file formats subclass `Converter`, set `extensions`, implement `convert`, and are registered in `converter/__init__.py` via `registry.register(...)`.
+- New file formats subclass `Converter`, set `extensions`, implement `convert`, and are registered in `converter/__init__.py` via `registry.register(...)`. Project formats (a directory, not a file) additionally set `project_extensions` and a `project_entry` detector.
 - Conversion is deterministic and never invokes audio transcription (that is the separate `ptm-transcribe` command, ADR-0009).
 - AI/audio configuration is read from environment variables at **import time**; `cli_common.apply_ai_env` must be called before importing `converter` or `gui`. `cli_common` deliberately does not import `converter`.
 - Exception to the import-time rule: the AI feature *on/off* toggles are runtime state owned by `converter.config` (`is_enabled`/`set_enabled`), seeded from the env at import; the GUI flips them per conversion without a restart (ADR-0012). Endpoint/model env vars (`*_BASE_URL`/`*_MODEL`/`EMBED_*`) remain import-time.
@@ -79,4 +80,5 @@ No lint, typecheck, or formatter is configured (no ruff/black/mypy/pre-commit in
 - `apply_ai_env(args)` (or equivalent env-var setup) must run before any `import converter` / `import gui`; otherwise AI flags are silently ignored.
 - `requirements-audio.txt` targets an isolated Python 3.11 venv (deepfilternet has no cp312 wheel); pins are interdependent — see `docs/runbook.md` §2.
 - PyMuPDF is AGPL-3.0 (or commercial) licensed — review before distributing.
+- pandoc is a **required** external binary for `.tex` input (`brew install pandoc`); `pdflatex` is required only for display-math rendering (inline passthrough otherwise). Paths `PANDOC_PATH`/`PDLATEX_PATH` override the binaries.
 - Adding a format: subclass `Converter`, register it in `converter/__init__.py`, then update the GUI file filter in `gui.py` if it should be listed.

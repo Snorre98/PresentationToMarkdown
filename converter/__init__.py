@@ -25,6 +25,7 @@ from converter.base import (
 )
 from converter.pptx import PPTXConverter
 from converter.pdf import PDFConverter
+from converter.latex import LatexConverter
 from converter.format import polish_text
 from converter.summary import prepend_summary
 from converter.lifecycle import release_readers, release_writers
@@ -32,6 +33,7 @@ from converter.logstore import phase, run_finish, run_snapshot, run_start
 
 registry.register(PPTXConverter)
 registry.register(PDFConverter)
+registry.register(LatexConverter)
 
 SUPPORTED_EXTENSIONS = registry.supported_extensions
 
@@ -42,6 +44,7 @@ __all__ = [
     "PageProgressCallback",
     "ProgressCallback",
     "SUPPORTED_EXTENSIONS",
+    "collect_inputs",
     "convert_file",
     "convert_files",
 ]
@@ -49,6 +52,47 @@ __all__ = [
 
 def _default_output_dir(path: Path) -> Path:
     return path.parent / "markdown"
+
+
+def collect_inputs(paths: list[str | Path], recursive: bool = True) -> list[Path]:
+    """Expand files/folders into concrete conversion inputs (ADR-0038).
+
+    A directory that is a registered *project* (e.g. a LaTeX project) is
+    yielded once, as the directory itself; other directories are scanned for
+    supported files. Single supported files — including a lone ``.tex`` — are
+    yielded as-is. Results are de-duplicated and order-preserving.
+    """
+    files: list[Path] = []
+    seen: set[str] = set()
+
+    def add(p: Path) -> None:
+        resolved = str(p.resolve())
+        if resolved not in seen:
+            files.append(p)
+            seen.add(resolved)
+
+    def scan_dir(directory: Path) -> None:
+        if registry.get_project(directory) is not None:
+            add(directory)
+            return
+        try:
+            entries = sorted(directory.iterdir(), key=lambda p: p.name)
+        except OSError:
+            return
+        for child in entries:
+            if child.is_dir():
+                if recursive:
+                    scan_dir(child)
+            elif child.suffix.lower() in SUPPORTED_EXTENSIONS:
+                add(child)
+
+    for raw in paths:
+        path = Path(raw)
+        if path.is_dir():
+            scan_dir(path)
+        elif path.suffix.lower() in SUPPORTED_EXTENSIONS:
+            add(path)
+    return files
 
 
 # A per-file output resolver: given the source path, return its output
@@ -97,6 +141,8 @@ def convert_file(
     """
     path = Path(path)
     converter = registry.get(path)
+    if converter is None and path.is_dir():
+        converter = registry.get_project(path)
     if converter is None:
         return ConvertResult(
             source_path=path,
@@ -122,18 +168,24 @@ def convert_file(
             try:
                 original = result.md_path.read_text(encoding="utf-8")
                 with phase(run_id, "format", 3):
-                    polished = polish_text(original, warnings=result.warnings, source=str(path))
+                    polished = polish_text(
+                        original,
+                        warnings=result.warnings,
+                        source=str(path),
+                        allow_llm="format" in converter.ai_passes,
+                    )
                 rewritten = (polished + "\n") if polished else ""
                 if rewritten != original:
                     result.md_path.write_text(rewritten, encoding="utf-8")
             except Exception as exc:  # noqa: BLE001 - polish never fails the conversion
                 result.warnings.append(f"Markdown polish failed: {exc}")
             release_readers()
-            try:
-                with phase(run_id, "summary", 4):
-                    prepend_summary(result.md_path, path, result.warnings)
-            except Exception as exc:  # noqa: BLE001 - summary never fails the conversion
-                result.warnings.append(f"Summary generation failed: {exc}")
+            if "summary" in converter.ai_passes:
+                try:
+                    with phase(run_id, "summary", 4):
+                        prepend_summary(result.md_path, path, result.warnings)
+                except Exception as exc:  # noqa: BLE001 - summary never fails the conversion
+                    result.warnings.append(f"Summary generation failed: {exc}")
             release_writers()
         status = "ok" if result.error is None else "error"
         return result

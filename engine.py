@@ -42,7 +42,7 @@ DEFAULT_HOST = "127.0.0.1"
 # so the engine binds in the 909x range next to the dashboard (9090) — ADR-0035.
 DEFAULT_PORT = 9091
 
-_SUPPORTED_EXTENSIONS = {".pptx", ".pdf"}
+_SUPPORTED_EXTENSIONS = {".pptx", ".pdf", ".tex"}
 
 # Uploaded files are staged under the state dir (ADR-0027) and pruned after
 # this long. Sizes are enforced via Flask's MAX_CONTENT_LENGTH on the app.
@@ -94,17 +94,15 @@ def _fs_list(path: str) -> dict:
 
 
 def _fs_glob(path: str, recursive: bool = True) -> dict:
-    """Expand a file or folder into supported file paths (the Add Folder equivalent)."""
+    """Expand a file or folder into supported inputs (the Add Folder equivalent).
+
+    A folder that is a LaTeX project (ADR-0038) is yielded once, as the folder;
+    other folders are scanned for supported files.
+    """
+    from converter import collect_inputs
+
     target = Path(path).expanduser()
-    if target.is_dir():
-        it = target.rglob("*") if recursive else target.iterdir()
-        files = sorted(
-            cand for cand in it if cand.suffix.lower() in _SUPPORTED_EXTENSIONS
-        )
-    elif target.suffix.lower() in _SUPPORTED_EXTENSIONS:
-        files = [target]
-    else:
-        files = []
+    files = collect_inputs([target], recursive=recursive)
     return {"path": str(target), "files": [str(f.resolve()) for f in files]}
 
 

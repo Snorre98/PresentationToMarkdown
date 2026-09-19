@@ -42,6 +42,22 @@ class Converter(ABC):
 
     extensions: tuple[str, ...] = ()
 
+    # Which AI post-passes may run on this format's output (ADR-0038). The
+    # default keeps the original behaviour (format LLM + RAG summary); a
+    # converter that must stay deterministic (e.g. LaTeX) narrows this set.
+    ai_passes: frozenset[str] = frozenset({"format", "summary"})
+
+    # Project formats: a directory (not a single file) that this converter can
+    # turn into one Markdown document. ``project_extensions`` lists the file
+    # extensions that mark such a project; ``project_entry`` returns the entry
+    # file for a directory (or ``None`` when the directory is not a project of
+    # this format).
+    project_extensions: tuple[str, ...] = ()
+
+    @classmethod
+    def project_entry(cls, directory: Path) -> Path | None:
+        return None
+
     @abstractmethod
     def convert(
         self,
@@ -66,10 +82,13 @@ class ConverterRegistry:
 
     def __init__(self) -> None:
         self._converters: dict[str, type[Converter]] = {}
+        self._projects: list[type[Converter]] = []
 
     def register(self, converter: type[Converter]) -> type[Converter]:
         for ext in converter.extensions:
             self._converters[ext.lower()] = converter
+        if converter.project_extensions:
+            self._projects.append(converter)
         return converter
 
     def get(self, path: Path) -> Converter | None:
@@ -77,6 +96,15 @@ class ConverterRegistry:
         if converter_cls is None:
             return None
         return converter_cls()
+
+    def get_project(self, directory: Path) -> Converter | None:
+        """Return a converter for ``directory`` if it is a project of one."""
+        if not directory.is_dir():
+            return None
+        for converter_cls in self._projects:
+            if converter_cls.project_entry(directory) is not None:
+                return converter_cls()
+        return None
 
     @property
     def supported_extensions(self) -> set[str]:

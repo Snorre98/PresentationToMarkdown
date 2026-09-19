@@ -2,6 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-09-07
+- Updated: 2026-09-08 (LaTeX re-open — see [0038](0038-latex-pandoc-backend.md))
 
 ## Context
 
@@ -90,3 +91,13 @@ pandoc -f pptx -t json deck.pptx -o deck.json   # AST for filters
 - **Re-open triggers:** math-heavy decks cause user-visible loss; a
   reveal.js export is requested; or the project adds non-presentation text
   formats (docx/xlsx) to the input set.
+
+## Update (2026-09-08)
+
+The "non-presentation text formats" re-open trigger has fired: the project
+now converts LaTeX projects to Markdown. Pandoc is adopted **for LaTeX only**
+as a required external binary, wrapped by a deterministic pre/post-processor
+that preserves the pipeline's conventions (image dedup, title/authors block,
+heading chunking). The `pptx`/`pdf` converters remain on python-pptx /
+PyMuPDF, and the deferred options A–D below stay open for those formats.
+See [0038](0038-latex-pandoc-backend.md) for the decision.

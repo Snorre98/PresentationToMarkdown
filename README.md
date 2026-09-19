@@ -734,3 +734,8 @@ cached (no separate probe), and unchanged chunks are not re-embedded.
 - Audio transcription uses segment-level timestamps (word-level needs wav2vec2 alignment) and does not yet auto-align the transcript to slides (see ADR-0007)
 - Markdown flavor toggle (Obsidian `![[wiki-links]]`), note style, and heading level options could go in a settings pane
 - Packaging into a standalone executable with PyInstaller
+
+
+---
+
+curl -X POST http:/127.0.0.1:9300/start/transcriber

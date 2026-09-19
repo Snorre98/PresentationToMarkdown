@@ -18,7 +18,7 @@ def _reset_config():
 
 
 def test_supported_extensions():
-    assert {".pptx", ".pdf"} <= SUPPORTED_EXTENSIONS
+    assert {".pptx", ".pdf", ".tex"} <= SUPPORTED_EXTENSIONS
 
 
 def test_convert_pptx(tmp_path):

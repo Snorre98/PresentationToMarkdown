@@ -226,14 +226,23 @@ def _llm_pass(md: str, warnings: list[str], source: str = "") -> str:
         return md
 
 
-def polish_text(md: str, warnings: list[str] | None = None, source: str = "") -> str:
+def polish_text(
+    md: str,
+    warnings: list[str] | None = None,
+    source: str = "",
+    allow_llm: bool = True,
+) -> str:
     """Normalise formatting of converted Markdown, optionally restructuring via an LLM.
 
     Returns the polished text (no trailing newline). Content is preserved: the
     deterministic pass only touches whitespace, and the LLM pass is gated by a
     word cross-check that rejects any reformat which drops or invents content.
+
+    ``allow_llm`` disables the LLM restructure pass for formats that declare it
+    out of scope via ``Converter.ai_passes`` (e.g. LaTeX, ADR-0038); the
+    deterministic whitespace pass still runs.
     """
     text = _deterministic_pass(md)
-    if config.is_enabled("format") and text:
+    if allow_llm and config.is_enabled("format") and text:
         text = _deterministic_pass(_llm_pass(text, warnings or [], source))
     return text

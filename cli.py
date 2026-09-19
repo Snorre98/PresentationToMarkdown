@@ -1,9 +1,10 @@
 """``ptm`` — headless batch converter with GUI-parity behavior.
 
-Converts ``.pptx``/``.pdf`` files (or folders, scanned recursively) to Markdown,
-mirroring the desktop GUI's semantics: per-file ``[OK]``/``[ERR]``/``[WARN]`` log
-lines, an optional output folder (defaulting to ``<source>/markdown``), recent-file
-recording, and the same AI-capability flags.
+Converts ``.pptx``/``.pdf`` files and LaTeX projects (``.tex``, or folders,
+scanned recursively) to Markdown, mirroring the desktop GUI's semantics:
+per-file ``[OK]``/``[ERR]``/``[WARN]`` log lines, an optional output folder
+(defaulting to ``<source>/markdown``), recent-file recording, and the same
+AI-capability flags.
 """
 from __future__ import annotations
 
@@ -17,13 +18,13 @@ from cli_common import add_ai_flags, apply_ai_env
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="ptm",
-        description="Convert PowerPoint (.pptx) and PDF files to Markdown.",
+        description="Convert PowerPoint (.pptx), PDF, and LaTeX (.tex) files to Markdown.",
     )
     add_ai_flags(parser)
     parser.add_argument(
         "paths",
         nargs="+",
-        help="input .pptx/.pdf files and/or folders to scan recursively",
+        help="input .pptx/.pdf/.tex files and/or folders to scan recursively",
     )
     parser.add_argument(
         "-o",
@@ -58,30 +59,13 @@ def build_parser() -> argparse.ArgumentParser:
 def collect_files(paths: list[str], recursive: bool) -> tuple[list[Path], set[str]]:
     """Expand files/folders into a de-duplicated, order-preserving list of inputs.
 
-    Returns ``(files, supported_extensions)``. Folders are scanned with
-    ``rglob`` (or ``iterdir`` when ``recursive`` is false) for supported files,
-    matching the GUI's ``add_paths``.
+    Returns ``(files, supported_extensions)``. Folders that are LaTeX projects
+    (ADR-0038) are yielded as single directory inputs; other folders are scanned
+    for supported files, matching the GUI's ``add_paths``.
     """
-    from converter import SUPPORTED_EXTENSIONS
+    from converter import SUPPORTED_EXTENSIONS, collect_inputs
 
-    files: list[Path] = []
-    seen: set[str] = set()
-    for raw in paths:
-        path = Path(raw)
-        if path.is_dir():
-            candidates = sorted(
-                cand
-                for cand in (path.rglob("*") if recursive else path.iterdir())
-                if cand.suffix.lower() in SUPPORTED_EXTENSIONS
-            )
-        else:
-            candidates = [path]
-        for cand in candidates:
-            resolved = str(cand.resolve())
-            if resolved not in seen:
-                files.append(cand)
-                seen.add(resolved)
-    return files, SUPPORTED_EXTENSIONS
+    return collect_inputs(paths, recursive=recursive), SUPPORTED_EXTENSIONS
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -92,7 +76,7 @@ def main(argv: list[str] | None = None) -> int:
 
     files, _ = collect_files(args.paths, recursive=not args.no_recursive)
     if not files:
-        print("ptm: no supported .pptx/.pdf files found.", file=sys.stderr)
+        print("ptm: no supported .pptx/.pdf/.tex files found.", file=sys.stderr)
         return 2
 
     output_dir = Path(args.output) if args.output else None
@@ -147,7 +131,12 @@ def _page_progress(page: int, total: int, name: str) -> None:
     """
     if not sys.stderr.isatty():
         return
-    noun = "Slide" if name.lower().endswith(".pptx") else "Page"
+    if name.lower().endswith(".pptx"):
+        noun = "Slide"
+    elif name.lower().endswith(".pdf"):
+        noun = "Page"
+    else:
+        noun = "Document"
     print(f"\r{name}: {noun} {page}/{total}", end="", file=sys.stderr, flush=True)
 
 

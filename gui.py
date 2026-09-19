@@ -27,7 +27,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from converter import ConvertResult, SUPPORTED_EXTENSIONS, config, convert_files
+from converter import ConvertResult, collect_inputs, config, convert_files
 from converter.settings import get_setting, recent_files, record_recent, set_setting
 
 _INPUT_DIR_KEY = "last_input_dir"
@@ -205,7 +205,7 @@ class MainWindow(QMainWindow):
         self.log = QPlainTextEdit()
         self.log.setReadOnly(True)
         self.log.setPlaceholderText(
-            "Drop .pptx/.pdf files or folders here, or use Add Files. "
+            "Drop .pptx/.pdf files or LaTeX project folders here, or use Add Files. "
             "One .md file per document, images saved under assets/<name>/."
         )
 
@@ -267,34 +267,23 @@ class MainWindow(QMainWindow):
     def add_paths(self, paths: list[Path]):
         existing = {self.file_list.item(i).data(0) for i in range(self.file_list.count())}
         added = 0
-        for path in paths:
-            if path.is_dir():
-                candidates = sorted(
-                    cand
-                    for cand in path.rglob("*")
-                    if cand.suffix.lower() in SUPPORTED_EXTENSIONS
-                )
-            elif path.suffix.lower() in SUPPORTED_EXTENSIONS:
-                candidates = [path]
-            else:
-                continue
-            for cand in candidates:
-                resolved = str(cand.resolve())
-                if resolved not in existing:
-                    item = QListWidgetItem(resolved)
-                    item.setData(0, resolved)
-                    self.file_list.addItem(item)
-                    existing.add(resolved)
-                    added += 1
+        for cand in collect_inputs(paths):
+            resolved = str(cand.resolve())
+            if resolved not in existing:
+                item = QListWidgetItem(resolved)
+                item.setData(0, resolved)
+                self.file_list.addItem(item)
+                existing.add(resolved)
+                added += 1
         if added:
-            self.log.appendPlainText(f"Added {added} file(s).")
+            self.log.appendPlainText(f"Added {added} item(s).")
 
     def pick_files(self):
         paths, _ = QFileDialog.getOpenFileNames(
             self,
             "Select files",
             self._last_input_dir,
-            "Presentations and PDFs (*.pptx *.pdf)",
+            "Presentations, PDFs and LaTeX (*.pptx *.pdf *.tex)",
         )
         if paths:
             self._remember_input_dir(Path(paths[0]).parent)
@@ -459,7 +448,7 @@ class MainWindow(QMainWindow):
             for i in range(self.file_list.count())
         ]
         if not paths:
-            QMessageBox.warning(self, "No files", "Add at least one .pptx or .pdf file first.")
+            QMessageBox.warning(self, "No files", "Add at least one .pptx/.pdf/.tex file or LaTeX folder first.")
             return
 
         if not self._ai_preflight():
@@ -506,7 +495,12 @@ class MainWindow(QMainWindow):
         self.log.appendPlainText(f"[{idx}/{total}] {name}")
 
     def _on_page_progress(self, page: int, total: int, name: str):
-        noun = "Slide" if name.lower().endswith(".pptx") else "Page"
+        if name.lower().endswith(".pptx"):
+            noun = "Slide"
+        elif name.lower().endswith(".pdf"):
+            noun = "Page"
+        else:
+            noun = "Document"
         if not self.page_progress.isVisible():
             self.page_progress.setVisible(True)
         self.page_progress.setMaximum(total)
