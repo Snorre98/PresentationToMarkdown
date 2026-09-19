@@ -271,6 +271,12 @@ def _structure_text_url() -> str:
     )
 
 
+def _need_url() -> str:
+    return os.environ.get(
+        "NEED_BASE_URL", _resolve("structure-text", SERVERS["structure-text"].base_url)
+    )
+
+
 def _summary_url() -> str:
     return os.environ.get("SUMMARY_BASE_URL", _resolve("summary", SERVERS["summary"].base_url))
 
@@ -283,7 +289,7 @@ _FEATURE_ENDPOINTS: dict[str, list[tuple[str, Callable[[], str]]]] = {
     "vision": [("transcriber", _vision_url)],
     "classify": [("transcriber", _vision_url), ("classifier", _classify_url)],
     "interpret": [("transcriber", _interpret_url)],
-    "format": [("transcriber", _format_url)],
+    "format": [("transcriber", _format_url), ("structure-text", _need_url)],
     "summary": [("summary", _summary_url), ("nomic-embed", _embed_url)],
     "structure": [("transcriber", _structure_url), ("structure-text", _structure_text_url)],
 }
