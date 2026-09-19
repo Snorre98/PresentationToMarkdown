@@ -14,7 +14,8 @@ from converter.structure import (
 
 
 @pytest.fixture(autouse=True)
-def _reset_config():
+def _reset_config(monkeypatch):
+    monkeypatch.setenv("NEED_GATE", "off")
     config.reset()
     yield
     config.reset()
@@ -223,6 +224,31 @@ def test_text_regime_allows_reorder_and_reflow(monkeypatch):
     out = structure_paper([_page2()], warnings=[])
     assert out is not None
     assert "## References" in "\n".join(out)
+
+
+def test_gate_on_skips_text_page(monkeypatch):
+    _enable(monkeypatch)
+    monkeypatch.setenv("NEED_GATE", "on")
+    expensive: list = []
+    monkeypatch.setattr(
+        "converter.structure._chat_completion",
+        lambda messages, **kw: expensive.append(messages) or "SHOULD NOT RUN",
+    )
+    monkeypatch.setattr("converter.need._chat_completion", lambda messages, **kw: ("none", {}))
+    assert structure_paper([_page1()], warnings=[]) is None
+    assert expensive == []
+
+
+def test_gate_shadow_output_matches_off(monkeypatch):
+    _enable(monkeypatch)
+    reply = "\n".join(PAGE1_MD)
+    monkeypatch.setattr("converter.structure._chat_completion", lambda messages, **kw: reply)
+    monkeypatch.setenv("NEED_GATE", "off")
+    off = structure_paper([_page1()], warnings=[])
+    monkeypatch.setattr("converter.need._chat_completion", lambda messages, **kw: ("1", {}))
+    monkeypatch.setenv("NEED_GATE", "shadow")
+    shadow = structure_paper([_page1()], warnings=[])
+    assert off == shadow
 
 
 # --- image regime -----------------------------------------------------------

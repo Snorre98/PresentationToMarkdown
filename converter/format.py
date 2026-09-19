@@ -25,6 +25,8 @@ import time
 
 from converter import config
 from converter.logstore import record
+from converter.need import NEED_BASE_URL, NEED_MODEL, need_gate, needs_reformat
+from converter.router import format_clean
 from converter.vision import _chat_completion, _words, verify_no_omissions
 from converter.write import WRITE_API_KEY, WRITE_BASE_URL, WRITE_MODEL
 
@@ -195,23 +197,67 @@ def _reformat_slide(slide: str, index: int = 1, source: str = "") -> str:
     result = reformatted.rstrip()
     if trailer:
         result += "\n\n" + "\n".join(trailer)
+    decision = (
+        "unchanged"
+        if _deterministic_pass(reformatted) == _deterministic_pass(original)
+        else "amended"
+    )
     record(
         source=source,
         page=index,
         stage="format",
         model=FORMAT_MODEL,
-        decision="amended",
+        decision=decision,
         latency_ms=latency_ms,
         base_url=FORMAT_BASE_URL,
     )
     return result
 
 
+def _need_set(slides: list[str], source: str) -> set[int]:
+    """Slide indices needing the writer restructure (ADR-0039 cascade).
+
+    Deterministic ``format_clean`` first (free), then a batched cheap-model call
+    over the ambiguous remainder. Returns the indices to run the expensive pass
+    on; a failed gate resolves to "all ambiguous" (never "all clean"), so it can
+    only ever skip work, never change output.
+    """
+    clean = [i for i, s in enumerate(slides) if format_clean(s)]
+    clean_set = set(clean)
+    candidates = [i for i in range(len(slides)) if i not in clean_set]
+    for i in clean:
+        record(
+            source=source,
+            stage="need-format",
+            page=i + 1,
+            model=NEED_MODEL,
+            decision="clean",
+            base_url=NEED_BASE_URL,
+        )
+    if not candidates:
+        return set()
+    need = needs_reformat([slides[i] for i in candidates], source=source)
+    if need is None:
+        return set(candidates)
+    return {candidates[i] for i in need}
+
+
 def _llm_pass(md: str, warnings: list[str], source: str = "") -> str:
     try:
+        slides = _iter_slides(md)
+        mode = need_gate()
+        if mode == "off":
+            run: set[int] = set(range(len(slides)))
+        elif mode == "on":
+            run = _need_set(slides, source)
+        else:  # shadow: run everything for output, log gate verdicts only
+            _need_set(slides, source)
+            run = set(range(len(slides)))
         return "\n\n".join(
             _reformat_slide(slide, index=idx, source=source)
-            for idx, slide in enumerate(_iter_slides(md), start=1)
+            if (idx - 1) in run
+            else slide
+            for idx, slide in enumerate(slides, start=1)
         )
     except Exception as exc:  # noqa: BLE001 - degrade to deterministic-only output
         warnings.append(f"Markdown LLM reformat failed: {exc}; keeping deterministic output")

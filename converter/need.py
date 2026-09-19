@@ -105,6 +105,7 @@ def _classify_batch(
     stage: str,
     source: str,
     offset: int,
+    page_nos: list[int],
 ) -> set[int] | None:
     numbered = "\n".join(f"{i + 1}. {item}" for i, item in enumerate(items))
     user = template.format(items=numbered)
@@ -153,7 +154,7 @@ def _classify_batch(
         record(
             source=source,
             stage=stage,
-            page=offset + i + 1,
+            page=page_nos[offset + i],
             model=NEED_MODEL,
             decision="needs_fix" if i in indices else "clean",
             latency_ms=latency_ms,
@@ -162,12 +163,20 @@ def _classify_batch(
     return {offset + i for i in indices}
 
 
-def _classify(items: list[str], template: str, stage: str, source: str) -> set[int] | None:
+def _classify(
+    items: list[str],
+    template: str,
+    stage: str,
+    source: str,
+    page_nos: list[int] | None = None,
+) -> set[int] | None:
+    if page_nos is None:
+        page_nos = list(range(1, len(items) + 1))
     if not items:
         return set()
     need: set[int] = set()
     for start, chunk in _batches(items):
-        result = _classify_batch(chunk, template, stage, source, offset=start)
+        result = _classify_batch(chunk, template, stage, source, offset=start, page_nos=page_nos)
         if result is None:
             return None
         need.update(result)
@@ -184,10 +193,13 @@ def needs_reformat(slides: list[str], source: str = "") -> set[int] | None:
     return _classify(slides, _REFORMAT_PROMPT, "need-format", source)
 
 
-def needs_restructure(pages: list[str], source: str = "") -> set[int] | None:
+def needs_restructure(
+    pages: list[str], source: str = "", page_nos: list[int] | None = None
+) -> set[int] | None:
     """Indices of ``pages`` (0-based) that need the structure check-and-amend.
 
     ``pages`` are page Markdown strings (a paper page's ``md_lines`` joined); the
-    returned indices are positions into that list.
+    returned indices are positions into that list. ``page_nos`` are the 1-based
+    page numbers to log (defaults to ``1..N``).
     """
-    return _classify(pages, _RESTRUCTURE_PROMPT, "need-structure", source)
+    return _classify(pages, _RESTRUCTURE_PROMPT, "need-structure", source, page_nos=page_nos)

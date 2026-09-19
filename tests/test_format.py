@@ -13,7 +13,8 @@ from converter.format import (
 
 
 @pytest.fixture(autouse=True)
-def _reset_config():
+def _reset_config(monkeypatch):
+    monkeypatch.setenv("NEED_GATE", "off")
     config.reset()
     yield
     config.reset()
@@ -164,3 +165,69 @@ def test_polish_text_enabled_runs_llm(monkeypatch):
     md = "# Slide — Page 1\n\n- The course topics:\n  - Modelling"
     out = polish_text(md, warnings=[])
     assert "## The course topics" in out
+
+
+def test_gate_on_skips_clean_slide(monkeypatch):
+    config.set_enabled("format", True)
+    monkeypatch.setenv("NEED_GATE", "on")
+    expensive: list = []
+    monkeypatch.setattr(
+        "converter.format._chat_completion",
+        lambda messages, **kw: expensive.append(messages) or "SHOULD NOT RUN",
+    )
+    monkeypatch.setattr("converter.need._chat_completion", lambda messages, **kw: ("none", {}))
+    md = "# Agenda — Page 1\n\n- Intro\n- Overview\n- Next steps"
+    out = polish_text(md, warnings=[], allow_llm=True)
+    assert expensive == []
+    assert "Intro" in out
+
+
+def test_gate_on_runs_needs_fix_slide(monkeypatch):
+    config.set_enabled("format", True)
+    monkeypatch.setenv("NEED_GATE", "on")
+    expensive: list = []
+    monkeypatch.setattr(
+        "converter.format._chat_completion",
+        lambda messages, **kw: expensive.append(messages)
+        or "# Slide — Page 1\n\n## The course topics\n- Modelling",
+    )
+    monkeypatch.setattr("converter.need._chat_completion", lambda messages, **kw: ("1", {}))
+    md = "# Slide — Page 1\n\n- The course topics:\n  - Modelling"
+    out = polish_text(md, warnings=[], allow_llm=True)
+    assert len(expensive) == 1
+    assert "## The course topics" in out
+
+
+def test_gate_failure_runs_all_ambiguous(monkeypatch):
+    config.set_enabled("format", True)
+    monkeypatch.setenv("NEED_GATE", "on")
+
+    def boom(messages, **kw):
+        raise RuntimeError("down")
+
+    monkeypatch.setattr("converter.need._chat_completion", boom)
+    expensive: list = []
+    monkeypatch.setattr(
+        "converter.format._chat_completion",
+        lambda messages, **kw: expensive.append(messages)
+        or "# Slide — Page 1\n\n## The course topics\n- Modelling",
+    )
+    md = "# Slide — Page 1\n\n- The course topics:\n  - Modelling"
+    out = polish_text(md, warnings=[], allow_llm=True)
+    assert len(expensive) == 1
+    assert "## The course topics" in out
+
+
+def test_gate_shadow_output_matches_off(monkeypatch):
+    config.set_enabled("format", True)
+    reformatted = "# Slide — Page 1\n\n## The course topics\n- Modelling"
+    monkeypatch.setattr(
+        "converter.format._chat_completion", lambda messages, **kw: reformatted
+    )
+    monkeypatch.setattr("converter.need._chat_completion", lambda messages, **kw: ("1", {}))
+    md = "# Slide — Page 1\n\n- The course topics:\n  - Modelling"
+    monkeypatch.setenv("NEED_GATE", "off")
+    off_out = polish_text(md, warnings=[], allow_llm=True)
+    monkeypatch.setenv("NEED_GATE", "shadow")
+    shadow_out = polish_text(md, warnings=[], allow_llm=True)
+    assert off_out == shadow_out

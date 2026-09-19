@@ -47,9 +47,11 @@ from converter.format import (
     FORMAT_BASE_URL,
     FORMAT_MODEL,
     _anchors_intact,
+    _deterministic_pass,
     _is_structural,
 )
 from converter.logstore import record
+from converter.need import NEED_BASE_URL, NEED_MODEL, need_gate, needs_restructure
 from converter.router import Route, structure_regime, structure_text_downgrade
 from converter.vision import (
     _chat_completion,
@@ -360,8 +362,10 @@ def _amend_page_text(page: PageData, warnings: list[str], source: str) -> list[s
         _reject(page, warnings, "; ".join(problems))
         _log(source, page, model=model, base_url=base_url, decision="rejected", error="; ".join(problems), latency_ms=_ms(t0))
         return None
-    _log(source, page, model=model, base_url=base_url, decision="amended", latency_ms=_ms(t0))
-    return reply.split("\n") + [""]
+    amended = reply.split("\n") + [""]
+    unchanged = _deterministic_pass("\n".join(amended)) == _deterministic_pass(original)
+    _log(source, page, model=model, base_url=base_url, decision="unchanged" if unchanged else "amended", latency_ms=_ms(t0))
+    return amended
 
 
 def _amend_page_image(page: PageData, warnings: list[str], source: str) -> list[str] | None:
@@ -455,13 +459,32 @@ def structure_paper(
     """
     if not config.is_enabled("structure") or not pages:
         return None
+    regimes = {i: _page_regime(p) for i, p in enumerate(pages)}
+    mode = need_gate()
+    run_text: set[int] | None = None
+    if mode in ("on", "shadow"):
+        text_idx = [i for i in range(len(pages)) if regimes[i] == "text"]
+        if text_idx:
+            need = needs_restructure(
+                ["\n".join(pages[i].md_lines) for i in text_idx],
+                source=source,
+                page_nos=[pages[i].pno for i in text_idx],
+            )
+            if need is None:
+                need = set(range(len(text_idx)))
+            run_text = {text_idx[i] for i in need}
+        else:
+            run_text = set()
+        if mode == "shadow":
+            run_text = None
     out: list[str] = []
     changed = False
-    for page in pages:
-        regime = _page_regime(page)
+    for i, page in enumerate(pages):
+        regime = regimes[i]
         amended: list[str] | None = None
         if regime == "text":
-            amended = _amend_page_text(page, warnings, source)
+            if run_text is None or i in run_text:
+                amended = _amend_page_text(page, warnings, source)
         elif regime == "image":
             amended = _amend_page_image(page, warnings, source)
         if amended is None:
