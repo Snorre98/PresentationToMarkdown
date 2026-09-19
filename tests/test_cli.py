@@ -62,6 +62,25 @@ def test_audio_flags_removed():
     assert "audio" not in ai_env_vars(parse([]))
 
 
+def test_no_gate_maps_to_off():
+    assert ai_env_vars(parse(["--no-gate"])) == {"NEED_GATE": "off"}
+
+
+def test_no_gate_with_format():
+    env = ai_env_vars(parse(["--format", "--no-gate"]))
+    assert env == {"FORMAT_ENABLED": "1", "NEED_GATE": "off"}
+
+
+def test_ab_parser_builds():
+    import cli_ab
+
+    args = cli_ab.build_parser().parse_args(["compare", "x.pdf", "--format"])
+    assert args.command == "compare"
+    assert args.path == "x.pdf"
+    shadow = cli_ab.build_parser().parse_args(["shadow", "x.pdf", "--paper", "--structure"])
+    assert shadow.command == "shadow"
+
+
 def test_env_passthrough():
     env = ai_env_vars(parse(["--vision", "--env", "VISION_MODEL=foo", "--env", "VISION_LOG_DB=/tmp/x.sqlite"]))
     assert env["VISION_ENABLED"] == "1"

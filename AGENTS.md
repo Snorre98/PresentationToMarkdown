@@ -32,6 +32,8 @@ ptm --output out/ --vision .
 ptm --paper whitepaper.pdf          # two-column paper -> continuous document
 ptm-start --all                     # GUI with AI flags
 ptm-transcribe deck.md              # audio -> Markdown transcription
+ptm-ab compare --format deck.pdf    # A/B the pre-flight need-check gate (ADR-0039)
+ptm-ab shadow --paper --structure paper.pdf
 ```
 
 Test:
@@ -57,6 +59,7 @@ No lint, typecheck, or formatter is configured (no ruff/black/mypy/pre-commit in
 - `main.py` — GUI entry point; `gui.py` — PySide6 interface
 - `cli.py` — `ptm` headless batch converter; `start.py` — `ptm-start` GUI launcher
 - `cli_transcribe.py` — `ptm-transcribe`; `cli_common.py` — shared AI flag parser + env mapping
+- `cli_ab.py` — `ptm-ab` A/B harness for the need-check gate (ADR-0039)
 - `lock.py` — single-instance `flock` guard for transcription
 - `scripts/` — audio-model server, plus shell wrappers around `ptm-start`/`ptm-transcribe`
 - `docs/adr/` — architecture decision records (MADR form); `docs/ai-vision.md`, `docs/ai-audio.md`, `docs/runbook.md` — model-serving runbooks

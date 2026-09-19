@@ -444,6 +444,7 @@ def snapshot(probe: bool = True) -> dict:
         missing = []
     return {
         "pdf_mode": os.environ.get("PDF_MODE", "").strip().lower() or "slide",
+        "need_gate": os.environ.get("NEED_GATE", "on").strip().lower() or "on",
         "duplicate": _duplicate_if_exists(),
         "vault_root": _vault_root(),
         "features": {key: is_enabled(key) for key in FEATURES},

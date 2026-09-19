@@ -64,6 +64,11 @@ def add_ai_flags(parser: argparse.ArgumentParser) -> None:
         help="enable the LLM document-structure pass (paper-mode PDFs only)",
     )
     group.add_argument(
+        "--no-gate",
+        action="store_true",
+        help="disable the pre-flight need-check gate (NEED_GATE=off; the baseline A/B arm)",
+    )
+    group.add_argument(
         "--all",
         action="store_true",
         help="enable every slide AI pass (vision + classify + interpret + format + summary)",
@@ -117,6 +122,9 @@ def ai_env_vars(args: argparse.Namespace) -> dict[str, str]:
         env["PDF_MODE"] = "paper"
     elif slide:
         env["PDF_MODE"] = "slide"
+
+    if getattr(args, "no_gate", False):
+        env["NEED_GATE"] = "off"
 
     for item in getattr(args, "env", None) or []:
         if "=" not in item:

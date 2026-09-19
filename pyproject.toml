@@ -25,12 +25,13 @@ dependencies = [
 ptm = "cli:main"
 ptm-start = "start:main"
 ptm-transcribe = "cli_transcribe:main"
+ptm-ab = "cli_ab:main"
 ptm-dashboard = "dashboard:main"
 ptm-engine = "engine:main"
 
 [tool.setuptools]
 packages = ["converter", "dashboard"]
-py-modules = ["cli", "cli_common", "cli_transcribe", "lock", "start", "gui", "engine"]
+py-modules = ["cli", "cli_common", "cli_transcribe", "cli_ab", "lock", "start", "gui", "engine"]
 
 [tool.setuptools.package-data]
 dashboard = ["templates/*.html", "static/*"]
