@@ -38,3 +38,4 @@ Index of architectural decisions for PresentationToMarkdown, in
 | [0036](0036-terminal-tui.md) | Terminal UI (ptm-tui) — one native terminal surface for the whole app | Accepted |
 | [0037](0037-pandoc-evaluated-deferred.md) | Pandoc evaluated; adoption deferred as documented future work | Accepted |
 | [0038](0038-latex-pandoc-backend.md) | LaTeX project → Markdown converter via pandoc | Accepted |
+| [0039](0039-preflight-inference-gate.md) | Pre-flight inference gate before expensive rewrite passes | Accepted |

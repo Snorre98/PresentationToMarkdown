@@ -20,9 +20,17 @@ never change deterministic output or fail a conversion.
 """
 from __future__ import annotations
 
+import re
 from enum import Enum
 
 from converter.base import text_layer_is_garbage, text_layer_quality
+
+# Deterministic "already clean" signals for the format pass (ADR-0039). A bold
+# lead-in (``**Purpose:**``), a heading-like bullet, or a non-bullet line that
+# does not end a sentence are the things the writer-VLM restructure exists to fix.
+_BOLD_LEAD_RE = re.compile(r"^\s*\*\*[^*]+\*\*\s*:")
+_BULLET_RE = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+")
+_SENTENCE_END_RE = re.compile(r"[.!?][\"')\]\u201d\u2019]*$")
 
 
 class Route(str, Enum):
@@ -69,3 +77,50 @@ def structure_text_downgrade() -> Route:
     if STRUCTURE_TEXT_MODEL and STRUCTURE_TEXT_MODEL != STRUCTURE_MODEL:
         return Route.DOWNGRADE
     return Route.RUN
+
+
+def _indent(line: str) -> int:
+    return len(line) - len(line.lstrip())
+
+
+def _has_deeper_bullet(lines: list[str], i: int) -> bool:
+    """Whether line ``i`` (a bullet) is followed, before a blank line, by a more
+    deeply indented bullet — the shape of a heading-like lead-in bullet."""
+    base = _indent(lines[i])
+    for nxt in lines[i + 1:]:
+        if not nxt.strip():
+            return False
+        m = _BULLET_RE.match(nxt)
+        if m:
+            return _indent(nxt) > base
+    return False
+
+
+def format_clean(slide_md: str) -> bool:
+    """Whether a slide's deterministic Markdown is already clean (ADR-0039).
+
+    Conservative: returns ``True`` only when the slide clearly needs no
+    reformatting, so the writer-VLM restructure can be skipped. A ``False``
+    ("needs fix") merely routes the slide to the cheap-model residual gate, so
+    this can only ever save work — never change output or fail a conversion.
+
+    A slide is clean when none of the format pass's targets are present: no bold
+    lead-in, no heading-like bullet, and no non-bullet line that ends
+    mid-sentence (a wrapped fragment the pass would rejoin).
+    """
+    from converter.format import _is_editable
+
+    lines = slide_md.splitlines()
+    for i, line in enumerate(lines):
+        if not _is_editable(line):
+            continue
+        s = line.strip()
+        if _BOLD_LEAD_RE.match(s):
+            return False
+        if _BULLET_RE.match(line):
+            if s.endswith(":") and _has_deeper_bullet(lines, i):
+                return False
+            continue
+        if not _SENTENCE_END_RE.search(s):
+            return False
+    return True

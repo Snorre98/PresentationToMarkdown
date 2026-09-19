@@ -4,7 +4,7 @@ from __future__ import annotations
 import pytest
 
 from converter import config, structure
-from converter.router import Route, structure_regime, structure_text_downgrade
+from converter.router import Route, format_clean, structure_regime, structure_text_downgrade
 
 
 @pytest.fixture(autouse=True)
@@ -111,3 +111,43 @@ def test_text_regime_sends_text_only(monkeypatch):
     content = captured["messages"][0]["content"]
     assert isinstance(content, str)
     assert "image_url" not in content
+
+
+def test_format_clean_bullet_list_is_clean():
+    slide = "# Agenda — Page 1\n\n- Intro\n- Overview\n- Next steps"
+    assert format_clean(slide)
+
+
+def test_format_clean_paragraph_is_clean():
+    slide = "# Notes — Page 2\n\nThis is a single sentence paragraph.\n\nAnother line."
+    assert format_clean(slide)
+
+
+def test_format_clean_no_editable_lines_is_clean():
+    slide = "# Title — Page 1\n\n![image](assets/x.png)"
+    assert format_clean(slide)
+
+
+def test_format_clean_flags_bold_lead_in():
+    slide = "# Slide — Page 1\n\n**Purpose**: some text"
+    assert not format_clean(slide)
+
+
+def test_format_clean_flags_wrapped_fragment():
+    slide = "# Slide — Page 1\n\nThe quick brown fox jumps\nover the lazy dog"
+    assert not format_clean(slide)
+
+
+def test_format_clean_flags_heading_like_bullet():
+    slide = (
+        "# Course Outline — Page 7\n\n"
+        "- The course will consist of the following topics:\n"
+        "  - Enterprise Modelling\n"
+        "  - Sustainable Business models"
+    )
+    assert not format_clean(slide)
+
+
+def test_format_clean_bullet_ending_colon_without_subitems_is_clean():
+    slide = "# Slide — Page 1\n\n- A plain item:\n- Another item"
+    assert format_clean(slide)
