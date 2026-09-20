@@ -138,6 +138,25 @@ ptm-transcribe week-2.mp3       # write week-2.transcript.md (no Markdown needed
 ptm-dashboard --port 9090       # see "Web GUI" below
 ```
 
+### TUI (native)
+
+A compiled, opencode-style terminal app (`ptm-tui`) that discovers the
+`.pptx`/`.pdf`/`.tex` files in the current directory, selects them with `@`
+fuzzy search, and converts with live progress. It drives the same `ptm-engine`
+the web UI uses (ADR-0040), so conversion stays in Python while the surface is a
+native Go binary.
+
+```bash
+scripts/install-global.sh        # install ~/.local/bin/ptm-tui (once)
+ptm-tui                          # run from any directory
+```
+
+Build/run without the global install:
+
+```bash
+scripts/ptm-tui.sh               # builds bin/ptm-tui, spawns the engine, opens the TUI
+```
+
 These are the five entry points: `ptm`, `ptm-start`, `ptm-transcribe`,
 `ptm-dashboard`, and `ptm-engine` (the engine is usually started from the web UI
 rather than by hand).

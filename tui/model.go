@@ -61,9 +61,11 @@ type model struct {
 	done       *JobEvent
 
 	// settings
-	cfg       Config
-	outputDir string
-	duplicate bool
+	cfg            Config
+	outputDir      string
+	duplicate      bool
+	settingsCursor int
+	editingOutput  bool
 
 	width, height int
 }
@@ -146,9 +148,6 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err == nil {
 			m.cfg = msg.cfg
 			m.duplicate = msg.cfg.Duplicate
-			if msg.cfg.VaultRoot != "" {
-				m.outputDir = msg.cfg.VaultRoot
-			}
 		}
 		return m, nil
 

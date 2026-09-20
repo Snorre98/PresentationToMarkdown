@@ -34,6 +34,7 @@ ptm-start --all                     # GUI with AI flags
 ptm-transcribe deck.md              # audio -> Markdown transcription
 ptm-ab compare --format deck.pdf    # A/B the pre-flight need-check gate (ADR-0039)
 ptm-ab shadow --paper --structure paper.pdf
+ptm-tui                             # native Go TUI (after scripts/install-global.sh)
 ```
 
 Test:
@@ -60,6 +61,7 @@ No lint, typecheck, or formatter is configured (no ruff/black/mypy/pre-commit in
 - `cli.py` — `ptm` headless batch converter; `start.py` — `ptm-start` GUI launcher
 - `cli_transcribe.py` — `ptm-transcribe`; `cli_common.py` — shared AI flag parser + env mapping
 - `cli_ab.py` — `ptm-ab` A/B harness for the need-check gate (ADR-0039)
+- `tui/` — native Go TUI (`ptm-tui`) over the engine, in a separate Go module (ADR-0040)
 - `lock.py` — single-instance `flock` guard for transcription
 - `scripts/` — audio-model server, plus shell wrappers around `ptm-start`/`ptm-transcribe`
 - `docs/adr/` — architecture decision records (MADR form); `docs/ai-vision.md`, `docs/ai-audio.md`, `docs/runbook.md` — model-serving runbooks
