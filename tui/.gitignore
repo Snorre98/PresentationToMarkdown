@@ -1,0 +1,3 @@
+# Built ptm-tui binary (go build ./... drops it in the package dir).
+/tui
+/bin/
