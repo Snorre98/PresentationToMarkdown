@@ -26,6 +26,10 @@ Configuration (environment variables):
 - ``AUDIO_PREPROCESS`` — deterministic ffmpeg enhancement chain. Default on.
 - ``AUDIO_DEREVERB_ENABLED`` — WPE dereverberation (via the audio server). Default on.
 - ``AUDIO_ISOLATE_ENABLED`` — voice isolation (SepFormer, via the audio server). Default off.
+- ``AUDIO_DIARIZE_ENABLED`` — speaker labelling (via the audio server). Default off.
+- ``AUDIO_DIARIZE_SPEAKERS`` / ``AUDIO_DIARIZE_MIN_SPEAKERS`` /
+  ``AUDIO_DIARIZE_MAX_SPEAKERS`` — exact/range speaker count for pyannote
+  (see ``converter.audio``). Any of them implies diarization.
 """
 from __future__ import annotations
 
@@ -42,12 +46,13 @@ from typing import Callable
 
 from converter.audio import (
     AUDIO_DEREVERB_ENABLED,
-    AUDIO_DIARIZE_ENABLED,
     AUDIO_ENHANCE_ENABLED,
     AUDIO_ISOLATE_ENABLED,
     assign_speakers,
     dereverb,
     diarize,
+    diarize_bounds,
+    diarize_requested,
     enhance,
     isolate,
 )
@@ -598,10 +603,42 @@ def format_timestamp(seconds: float) -> str:
     return f"{h:02d}:{m:02d}:{s:02d}"
 
 
+def merge_utterances(segments: list[dict]) -> list[dict]:
+    """Merge consecutive same-speaker ASR segments into continuous utterances.
+
+    A two-person interview then reads as alternating ``**SPEAKER_00:**`` blocks
+    instead of many fragmented ~5 s lines. A segment without a speaker (or a
+    speaker change) starts a new entry; the merged utterance keeps the first
+    segment's ``start`` and the last segment's ``end``, with texts joined by a
+    single space. ``segments`` is not mutated.
+    """
+    merged: list[dict] = []
+    for seg in segments:
+        text = seg.get("text", "").strip()
+        if not text:
+            continue
+        speaker = seg.get("speaker")
+        prev = merged[-1] if merged else None
+        if (
+            prev is not None
+            and speaker is not None
+            and prev.get("speaker") == speaker
+            and seg["start"] >= prev.get("_end", 0.0)
+        ):
+            prev["text"] = prev["text"] + " " + text
+            prev["end"] = seg["end"]
+            prev["_end"] = seg["end"]
+        else:
+            merged.append(dict(seg))
+    for item in merged:
+        item.pop("_end", None)
+    return merged
+
+
 def segments_to_markdown(segments: list[dict], model: str | None = None) -> str:
     """Render timestamped segments as a Markdown ``# Transcript`` section."""
     lines = ["# Transcript", "", "<details>", f"<summary>Auto-generated transcript ({model or AUDIO_MODEL})</summary>", ""]
-    for seg in segments:
+    for seg in merge_utterances(segments):
         ts = format_timestamp(seg["start"])
         text = seg["text"].strip()
         speaker = seg.get("speaker")
@@ -621,7 +658,7 @@ def _srt_time(seconds: float) -> str:
 def segments_to_srt(segments: list[dict]) -> str:
     """Render segments as a SubRip (``.srt``) file with speaker cues."""
     blocks: list[str] = []
-    for i, seg in enumerate(segments, start=1):
+    for i, seg in enumerate(merge_utterances(segments), start=1):
         text = seg["text"].strip()
         speaker = seg.get("speaker")
         if speaker:
@@ -665,11 +702,11 @@ def _transcribe(
     )
     if not segments:
         return segments
-    if AUDIO_DIARIZE_ENABLED:
+    if diarize_requested():
         if on_line is not None:
             on_line("diarizing …\n")
         try:
-            turns = diarize(str(clean_path.resolve()))
+            turns = diarize(str(clean_path.resolve()), **diarize_bounds())
             assign_speakers(segments, turns)
         except Exception as exc:  # noqa: BLE001 - degrade to unlabelled transcript
             warnings.append(f"Diarization failed: {exc}; keeping unlabelled transcript")

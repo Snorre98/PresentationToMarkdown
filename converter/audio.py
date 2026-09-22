@@ -25,6 +25,10 @@ client:
 Configuration (environment variables):
 
 - ``AUDIO_DIARIZE_ENABLED`` — diarization master switch. Default off.
+- ``AUDIO_DIARIZE_SPEAKERS`` — exact speaker count (e.g. ``2`` for an
+  interview). Implies diarization; overrides the min/max range.
+- ``AUDIO_DIARIZE_MIN_SPEAKERS`` / ``AUDIO_DIARIZE_MAX_SPEAKERS`` — speaker-count
+  range for pyannote to search. Either implies diarization.
 - ``AUDIO_DIARIZE_BASE_URL`` — service base URL override. Default: the manifest's
   ``audio`` daemon (``:8089``, ADR-0035) via the control daemon's ``list``
   projection, falling back to ``http://127.0.0.1:8089/v1`` when unreachable.
@@ -50,6 +54,55 @@ AUDIO_DIARIZE_ENABLED = os.environ.get("AUDIO_DIARIZE_ENABLED", "").strip().lowe
     "yes",
     "on",
 }
+
+
+def _int_env(name: str) -> int | None:
+    """Parse ``name`` as an int, tolerating unset/garbage (``None``)."""
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        return None
+
+
+# Speaker-count hints for pyannote. ``SPEAKERS`` is an exact count; the min/max
+# pair is a range to search. All three imply diarization (see
+# ``diarize_requested``), so ``AUDIO_DIARIZE_SPEAKERS=2`` alone is enough for an
+# interview.
+AUDIO_DIARIZE_SPEAKERS = _int_env("AUDIO_DIARIZE_SPEAKERS")
+AUDIO_DIARIZE_MIN_SPEAKERS = _int_env("AUDIO_DIARIZE_MIN_SPEAKERS")
+AUDIO_DIARIZE_MAX_SPEAKERS = _int_env("AUDIO_DIARIZE_MAX_SPEAKERS")
+
+
+def diarize_requested() -> bool:
+    """True when speaker labelling should run (explicit switch or a count hint)."""
+    return (
+        AUDIO_DIARIZE_ENABLED
+        or AUDIO_DIARIZE_SPEAKERS is not None
+        or AUDIO_DIARIZE_MIN_SPEAKERS is not None
+        or AUDIO_DIARIZE_MAX_SPEAKERS is not None
+    )
+
+
+def diarize_bounds() -> dict:
+    """Return ``{min_speakers, max_speakers}`` kwargs for the diarize client.
+
+    The exact ``AUDIO_DIARIZE_SPEAKERS`` wins over the min/max range; an empty
+    dict means pyannote auto-detects the count.
+    """
+    if AUDIO_DIARIZE_SPEAKERS is not None:
+        return {
+            "min_speakers": AUDIO_DIARIZE_SPEAKERS,
+            "max_speakers": AUDIO_DIARIZE_SPEAKERS,
+        }
+    kwargs: dict = {}
+    if AUDIO_DIARIZE_MIN_SPEAKERS is not None:
+        kwargs["min_speakers"] = AUDIO_DIARIZE_MIN_SPEAKERS
+    if AUDIO_DIARIZE_MAX_SPEAKERS is not None:
+        kwargs["max_speakers"] = AUDIO_DIARIZE_MAX_SPEAKERS
+    return kwargs
 
 
 def _audio_base_url() -> str:

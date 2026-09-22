@@ -67,6 +67,26 @@ def test_diarize_client_against_stub(tmp_path):
         assert turn["end"] > turn["start"]
 
 
+def test_diarize_client_exact_speakers_against_stub(tmp_path):
+    httpd, port, thread = _start_stub()
+    audio = tmp_path / "talk.wav"
+    _make_tone_wav(audio, seconds=30.0)
+    try:
+        turns = diarize(
+            str(audio),
+            min_speakers=2,
+            max_speakers=2,
+            base_url=f"http://127.0.0.1:{port}/v1",
+        )
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        thread.join(timeout=5)
+
+    labels = sorted({turn["speaker"] for turn in turns})
+    assert labels == ["SPEAKER_00", "SPEAKER_01"]
+
+
 def test_enhance_client_against_stub(tmp_path):
     httpd, port, thread = _start_stub()
     src = tmp_path / "talk.wav"

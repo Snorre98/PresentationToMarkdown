@@ -100,6 +100,11 @@ ptm-transcribe deck.md
 ptm-transcribe --diarize deck.md
 ptm-transcribe --isolate deck.md                 # + isolate the dominant voice
 
+# multi-speaker: pin the speaker count for a two-person interview
+ptm-transcribe --diarize --speakers 2 deck.md
+ptm-transcribe --speakers 2 week-2.mp3           # implies --diarize
+ptm-transcribe --min-speakers 1 --max-speakers 4 deck.md   # let pyannote search a range
+
 # no Markdown yet — transcribe straight to a transcript file
 ptm-transcribe week-2.mp3
 ptm-transcribe --audio-file lecture.mp3 deck.md   # explicit audio for deck.md
@@ -111,6 +116,25 @@ The audio pipeline is `ffmpeg clean → WPE dereverb → DeepFilterNet enhance �
 whenever the server is up (default on); voice isolation is opt-in (`--isolate`)
 and, when enabled, writes a `<stem>.isolated.<N>.flac` that Whisper transcribes
 instead of the cleaned file.
+
+### Speaker count
+
+Speaker diarization is opt-in (`--diarize`) and the **number of speakers can be
+injected**:
+
+- `--speakers N` pins an **exact** count (`AUDIO_DIARIZE_SPEAKERS`) — pyannote is
+  told `num_speakers = N`. Use `--speakers 2` for a two-person interview.
+- `--min-speakers` / `--max-speakers` give pyannote a range to search
+  (`AUDIO_DIARIZE_MIN_SPEAKERS` / `AUDIO_DIARIZE_MAX_SPEAKERS`).
+- All three imply `--diarize` (no separate flag needed) and are mutually
+  exclusive with each other (`--speakers` vs. the min/max pair).
+
+Consecutive same-speaker ASR segments are merged into continuous utterances in
+the Markdown and `.srt` output, so an interview reads as alternating
+`**SPEAKER_00:**` / `**SPEAKER_01:**` blocks rather than many fragmented ~5 s
+lines. Speaker labels remain generic (`SPEAKER_00`, `SPEAKER_01`, …); there is
+no name mapping. Labels are assigned by each segment's midpoint overlapping a
+diarized turn, so heavy crosstalk/overlapping speech can still be mislabelled.
 
 ## Configuration
 
@@ -129,6 +153,9 @@ instead of the cleaned file.
 | `AUDIO_ISOLATE_ENABLED` | *(unset = off)* | Voice isolation (SepFormer) via the audio server |
 | `AUDIO_ENHANCE_BASE_URL` | `AUDIO_DIARIZE_BASE_URL` | Enhancement endpoint |
 | `AUDIO_DIARIZE_ENABLED` | *(unset = off)* | Enable speaker labelling via the diarization server |
+| `AUDIO_DIARIZE_SPEAKERS` | *(unset = auto)* | Exact speaker count for pyannote (`--speakers N`); implies diarization, overrides min/max |
+| `AUDIO_DIARIZE_MIN_SPEAKERS` | *(unset = auto)* | Lower bound of the speaker-count range; implies diarization |
+| `AUDIO_DIARIZE_MAX_SPEAKERS` | *(unset = auto)* | Upper bound of the speaker-count range; implies diarization |
 | `AUDIO_DIARIZE_BASE_URL` | `http://127.0.0.1:8089/v1` | Audio server base URL |
 | `AUDIO_DIARIZE_API_KEY` | *(unset)* | Optional bearer token |
 

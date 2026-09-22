@@ -32,6 +32,95 @@ def test_segments_to_srt():
     assert "1\n00:00:01,500 --> 00:00:03,000\n[Speaker A] hi" in srt
 
 
+def test_merge_utterances():
+    segs = [
+        {"start": 0.0, "end": 3.0, "text": "one", "speaker": "S1"},
+        {"start": 3.0, "end": 6.0, "text": "two", "speaker": "S1"},
+        {"start": 6.0, "end": 9.0, "text": "three", "speaker": "S2"},
+        {"start": 9.0, "end": 12.0, "text": "four", "speaker": None},
+        {"start": 12.0, "end": 15.0, "text": "five", "speaker": "S1"},
+    ]
+    out = t.merge_utterances(segs)
+    assert len(out) == 4
+    assert out[0]["text"] == "one two"
+    assert out[0]["start"] == 0.0 and out[0]["end"] == 6.0
+    assert out[0]["speaker"] == "S1"
+    assert out[1]["speaker"] == "S2"
+    assert out[1]["text"] == "three"
+    assert out[2]["speaker"] is None
+    assert out[2]["text"] == "four"
+    assert out[3]["speaker"] == "S1"
+    assert out[3]["text"] == "five"
+    # input segments are not mutated.
+    assert segs[0]["text"] == "one"
+
+
+def test_merge_utterances_skips_blank_text():
+    segs = [
+        {"start": 0.0, "end": 1.0, "text": "  ", "speaker": "S1"},
+        {"start": 1.0, "end": 2.0, "text": "hi", "speaker": "S1"},
+    ]
+    out = t.merge_utterances(segs)
+    assert len(out) == 1 and out[0]["text"] == "hi"
+
+
+def test_segments_to_markdown_merges_speakers():
+    segs = [
+        {"start": 0.0, "end": 3.0, "text": "hello", "speaker": "SPEAKER_00"},
+        {"start": 3.0, "end": 6.0, "text": "there", "speaker": "SPEAKER_00"},
+        {"start": 6.0, "end": 9.0, "text": "hi", "speaker": "SPEAKER_01"},
+    ]
+    md = t.segments_to_markdown(segs)
+    assert "[00:00:00] **SPEAKER_00:** hello there" in md
+    assert "[00:00:06] **SPEAKER_01:** hi" in md
+    srt = t.segments_to_srt(segs)
+    assert "[SPEAKER_00] hello there" in srt
+    assert "[SPEAKER_01] hi" in srt
+
+
+def test_transcribe_diarize_bounds_passed(monkeypatch, tmp_path):
+    audio = tmp_path / "x.mp3"
+    clean = tmp_path / "x.clean.flac"
+    monkeypatch.setattr(
+        t,
+        "transcribe_audio",
+        lambda p, cp, **kw: [{"start": 0.0, "end": 5.0, "text": "hello"}],
+    )
+    calls: dict = {}
+    monkeypatch.setattr(t, "diarize_requested", lambda: True)
+    monkeypatch.setattr(
+        t, "diarize_bounds", lambda: {"min_speakers": 2, "max_speakers": 2}
+    )
+    monkeypatch.setattr(
+        t,
+        "diarize",
+        lambda path, **kw: calls.update(kw)
+        or [{"start": 0.0, "end": 5.0, "speaker": "SPEAKER_00"}],
+    )
+    monkeypatch.setattr(t, "record_segment", lambda **kw: None)
+    warnings: list[str] = []
+    segs = t._transcribe(audio, clean, str(clean), warnings)
+    assert calls == {"min_speakers": 2, "max_speakers": 2}
+    assert segs[0]["speaker"] == "SPEAKER_00"
+
+
+def test_transcribe_diarize_skipped_when_not_requested(monkeypatch, tmp_path):
+    audio = tmp_path / "x.mp3"
+    clean = tmp_path / "x.clean.flac"
+    monkeypatch.setattr(
+        t,
+        "transcribe_audio",
+        lambda p, cp, **kw: [{"start": 0.0, "end": 5.0, "text": "hello"}],
+    )
+    called: list[str] = []
+    monkeypatch.setattr(t, "diarize_requested", lambda: False)
+    monkeypatch.setattr(t, "diarize", lambda path, **kw: called.append("diarize"))
+    monkeypatch.setattr(t, "record_segment", lambda **kw: None)
+    segs = t._transcribe(audio, clean, str(clean), [])
+    assert called == []
+    assert segs[0].get("speaker") is None
+
+
 def test_assign_speakers():
     segs = [
         {"start": 0.0, "end": 10.0, "text": "a"},
@@ -399,7 +488,7 @@ def test_attach_transcript_appends(tmp_path, monkeypatch):
     md = tmp_path / "deck.md"
     md.write_text("# Deck — Slide 1\n\ncontent\n", encoding="utf-8")
     monkeypatch.setattr(t, "AUDIO_ENABLED", True)
-    monkeypatch.setattr(t, "AUDIO_DIARIZE_ENABLED", False)
+    monkeypatch.setattr(t, "diarize_requested", lambda: False)
     monkeypatch.setattr(
         t,
         "transcribe_audio",
@@ -425,7 +514,7 @@ def test_attach_transcript_idempotent(tmp_path, monkeypatch):
     md = tmp_path / "deck.md"
     md.write_text("# Deck\n\ncontent\n", encoding="utf-8")
     monkeypatch.setattr(t, "AUDIO_ENABLED", True)
-    monkeypatch.setattr(t, "AUDIO_DIARIZE_ENABLED", False)
+    monkeypatch.setattr(t, "diarize_requested", lambda: False)
     monkeypatch.setattr(
         t,
         "transcribe_audio",
@@ -457,7 +546,7 @@ def test_attach_transcript_missing_audio_noop(tmp_path, monkeypatch):
 def test_transcribe_to_markdown(tmp_path, monkeypatch):
     audio = tmp_path / "week-2.mp3"
     audio.write_bytes(b"fake audio")
-    monkeypatch.setattr(t, "AUDIO_DIARIZE_ENABLED", False)
+    monkeypatch.setattr(t, "diarize_requested", lambda: False)
     monkeypatch.setattr(
         t,
         "transcribe_audio",
@@ -500,7 +589,7 @@ def test_paired_version(tmp_path):
 def test_transcribe_to_markdown_versions(tmp_path, monkeypatch):
     audio = tmp_path / "week-2.mp3"
     audio.write_bytes(b"fake audio")
-    monkeypatch.setattr(t, "AUDIO_DIARIZE_ENABLED", False)
+    monkeypatch.setattr(t, "diarize_requested", lambda: False)
     monkeypatch.setattr(t, "record_segment", lambda **kw: None)
 
     def fake_transcribe(audio_path, clean_path, **kw):
@@ -529,7 +618,7 @@ def test_transcribe_to_markdown_versions(tmp_path, monkeypatch):
 def test_transcribe_to_markdown_overwrite(tmp_path, monkeypatch):
     audio = tmp_path / "week-2.mp3"
     audio.write_bytes(b"fake audio")
-    monkeypatch.setattr(t, "AUDIO_DIARIZE_ENABLED", False)
+    monkeypatch.setattr(t, "diarize_requested", lambda: False)
     monkeypatch.setattr(t, "record_segment", lambda **kw: None)
     monkeypatch.setattr(
         t,

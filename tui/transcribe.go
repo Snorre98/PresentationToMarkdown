@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 )
 
 // DefaultTranscribeBin is used when PTM_TRANSCRIBE_CMD is unset (a venv-less
@@ -50,8 +51,17 @@ func partitionSelected(files, kinds []string, selected map[int]bool) (convert, a
 // that Markdown is passed too so the transcript is attached to the deck
 // (`deck.md` + `deck.mp3` -> "# Transcript" section) rather than emitted as a
 // standalone `<stem>.transcript.md`.
-func buildTranscribeArgs(audioPaths []string) []string {
+//
+// Speaker diarization is controlled by the TUI settings: `speakers` pins an
+// exact count (`--speakers N`, which implies diarization) and `diarize` toggles
+// labelling when no exact count is set.
+func buildTranscribeArgs(audioPaths []string, diarize bool, speakers int) []string {
 	args := make([]string, 0, len(audioPaths)*2)
+	if speakers > 0 {
+		args = append(args, "--speakers", strconv.Itoa(speakers))
+	} else if diarize {
+		args = append(args, "--diarize")
+	}
 	for _, p := range audioPaths {
 		args = append(args, p)
 		if md := siblingMarkdown(p); md != "" {

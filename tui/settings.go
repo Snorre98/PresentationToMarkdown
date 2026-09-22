@@ -7,6 +7,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -15,7 +16,8 @@ import (
 
 var featureOrder = []string{"vision", "classify", "interpret", "format", "summary", "structure"}
 
-const settingsExtraRows = 3 // pdf_mode, duplicate, output_dir
+// pdf_mode, duplicate, diarize, speakers, output_dir.
+const settingsExtraRows = 5
 
 func (m *model) updateSettings(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.editingOutput {
@@ -29,6 +31,25 @@ func (m *model) updateSettings(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		default:
 			if msg.Type == tea.KeyRunes {
 				m.outputDir += string(msg.Runes)
+			}
+		}
+		return m, nil
+	}
+	if m.editingSpeakers {
+		switch msg.String() {
+		case "esc", "enter":
+			m.commitSpeakers()
+		case "backspace":
+			if len(m.speakersInput) > 0 {
+				m.speakersInput = m.speakersInput[:len(m.speakersInput)-1]
+			}
+		default:
+			if msg.Type == tea.KeyRunes {
+				for _, r := range msg.Runes {
+					if r >= '0' && r <= '9' {
+						m.speakersInput += string(r)
+					}
+				}
 			}
 		}
 		return m, nil
@@ -77,10 +98,27 @@ func (m *model) activateSetting() (tea.Model, tea.Cmd) {
 		next := !m.duplicate
 		m.duplicate = next
 		return m, m.saveConfig(ConfigUpdate{Duplicate: &next})
+	case 2: // diarize — TUI-local, fed to the ptm-transcribe argv
+		m.transcribeDiarize = !m.transcribeDiarize
+		return m, nil
+	case 3: // speakers
+		m.editingSpeakers = true
+		m.speakersInput = strconv.Itoa(m.transcribeSpeakers)
+		return m, nil
 	default: // output_dir
 		m.editingOutput = true
 		return m, nil
 	}
+}
+
+// commitSpeakers parses the numeric input into transcribeSpeakers (0 = auto).
+func (m *model) commitSpeakers() {
+	if n, err := strconv.Atoi(m.speakersInput); err == nil && n >= 1 {
+		m.transcribeSpeakers = n
+	} else {
+		m.transcribeSpeakers = 0
+	}
+	m.editingSpeakers = false
 }
 
 func (m *model) saveConfig(u ConfigUpdate) tea.Cmd {
@@ -105,6 +143,10 @@ func (m *model) settingsLabel(i int) string {
 		return "pdf mode"
 	case 1:
 		return "duplicate"
+	case 2:
+		return "diarize"
+	case 3:
+		return "speakers"
 	default:
 		return "output dir"
 	}
@@ -119,6 +161,16 @@ func (m *model) settingsValue(i int) string {
 		return m.cfg.PDFMode
 	case 1:
 		return boolLabel(m.duplicate)
+	case 2:
+		return boolLabel(m.transcribeDiarize)
+	case 3:
+		if m.editingSpeakers {
+			return m.speakersInput + "▌"
+		}
+		if m.transcribeSpeakers <= 0 {
+			return "auto"
+		}
+		return strconv.Itoa(m.transcribeSpeakers)
 	default:
 		if m.editingOutput {
 			return m.outputDir + "▌"
@@ -152,6 +204,6 @@ func settingsView(m *model) string {
 		b.WriteString("\n")
 	}
 	b.WriteString("\n")
-	b.WriteString(hintStyle.Render("↑/↓ move · space toggle · e edit output dir · esc back"))
+	b.WriteString(hintStyle.Render("↑/↓ move · space toggle · e edit value · esc back"))
 	return b.String()
 }

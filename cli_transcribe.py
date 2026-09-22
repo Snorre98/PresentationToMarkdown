@@ -7,6 +7,11 @@ Operates directly on Markdown and/or audio (never PDF/PPTX). Two ways to use it:
 - **Without Markdown** — ``ptm-transcribe week-2.mp3`` writes a standalone
   ``week-2.transcript.md`` (plus ``.clean.flac`` / ``.transcript.srt`` sidecars).
 
+Speaker diarization is opt-in (``--diarize``) and the speaker count can be
+injected — ``--speakers 2`` pins an exact count for a two-person interview,
+``--min-speakers``/``--max-speakers`` give pyannote a range to search (both
+imply ``--diarize``).
+
 Pairing is by convention (same stem, same folder) or explicit (``--audio-file``,
 ``--to MARKDOWN.md``); when neither settles it and there are candidate lectures,
 an interactive prompt lets you pick one. Env vars are set *before* importing
@@ -55,6 +60,24 @@ def build_parser() -> argparse.ArgumentParser:
         help="enable speaker diarization via the audio server",
     )
     parser.add_argument(
+        "--speakers",
+        type=int,
+        metavar="N",
+        help="exact number of speakers (e.g. 2 for an interview); implies --diarize",
+    )
+    parser.add_argument(
+        "--min-speakers",
+        type=int,
+        metavar="N",
+        help="minimum speakers for pyannote to search; implies --diarize",
+    )
+    parser.add_argument(
+        "--max-speakers",
+        type=int,
+        metavar="N",
+        help="maximum speakers for pyannote to search; implies --diarize",
+    )
+    parser.add_argument(
         "--isolate",
         action="store_true",
         help="attempt to isolate the dominant voice (SepFormer via the audio server)",
@@ -78,15 +101,48 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _validate_speakers(args: argparse.Namespace) -> None:
+    """Validate the speaker-count flags, exiting on an invalid combination."""
+    speakers = getattr(args, "speakers", None)
+    lo = getattr(args, "min_speakers", None)
+    hi = getattr(args, "max_speakers", None)
+    if speakers is not None and (lo is not None or hi is not None):
+        raise SystemExit(
+            "--speakers is mutually exclusive with --min-speakers/--max-speakers"
+        )
+    for name, value in (
+        ("--speakers", speakers),
+        ("--min-speakers", lo),
+        ("--max-speakers", hi),
+    ):
+        if value is not None and value < 1:
+            raise SystemExit(f"{name} must be >= 1")
+    if lo is not None and hi is not None and lo > hi:
+        raise SystemExit("--min-speakers must be <= --max-speakers")
+
+
 def _apply_env(args: argparse.Namespace) -> dict[str, str]:
     """Set the audio env vars and return the applied mapping.
 
     Must be called before importing ``converter``. ``--env`` entries are applied
     last so they can override the defaults.
     """
+    _validate_speakers(args)
     env: dict[str, str] = {"AUDIO_ENABLED": "1"}
-    if getattr(args, "diarize", False):
+    diarize = (
+        getattr(args, "diarize", False)
+        or args.speakers is not None
+        or args.min_speakers is not None
+        or args.max_speakers is not None
+    )
+    if diarize:
         env["AUDIO_DIARIZE_ENABLED"] = "1"
+    if args.speakers is not None:
+        env["AUDIO_DIARIZE_SPEAKERS"] = str(args.speakers)
+    if args.min_speakers is not None:
+        env["AUDIO_DIARIZE_MIN_SPEAKERS"] = str(args.min_speakers)
+    if args.max_speakers is not None:
+        env["AUDIO_DIARIZE_MAX_SPEAKERS"] = str(args.max_speakers)
     if getattr(args, "isolate", False):
         env["AUDIO_ISOLATE_ENABLED"] = "1"
     if getattr(args, "language", None):

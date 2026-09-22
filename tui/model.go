@@ -82,6 +82,12 @@ type model struct {
 	settingsCursor int
 	editingOutput  bool
 
+	// transcription settings (TUI-local: fed to the ptm-transcribe argv)
+	transcribeDiarize  bool
+	transcribeSpeakers int
+	editingSpeakers    bool
+	speakersInput      string
+
 	width, height int
 }
 
@@ -356,7 +362,7 @@ func (m *model) startJob() tea.Cmd {
 // to a standalone transcript instead of blocking the TUI.
 func (m *model) startTranscription() tea.Cmd {
 	m.transcribing = true
-	cmd := exec.Command(m.transcribeBin, buildTranscribeArgs(m.audioPending)...)
+	cmd := exec.Command(m.transcribeBin, buildTranscribeArgs(m.audioPending, m.transcribeDiarize, m.transcribeSpeakers)...)
 	cmd.Stdin = nil
 	m.transcribeCmd = cmd
 

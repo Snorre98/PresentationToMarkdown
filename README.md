@@ -133,6 +133,7 @@ ptm-start --all
 # transcribe lecture audio to Markdown (decoupled from conversion)
 ptm-transcribe deck.md          # attach to existing Markdown
 ptm-transcribe week-2.mp3       # write week-2.transcript.md (no Markdown needed)
+ptm-transcribe --speakers 2 deck.md   # two-person interview (speaker labels)
 
 # run the full web UI (convert + watch history); spawns its native engine
 ptm-dashboard --port 9090       # see "Web GUI" below
@@ -146,6 +147,8 @@ selects them with `@` fuzzy search, and converts/transcribes with live progress.
 Audio rows are marked `♫`; pressing Enter dispatches by type — convertibles go
 through the `ptm-engine` job, then the selected audio runs through
 `ptm-transcribe` (ADR-0041), streaming its progress into the same run screen.
+The settings screen (`s`) toggles speaker diarization and pins a speaker count
+(e.g. `2` for an interview), passed to the spawned `ptm-transcribe`.
 It drives the same `ptm-engine` the web UI uses (ADR-0040), so conversion stays
 in Python while the surface is a native Go binary.
 

@@ -31,6 +31,48 @@ def test_apply_env_isolate():
     assert env["AUDIO_ISOLATE_ENABLED"] == "1"
 
 
+def _clean_audio_env(monkeypatch):
+    for key in (
+        "AUDIO_DIARIZE_ENABLED",
+        "AUDIO_DIARIZE_SPEAKERS",
+        "AUDIO_DIARIZE_MIN_SPEAKERS",
+        "AUDIO_DIARIZE_MAX_SPEAKERS",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+
+def test_apply_env_speakers_exact(monkeypatch):
+    _clean_audio_env(monkeypatch)
+    env = ct._apply_env(parse(["--speakers", "2"]))
+    assert env["AUDIO_DIARIZE_ENABLED"] == "1"
+    assert env["AUDIO_DIARIZE_SPEAKERS"] == "2"
+    assert "AUDIO_DIARIZE_MIN_SPEAKERS" not in env
+    assert "AUDIO_DIARIZE_MAX_SPEAKERS" not in env
+
+
+def test_apply_env_speakers_range(monkeypatch):
+    _clean_audio_env(monkeypatch)
+    env = ct._apply_env(parse(["--min-speakers", "1", "--max-speakers", "3"]))
+    assert env["AUDIO_DIARIZE_ENABLED"] == "1"
+    assert env["AUDIO_DIARIZE_MIN_SPEAKERS"] == "1"
+    assert env["AUDIO_DIARIZE_MAX_SPEAKERS"] == "3"
+
+
+def test_apply_env_speakers_mutually_exclusive():
+    with pytest.raises(SystemExit):
+        ct._apply_env(parse(["--speakers", "2", "--max-speakers", "3"]))
+
+
+def test_apply_env_speakers_must_be_positive():
+    with pytest.raises(SystemExit):
+        ct._apply_env(parse(["--speakers", "0"]))
+
+
+def test_apply_env_speakers_range_order():
+    with pytest.raises(SystemExit):
+        ct._apply_env(parse(["--min-speakers", "3", "--max-speakers", "1"]))
+
+
 def test_apply_env_passthrough_overrides():
     env = ct._apply_env(parse(["--env", "AUDIO_MODEL=foo", "--env", "AUDIO_ENABLED=0"]))
     assert env["AUDIO_MODEL"] == "foo"
@@ -183,7 +225,7 @@ def test_main_end_to_end_attaches(tmp_path, monkeypatch, capsys):
     (tmp_path / "deck.mp3").write_bytes(b"audio")
 
     monkeypatch.setattr("converter.transcribe.AUDIO_ENABLED", True)
-    monkeypatch.setattr("converter.transcribe.AUDIO_DIARIZE_ENABLED", False)
+    monkeypatch.setattr("converter.transcribe.diarize_requested", lambda: False)
     monkeypatch.setattr("converter.transcribe.record_segment", lambda **kw: None)
     monkeypatch.setattr(
         "converter.transcribe.transcribe_audio",
@@ -202,7 +244,7 @@ def test_main_end_to_end_standalone(tmp_path, monkeypatch, capsys):
     audio.write_bytes(b"audio")
 
     monkeypatch.setattr("converter.transcribe.AUDIO_ENABLED", True)
-    monkeypatch.setattr("converter.transcribe.AUDIO_DIARIZE_ENABLED", False)
+    monkeypatch.setattr("converter.transcribe.diarize_requested", lambda: False)
     monkeypatch.setattr("converter.transcribe.record_segment", lambda **kw: None)
     monkeypatch.setattr(
         "converter.transcribe.transcribe_audio",
@@ -221,7 +263,7 @@ def test_main_standalone_versions(tmp_path, monkeypatch, capsys):
     audio.write_bytes(b"audio")
 
     monkeypatch.setattr("converter.transcribe.AUDIO_ENABLED", True)
-    monkeypatch.setattr("converter.transcribe.AUDIO_DIARIZE_ENABLED", False)
+    monkeypatch.setattr("converter.transcribe.diarize_requested", lambda: False)
     monkeypatch.setattr("converter.transcribe.record_segment", lambda **kw: None)
     monkeypatch.setattr(
         "converter.transcribe.transcribe_audio",
@@ -242,7 +284,7 @@ def test_main_end_to_end_streams_progress(tmp_path, monkeypatch, capsys):
     audio.write_bytes(b"audio")
 
     monkeypatch.setattr("converter.transcribe.AUDIO_ENABLED", True)
-    monkeypatch.setattr("converter.transcribe.AUDIO_DIARIZE_ENABLED", False)
+    monkeypatch.setattr("converter.transcribe.diarize_requested", lambda: False)
     monkeypatch.setattr("converter.transcribe.record_segment", lambda **kw: None)
 
     def fake_transcribe(p, cp, **kw):

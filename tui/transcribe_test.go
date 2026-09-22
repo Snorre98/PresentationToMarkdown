@@ -46,7 +46,7 @@ func TestBuildTranscribeArgsPairsSiblingMarkdown(t *testing.T) {
 	standalone := filepath.Join(dir, "week-2.mp3")
 	os.WriteFile(standalone, nil, 0o644)
 
-	got := buildTranscribeArgs([]string{deck, standalone})
+	got := buildTranscribeArgs([]string{deck, standalone}, false, 0)
 	want := []string{deck, md, standalone}
 	if len(got) != len(want) {
 		t.Fatalf("args = %v, want %v", got, want)
@@ -62,8 +62,37 @@ func TestBuildTranscribeArgsNoSiblingMarkdown(t *testing.T) {
 	dir := t.TempDir()
 	audio := filepath.Join(dir, "week-2.mp3")
 	os.WriteFile(audio, nil, 0o644)
-	if got := buildTranscribeArgs([]string{audio}); len(got) != 1 || got[0] != audio {
+	if got := buildTranscribeArgs([]string{audio}, false, 0); len(got) != 1 || got[0] != audio {
 		t.Fatalf("args = %v, want just the audio", got)
+	}
+}
+
+func TestBuildTranscribeArgsSpeakersAndDiarize(t *testing.T) {
+	dir := t.TempDir()
+	audio := filepath.Join(dir, "week-2.mp3")
+	os.WriteFile(audio, nil, 0o644)
+	md := filepath.Join(dir, "week-2.md")
+	os.WriteFile(md, []byte("# Deck"), 0o644)
+
+	got := buildTranscribeArgs([]string{audio}, false, 2)
+	want := []string{"--speakers", "2", audio, md}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("args = %v, want %v", got, want)
+		}
+	}
+
+	got = buildTranscribeArgs([]string{audio}, true, 0)
+	want = []string{"--diarize", audio, md}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("args = %v, want %v", got, want)
+		}
+	}
+
+	got = buildTranscribeArgs([]string{audio}, true, 2)
+	if len(got) == 0 || got[0] != "--speakers" {
+		t.Fatalf("args = %v, want --speakers to win over --diarize", got)
 	}
 }
 
