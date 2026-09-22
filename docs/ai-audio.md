@@ -17,8 +17,8 @@ cleaned audio is **persisted** as a `.clean.flac`.
 
 | Role | Model | Runtime | Notes |
 | --- | --- | --- | --- |
-| ASR (default) | `mlx-community/whisper-large-v3-turbo` | `mlx-whisper` (MLX) | 809M params, ~4–5× realtime on Apple Silicon |
-| ASR (max quality) | `mlx-community/whisper-large-v3-mlx` | `mlx-whisper` (MLX) | 1.55B params, ~1× realtime |
+| ASR (default) | `mlx-community/whisper-large-v3-mlx` | `mlx-whisper` (MLX) | 1.55B params, ~1× realtime on Apple Silicon — the quality ceiling (ADR-0043) |
+| ASR (speed override) | `mlx-community/whisper-large-v3-turbo` | `mlx-whisper` (MLX) | 809M params, ~4–5× realtime, near-equal quality |
 | Enhancement | DeepFilterNet (denoise + dereverb) | PyTorch server (`:8089`, manifest `audio` daemon) | optional, ~8 MB, no gating |
 | Diarization | `pyannote/speaker-diarization-3.1` | PyTorch server (`:8089`, manifest `audio` daemon) | optional, gated HF model |
 
@@ -136,15 +136,35 @@ lines. Speaker labels remain generic (`SPEAKER_00`, `SPEAKER_01`, …); there is
 no name mapping. Labels are assigned by each segment's midpoint overlapping a
 diarized turn, so heavy crosstalk/overlapping speech can still be mislabelled.
 
+### Defaults and TUI control
+
+The default ASR model is the max-quality `whisper-large-v3-mlx` and the default
+language hint is `no` (Norwegian), so a bare `ptm-transcribe file.m4a` is a
+Norwegian, quality-first transcript (ADR-0043). Both — plus diarization and the
+speaker count — are persisted **settings** the TUI controls:
+
+- In `ptm-tui`, the settings screen (`s`) shows `model`, `language`, `diarize`
+  and `speakers` rows. Model cycles between `large-v3 (max)` and `turbo (fast)`;
+  language is a freeform edit where `auto` means auto-detect. Changes round-trip
+  through the engine's `/api/config` (stored in `converter.settings`, the same
+  SQLite store as the GUI preferences) and are injected into the spawned
+  `ptm-transcribe` argv at run time — no restart needed (ADR-0043).
+- Defaults: model `whisper-large-v3-mlx`, language `no`, diarize **on**,
+  speakers `2` (interview-first). The CLI is unaffected by the TUI's stored
+  values; it honours `AUDIO_MODEL`/`AUDIO_LANGUAGE` env vars and `--language`
+  / `--env` flags instead.
+- Override per run: `ptm-transcribe --language en file.m4a`, or set the TUI's
+  language row to `auto`.
+
 ## Configuration
 
 | Var | Default | Purpose |
 | --- | --- | --- |
 | `AUDIO_ENABLED` | *(unset = off)* | Master switch — `1`/`true`/`yes`/`on` |
-| `AUDIO_MODEL` | `mlx-community/whisper-large-v3-turbo` | ASR model id (override to `…-large-v3-mlx` for max quality) |
+| `AUDIO_MODEL` | `mlx-community/whisper-large-v3-mlx` | ASR model id (override to `…-large-v3-turbo` for speed) |
 | `AUDIO_MLX_WHISPER_BIN` | `mlx_whisper` | mlx-whisper CLI |
 | `AUDIO_FFMPEG_BIN` | `ffmpeg` | ffmpeg binary |
-| `AUDIO_LANGUAGE` | *(unset = auto-detect)* | Whisper language hint (e.g. `no`, `en`) |
+| `AUDIO_LANGUAGE` | `no` | Whisper language hint (set to `auto` or empty for auto-detection) |
 | `AUDIO_HEARTBEAT_SECONDS` | `20` | Quiet-interval before a `still working …` heartbeat line |
 | `AUDIO_CONDITION_ON_PREVIOUS_TEXT` | *(unset = off)* | Feed prior output back as a prompt (off avoids the "log log log" repetition loop on long recordings) |
 | `AUDIO_PREPROCESS` | `1` | Gentle ffmpeg chain (DC/rumble removal + band-limit) — denoise/dereverb live in the server |
@@ -194,7 +214,7 @@ Transcript Markdown (speaker omitted when diarization is off):
 # Transcript
 
 <details>
-<summary>Auto-generated transcript (whisper-large-v3-turbo)</summary>
+<summary>Auto-generated transcript (mlx-community/whisper-large-v3-mlx)</summary>
 
 [00:00:04] **Speaker A:** Welcome to today's lecture.
 [00:00:21] **Speaker A:** We'll cover three topics.

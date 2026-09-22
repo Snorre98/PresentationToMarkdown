@@ -221,3 +221,38 @@ def test_snapshot_reports_duplicate_preference(tmp_path, monkeypatch):
         assert config.snapshot(probe=False)["duplicate"] is False
     finally:
         db_engine.reset()
+
+
+def test_snapshot_reports_audio_defaults(tmp_path, monkeypatch):
+    from converter.db import engine as db_engine
+
+    monkeypatch.setenv("VISION_LOG_DB", str(tmp_path / "config_audio.sqlite"))
+    db_engine.reset()
+    try:
+        snap = config.snapshot(probe=False)
+        assert snap["audio_model"] == "mlx-community/whisper-large-v3-mlx"
+        assert snap["audio_language"] == "no"
+        assert snap["audio_diarize"] is True
+        assert snap["audio_speakers"] == 2
+    finally:
+        db_engine.reset()
+
+
+def test_snapshot_reports_audio_settings(tmp_path, monkeypatch):
+    from converter.db import engine as db_engine
+    from converter import settings
+
+    monkeypatch.setenv("VISION_LOG_DB", str(tmp_path / "config_audio2.sqlite"))
+    db_engine.reset()
+    try:
+        settings.set_setting("audio_model", "mlx-community/whisper-large-v3-turbo")
+        settings.set_setting("audio_language", "auto")
+        settings.set_setting("audio_diarize", "off")
+        settings.set_setting("audio_speakers", "0")
+        snap = config.snapshot(probe=False)
+        assert snap["audio_model"] == "mlx-community/whisper-large-v3-turbo"
+        assert snap["audio_language"] == "auto"
+        assert snap["audio_diarize"] is False
+        assert snap["audio_speakers"] == 0
+    finally:
+        db_engine.reset()

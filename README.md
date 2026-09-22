@@ -653,7 +653,8 @@ A lecture recording can be transcribed **locally** into a timestamped,
 speaker-labelled transcript. Transcription is **decoupled from conversion**
 (ADR-0009): it runs as its own `ptm-transcribe` command, which works *with or
 without* an existing Markdown file. It runs via **mlx-whisper**
-(`mlx-community/whisper-large-v3-turbo` by default), invoked as a subprocess so
+(`mlx-community/whisper-large-v3-mlx` by default, the max-quality model;
+`…-large-v3-turbo` for speed), invoked as a subprocess so
 `converter` stays MLX-free. Speaker diarization (optional) is served by a
 separate PyTorch server. See **[docs/ai-audio.md](docs/ai-audio.md)** for setup.
 
@@ -701,10 +702,10 @@ releases the lock. See [docs/runbook.md](docs/runbook.md).
 | Var | Default | Purpose |
 | --- | --- | --- |
 | `AUDIO_ENABLED` | *(unset = off)* | Master switch |
-| `AUDIO_MODEL` | `mlx-community/whisper-large-v3-turbo` | ASR model id (`…-large-v3-mlx` for max quality) |
+| `AUDIO_MODEL` | `mlx-community/whisper-large-v3-mlx` | ASR model id (`…-large-v3-turbo` for speed) |
 | `AUDIO_MLX_WHISPER_BIN` | `mlx_whisper` | mlx-whisper CLI |
 | `AUDIO_FFMPEG_BIN` | `ffmpeg` | ffmpeg binary |
-| `AUDIO_LANGUAGE` | *(unset = auto-detect)* | Whisper language hint |
+| `AUDIO_LANGUAGE` | `no` | Whisper language hint (`auto`/empty = auto-detect) |
 | `AUDIO_HEARTBEAT_SECONDS` | `20` | Quiet-interval before a `still working …` heartbeat line |
 | `AUDIO_CONDITION_ON_PREVIOUS_TEXT` | *(unset = off)* | Feed prior output back as a prompt (off avoids the "log log log" repetition loop on long recordings) |
 | `AUDIO_DEREVERB_ENABLED` | `1` | WPE dereverberation via the audio server |

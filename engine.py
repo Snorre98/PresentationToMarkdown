@@ -631,6 +631,18 @@ def create_app() -> Flask:
             set_setting("vault_root", str(data["vault_root"]).strip())
         if "duplicate" in data:
             set_setting("duplicate_if_exists", "on" if data["duplicate"] else "off")
+        if "audio_model" in data:
+            set_setting("audio_model", str(data["audio_model"]).strip())
+        if "audio_language" in data:
+            set_setting("audio_language", str(data["audio_language"]).strip())
+        if "audio_diarize" in data:
+            set_setting("audio_diarize", "on" if data["audio_diarize"] else "off")
+        if "audio_speakers" in data:
+            try:
+                n = int(data["audio_speakers"] or 0)
+            except (TypeError, ValueError):
+                n = 0
+            set_setting("audio_speakers", str(n) if n > 0 else "0")
         return jsonify(config.snapshot(probe=False))
 
     @app.get("/api/health/servers")

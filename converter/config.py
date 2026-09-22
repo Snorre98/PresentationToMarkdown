@@ -416,6 +416,34 @@ def _vault_root() -> str | None:
         return None
 
 
+def _audio_setting(key: str, default: str) -> str:
+    """Read a persisted transcription setting (ADR-0043).
+
+    Transcription preferences (model, language, diarization) live in the
+    settings KV store; the TUI reads them from ``snapshot()`` and injects them
+    into the spawned ``ptm-transcribe`` argv at spawn time (they are import-time
+    env vars in ``converter``, so the engine only stores, never applies them).
+    """
+    try:
+        from converter.settings import get_setting
+
+        value = get_setting("audio_" + key, "")
+        return value if value else default
+    except Exception:
+        return default
+
+
+def _audio_int(key: str, default: int) -> int:
+    """Read a persisted numeric transcription setting, falling back to ``default``."""
+    try:
+        from converter.settings import get_setting
+
+        value = get_setting("audio_" + key, "")
+        return int(value) if value.strip() else default
+    except Exception:
+        return default
+
+
 def snapshot(probe: bool = True) -> dict:
     """Return a JSON-serialisable snapshot of the runtime AI configuration (ADR-0022).
 
@@ -447,6 +475,10 @@ def snapshot(probe: bool = True) -> dict:
         "need_gate": os.environ.get("NEED_GATE", "on").strip().lower() or "on",
         "duplicate": _duplicate_if_exists(),
         "vault_root": _vault_root(),
+        "audio_model": _audio_setting("model", "mlx-community/whisper-large-v3-mlx"),
+        "audio_language": _audio_setting("language", "no"),
+        "audio_diarize": _audio_setting("diarize", "on").strip().lower() in _TRUE,
+        "audio_speakers": _audio_int("speakers", 2),
         "features": {key: is_enabled(key) for key in FEATURES},
         "passes": passes,
         "embed_model": _embed_model() if is_enabled("summary") else None,

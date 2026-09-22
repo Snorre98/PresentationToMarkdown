@@ -42,3 +42,4 @@ Index of architectural decisions for PresentationToMarkdown, in
 | [0040](0040-native-go-tui.md) | Native Go TUI (`ptm-tui`) over the Python engine | Accepted |
 | [0041](0041-tui-transcription.md) | Audio transcription in the native Go TUI | Accepted |
 | [0042](0042-multi-speaker-diarization.md) | Multi-speaker diarization with injectable speaker count | Accepted |
+| [0043](0043-quality-first-asr-defaults.md) | Quality-first ASR defaults, engine-backed transcription settings | Accepted |

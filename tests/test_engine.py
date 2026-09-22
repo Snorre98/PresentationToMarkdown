@@ -44,6 +44,10 @@ class _FakeConfig:
             "pdf_mode": "slide",
             "duplicate": False,
             "vault_root": None,
+            "audio_model": "mlx-community/whisper-large-v3-mlx",
+            "audio_language": "no",
+            "audio_diarize": True,
+            "audio_speakers": 2,
             "features": {"vision": False, "summary": False},
             "passes": {},
             "embed_model": None,
@@ -131,6 +135,10 @@ def test_engine_config_get(client):
     assert c["pdf_mode"] in ("slide", "paper")
     assert "features" in c
     assert "vault_root" in c
+    assert c["audio_model"] == "mlx-community/whisper-large-v3-mlx"
+    assert c["audio_language"] == "no"
+    assert c["audio_diarize"] is True
+    assert c["audio_speakers"] == 2
 
 
 def test_engine_config_set_vault_root(client, monkeypatch, tmp_path):
@@ -142,6 +150,38 @@ def test_engine_config_set_vault_root(client, monkeypatch, tmp_path):
     r = client.post("/api/config", json={"vault_root": str(tmp_path / "vault")}).get_json()
     assert r["vault_root"] is not None or "vault_root" in r
     assert stored.get("vault_root") == str(tmp_path / "vault")
+
+
+def test_engine_config_set_audio(client, monkeypatch):
+    stored = {}
+    monkeypatch.setattr(
+        "converter.settings.set_setting",
+        lambda key, value: stored.__setitem__(key, value),
+    )
+    r = client.post(
+        "/api/config",
+        json={
+            "audio_model": "mlx-community/whisper-large-v3-turbo",
+            "audio_language": "auto",
+            "audio_diarize": False,
+            "audio_speakers": 0,
+        },
+    ).get_json()
+    assert stored["audio_model"] == "mlx-community/whisper-large-v3-turbo"
+    assert stored["audio_language"] == "auto"
+    assert stored["audio_diarize"] == "off"
+    assert stored["audio_speakers"] == "0"
+    assert "audio_model" in r and "audio_speakers" in r
+
+
+def test_engine_config_set_audio_speakers_negative(client, monkeypatch):
+    stored = {}
+    monkeypatch.setattr(
+        "converter.settings.set_setting",
+        lambda key, value: stored.__setitem__(key, value),
+    )
+    client.post("/api/config", json={"audio_speakers": -3}).get_json()
+    assert stored["audio_speakers"] == "0"
 
 
 def test_engine_upload_no_original_sets_fallback_dir(client, tmp_path):

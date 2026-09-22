@@ -62,6 +62,13 @@ type Config struct {
 	Duplicate bool            `json:"duplicate"`
 	VaultRoot string          `json:"vault_root"`
 	Features  map[string]bool `json:"features"`
+
+	// Transcription settings (ADR-0043): persisted by the engine, injected
+	// into the spawned ptm-transcribe argv by the TUI.
+	AudioModel    string `json:"audio_model"`
+	AudioLanguage string `json:"audio_language"`
+	AudioDiarize  bool   `json:"audio_diarize"`
+	AudioSpeakers int    `json:"audio_speakers"`
 }
 
 // ConfigUpdate is the engine's /api/config POST body (engine.py config_set).
@@ -70,6 +77,11 @@ type ConfigUpdate struct {
 	PDFMode   string          `json:"pdf_mode,omitempty"`
 	VaultRoot string          `json:"vault_root,omitempty"`
 	Duplicate *bool           `json:"duplicate,omitempty"`
+
+	AudioModel    *string `json:"audio_model,omitempty"`
+	AudioLanguage *string `json:"audio_language,omitempty"`
+	AudioDiarize  *bool   `json:"audio_diarize,omitempty"`
+	AudioSpeakers *int    `json:"audio_speakers,omitempty"`
 }
 
 // JobEvent is one WebSocket frame from the engine's /ws stream.

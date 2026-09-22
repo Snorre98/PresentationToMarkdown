@@ -1,8 +1,11 @@
 package main
 
-// Settings screen: AI feature toggles, pdf mode, duplicate, and the output dir.
-// Feature/pdf/duplicate changes round-trip through the engine's /api/config so
-// they stay in sync with the GUI and web surfaces (converter.settings).
+// Settings screen: AI feature toggles, pdf mode, duplicate, output dir, and
+// transcription settings (diarize/speakers/model/language). Feature/pdf/
+// duplicate/transcription changes round-trip through the engine's /api/config
+// so they stay in sync with the GUI and web surfaces (converter.settings). The
+// transcription settings (ADR-0043) are injected into the spawned
+// ptm-transcribe argv by the TUI at run time.
 
 import (
 	"context"
@@ -16,8 +19,14 @@ import (
 
 var featureOrder = []string{"vision", "classify", "interpret", "format", "summary", "structure"}
 
-// pdf_mode, duplicate, diarize, speakers, output_dir.
-const settingsExtraRows = 5
+// pdf_mode, duplicate, diarize, speakers, model, language, output_dir.
+const settingsExtraRows = 7
+
+// audioModels is the cycle of bundled ASR models the TUI offers (ADR-0043).
+var audioModels = []string{
+	"mlx-community/whisper-large-v3-mlx",    // max quality (default)
+	"mlx-community/whisper-large-v3-turbo",  // speed
+}
 
 func (m *model) updateSettings(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.editingOutput {
@@ -35,10 +44,25 @@ func (m *model) updateSettings(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	}
+	if m.editingLanguage {
+		switch msg.String() {
+		case "esc", "enter":
+			return m.commitLanguage()
+		case "backspace":
+			if len(m.languageInput) > 0 {
+				m.languageInput = m.languageInput[:len(m.languageInput)-1]
+			}
+		default:
+			if msg.Type == tea.KeyRunes {
+				m.languageInput += string(msg.Runes)
+			}
+		}
+		return m, nil
+	}
 	if m.editingSpeakers {
 		switch msg.String() {
 		case "esc", "enter":
-			m.commitSpeakers()
+			return m.commitSpeakers()
 		case "backspace":
 			if len(m.speakersInput) > 0 {
 				m.speakersInput = m.speakersInput[:len(m.speakersInput)-1]
@@ -98,12 +122,27 @@ func (m *model) activateSetting() (tea.Model, tea.Cmd) {
 		next := !m.duplicate
 		m.duplicate = next
 		return m, m.saveConfig(ConfigUpdate{Duplicate: &next})
-	case 2: // diarize — TUI-local, fed to the ptm-transcribe argv
-		m.transcribeDiarize = !m.transcribeDiarize
-		return m, nil
+	case 2: // diarize
+		next := !m.cfg.AudioDiarize
+		m.cfg.AudioDiarize = next
+		return m, m.saveConfig(ConfigUpdate{AudioDiarize: &next})
 	case 3: // speakers
 		m.editingSpeakers = true
-		m.speakersInput = strconv.Itoa(m.transcribeSpeakers)
+		m.speakersInput = strconv.Itoa(m.cfg.AudioSpeakers)
+		return m, nil
+	case 4: // model — cycle between the bundled ASR models
+		next := audioModels[0]
+		if m.cfg.AudioModel == audioModels[0] {
+			next = audioModels[1]
+		}
+		m.cfg.AudioModel = next
+		return m, m.saveConfig(ConfigUpdate{AudioModel: &next})
+	case 5: // language
+		m.editingLanguage = true
+		m.languageInput = m.cfg.AudioLanguage
+		if m.languageInput == "" {
+			m.languageInput = "auto"
+		}
 		return m, nil
 	default: // output_dir
 		m.editingOutput = true
@@ -111,14 +150,28 @@ func (m *model) activateSetting() (tea.Model, tea.Cmd) {
 	}
 }
 
-// commitSpeakers parses the numeric input into transcribeSpeakers (0 = auto).
-func (m *model) commitSpeakers() {
-	if n, err := strconv.Atoi(m.speakersInput); err == nil && n >= 1 {
-		m.transcribeSpeakers = n
-	} else {
-		m.transcribeSpeakers = 0
+// commitSpeakers parses the numeric input into AudioSpeakers (0 = auto) and
+// persists it.
+func (m *model) commitSpeakers() (tea.Model, tea.Cmd) {
+	n := 0
+	if v, err := strconv.Atoi(m.speakersInput); err == nil && v >= 1 {
+		n = v
 	}
+	m.cfg.AudioSpeakers = n
 	m.editingSpeakers = false
+	return m, m.saveConfig(ConfigUpdate{AudioSpeakers: &n})
+}
+
+// commitLanguage normalises the language input ("auto"/empty = auto-detect)
+// and persists it.
+func (m *model) commitLanguage() (tea.Model, tea.Cmd) {
+	val := strings.TrimSpace(m.languageInput)
+	if val == "" {
+		val = "auto"
+	}
+	m.cfg.AudioLanguage = val
+	m.editingLanguage = false
+	return m, m.saveConfig(ConfigUpdate{AudioLanguage: &val})
 }
 
 func (m *model) saveConfig(u ConfigUpdate) tea.Cmd {
@@ -147,9 +200,21 @@ func (m *model) settingsLabel(i int) string {
 		return "diarize"
 	case 3:
 		return "speakers"
+	case 4:
+		return "model"
+	case 5:
+		return "language"
 	default:
 		return "output dir"
 	}
+}
+
+// modelShort renders a compact label for the current ASR model.
+func modelShort(id string) string {
+	if strings.HasSuffix(id, "whisper-large-v3-turbo") {
+		return "turbo (fast)"
+	}
+	return "large-v3 (max)"
 }
 
 func (m *model) settingsValue(i int) string {
@@ -162,15 +227,22 @@ func (m *model) settingsValue(i int) string {
 	case 1:
 		return boolLabel(m.duplicate)
 	case 2:
-		return boolLabel(m.transcribeDiarize)
+		return boolLabel(m.cfg.AudioDiarize)
 	case 3:
 		if m.editingSpeakers {
 			return m.speakersInput + "▌"
 		}
-		if m.transcribeSpeakers <= 0 {
+		if m.cfg.AudioSpeakers <= 0 {
 			return "auto"
 		}
-		return strconv.Itoa(m.transcribeSpeakers)
+		return strconv.Itoa(m.cfg.AudioSpeakers)
+	case 4:
+		return modelShort(m.cfg.AudioModel)
+	case 5:
+		if m.editingLanguage {
+			return m.languageInput + "▌"
+		}
+		return m.cfg.AudioLanguage
 	default:
 		if m.editingOutput {
 			return m.outputDir + "▌"

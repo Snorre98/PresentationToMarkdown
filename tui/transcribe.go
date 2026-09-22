@@ -54,9 +54,20 @@ func partitionSelected(files, kinds []string, selected map[int]bool) (convert, a
 //
 // Speaker diarization is controlled by the TUI settings: `speakers` pins an
 // exact count (`--speakers N`, which implies diarization) and `diarize` toggles
-// labelling when no exact count is set.
-func buildTranscribeArgs(audioPaths []string, diarize bool, speakers int) []string {
-	args := make([]string, 0, len(audioPaths)*2)
+// labelling when no exact count is set. The ASR model and language come from the
+// engine-persisted audio settings (ADR-0043) and are injected via `--env` so
+// they override the library defaults at spawn time; an empty/"auto" language
+// passes an empty AUDIO_LANGUAGE to force auto-detection.
+func buildTranscribeArgs(audioPaths []string, diarize bool, speakers int, model, language string) []string {
+	args := make([]string, 0, len(audioPaths)*2+4)
+	if model != "" {
+		args = append(args, "--env", "AUDIO_MODEL="+model)
+	}
+	if language == "" || language == "auto" {
+		args = append(args, "--env", "AUDIO_LANGUAGE=")
+	} else {
+		args = append(args, "--env", "AUDIO_LANGUAGE="+language)
+	}
 	if speakers > 0 {
 		args = append(args, "--speakers", strconv.Itoa(speakers))
 	} else if diarize {

@@ -16,10 +16,12 @@ Configuration (environment variables):
 
 - ``AUDIO_ENABLED`` — master switch. Default off.
 - ``AUDIO_MODEL`` — ASR model id, default
-  ``mlx-community/whisper-large-v3-turbo`` (override to ``…-large-v3-mlx``).
+  ``mlx-community/whisper-large-v3-mlx`` (max quality; override to
+  ``…-large-v3-turbo`` for speed).
 - ``AUDIO_MLX_WHISPER_BIN`` — mlx-whisper CLI, default ``mlx_whisper``.
 - ``AUDIO_FFMPEG_BIN`` — ffmpeg binary, default ``ffmpeg``.
-- ``AUDIO_LANGUAGE`` — optional Whisper language hint (e.g. ``no``, ``en``).
+- ``AUDIO_LANGUAGE`` — Whisper language hint (default ``no``; set to ``auto`` /
+  empty for auto-detection).
 - ``AUDIO_TIMEOUT`` — per-file subprocess timeout in seconds, default ``3600``.
 - ``AUDIO_HEARTBEAT_SECONDS`` — quiet-interval before a ``still working …`` line
   is emitted while streaming subprocess output, default ``20``.
@@ -70,11 +72,12 @@ AUDIO_PREPROCESS = os.environ.get("AUDIO_PREPROCESS", "1").strip().lower() in {
     "yes",
     "on",
 }
-AUDIO_MODEL = os.environ.get("AUDIO_MODEL", "mlx-community/whisper-large-v3-turbo")
+AUDIO_MODEL = os.environ.get("AUDIO_MODEL", "mlx-community/whisper-large-v3-mlx")
 AUDIO_MLX_WHISPER_BIN = os.environ.get("AUDIO_MLX_WHISPER_BIN", "mlx_whisper")
 AUDIO_FFMPEG_BIN = os.environ.get("AUDIO_FFMPEG_BIN", "ffmpeg")
 AUDIO_FFPROBE_BIN = os.environ.get("AUDIO_FFPROBE_BIN", "ffprobe")
-AUDIO_LANGUAGE = os.environ.get("AUDIO_LANGUAGE") or None
+AUDIO_LANGUAGE = os.environ.get("AUDIO_LANGUAGE", "no").strip().lower()
+AUDIO_LANGUAGE = None if not AUDIO_LANGUAGE or AUDIO_LANGUAGE == "auto" else AUDIO_LANGUAGE
 AUDIO_TIMEOUT = float(os.environ.get("AUDIO_TIMEOUT", "3600"))
 AUDIO_HEARTBEAT_SECONDS = float(os.environ.get("AUDIO_HEARTBEAT_SECONDS", "20"))
 
