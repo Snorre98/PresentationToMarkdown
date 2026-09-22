@@ -97,6 +97,16 @@ func (c *Client) Health(ctx context.Context) (Health, error) {
 // Glob returns the supported inputs under path (the engine reuses
 // converter.collect_inputs, so LaTeX-project folders are single entries).
 func (c *Client) Glob(ctx context.Context, path string, recursive bool) (GlobResult, error) {
+	return c.glob(ctx, path, recursive, "convert")
+}
+
+// GlobAudio returns the audio files under path (the engine mirrors
+// _fs_glob with converter.transcribe.AUDIO_EXTENSIONS; ADR-0041).
+func (c *Client) GlobAudio(ctx context.Context, path string, recursive bool) (GlobResult, error) {
+	return c.glob(ctx, path, recursive, "audio")
+}
+
+func (c *Client) glob(ctx context.Context, path string, recursive bool, kinds string) (GlobResult, error) {
 	q := url.Values{}
 	q.Set("path", path)
 	if recursive {
@@ -104,6 +114,7 @@ func (c *Client) Glob(ctx context.Context, path string, recursive bool) (GlobRes
 	} else {
 		q.Set("recursive", "0")
 	}
+	q.Set("kinds", kinds)
 	var r GlobResult
 	if err := c.getJSON(ctx, "/api/fs/glob?"+q.Encode(), &r); err != nil {
 		return GlobResult{}, err

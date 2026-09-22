@@ -61,7 +61,7 @@ No lint, typecheck, or formatter is configured (no ruff/black/mypy/pre-commit in
 - `cli.py` — `ptm` headless batch converter; `start.py` — `ptm-start` GUI launcher
 - `cli_transcribe.py` — `ptm-transcribe`; `cli_common.py` — shared AI flag parser + env mapping
 - `cli_ab.py` — `ptm-ab` A/B harness for the need-check gate (ADR-0039)
-- `tui/` — native Go TUI (`ptm-tui`) over the engine, in a separate Go module (ADR-0040)
+- `tui/` — native Go TUI (`ptm-tui`) over the engine, in a separate Go module (ADR-0040); audio discovery via `kinds=audio` glob and transcription by spawning `ptm-transcribe` (ADR-0041)
 - `lock.py` — single-instance `flock` guard for transcription
 - `scripts/` — audio-model server, plus shell wrappers around `ptm-start`/`ptm-transcribe`
 - `docs/adr/` — architecture decision records (MADR form); `docs/ai-vision.md`, `docs/ai-audio.md`, `docs/runbook.md` — model-serving runbooks

@@ -141,10 +141,13 @@ ptm-dashboard --port 9090       # see "Web GUI" below
 ### TUI (native)
 
 A compiled, opencode-style terminal app (`ptm-tui`) that discovers the
-`.pptx`/`.pdf`/`.tex` files in the current directory, selects them with `@`
-fuzzy search, and converts with live progress. It drives the same `ptm-engine`
-the web UI uses (ADR-0040), so conversion stays in Python while the surface is a
-native Go binary.
+`.pptx`/`.pdf`/`.tex` files **and audio files** in the current directory,
+selects them with `@` fuzzy search, and converts/transcribes with live progress.
+Audio rows are marked `♫`; pressing Enter dispatches by type — convertibles go
+through the `ptm-engine` job, then the selected audio runs through
+`ptm-transcribe` (ADR-0041), streaming its progress into the same run screen.
+It drives the same `ptm-engine` the web UI uses (ADR-0040), so conversion stays
+in Python while the surface is a native Go binary.
 
 ```bash
 scripts/install-global.sh        # install ~/.local/bin/ptm-tui (once)

@@ -84,6 +84,35 @@ def test_engine_fs_glob_recursive(tmp_path, client):
     assert all(f.endswith((".pptx", ".pdf")) for f in files)
 
 
+def test_engine_fs_glob_audio(tmp_path, client):
+    d = tmp_path / "root"
+    (d / "nested").mkdir(parents=True)
+    (d / "one.pptx").write_bytes(b"x")
+    (d / "lecture.mp3").write_bytes(b"a")
+    (d / "nested" / "week-2.m4a").write_bytes(b"b")
+    (d / "notes.txt").write_bytes(b"z")
+    r = client.get(f"/api/fs/glob?path={d}&kinds=audio").get_json()
+    files = [f for f in r["files"]]
+    assert len(files) == 2
+    assert all(f.endswith((".mp3", ".m4a")) for f in files)
+
+
+def test_engine_fs_glob_audio_file_target(tmp_path, client):
+    audio = tmp_path / "week-2.mp3"
+    audio.write_bytes(b"a")
+    r = client.get(f"/api/fs/glob?path={audio}&kinds=audio").get_json()
+    assert r["files"] == [str(audio.resolve())]
+
+
+def test_engine_fs_glob_default_excludes_audio(tmp_path, client):
+    d = tmp_path / "root"
+    d.mkdir()
+    (d / "deck.pptx").write_bytes(b"x")
+    (d / "deck.mp3").write_bytes(b"a")
+    r = client.get(f"/api/fs/glob?path={d}").get_json()
+    assert [f for f in r["files"]] == [str((d / "deck.pptx").resolve())]
+
+
 def test_engine_fs_resolve_file(tmp_path, client):
     f = tmp_path / "deck.pptx"
     f.write_bytes(b"x")

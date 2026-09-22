@@ -40,3 +40,4 @@ Index of architectural decisions for PresentationToMarkdown, in
 | [0038](0038-latex-pandoc-backend.md) | LaTeX project → Markdown converter via pandoc | Accepted |
 | [0039](0039-preflight-inference-gate.md) | Pre-flight inference gate before expensive rewrite passes | Accepted |
 | [0040](0040-native-go-tui.md) | Native Go TUI (`ptm-tui`) over the Python engine | Accepted |
+| [0041](0041-tui-transcription.md) | Audio transcription in the native Go TUI | Accepted |

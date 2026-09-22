@@ -106,6 +106,31 @@ def _fs_glob(path: str, recursive: bool = True) -> dict:
     return {"path": str(target), "files": [str(f.resolve()) for f in files]}
 
 
+def _fs_glob_audio(path: str, recursive: bool = True) -> dict:
+    """Expand a file or folder into audio files for transcription (ADR-0041).
+
+    Mirrors ``_fs_glob`` but for the transcription pipeline: yields audio files
+    (``converter.transcribe.AUDIO_EXTENSIONS``) so the TUI can discover and
+    transcribe them without re-implementing discovery in Go. ``converter`` is
+    imported lazily (env is applied before the engine serves requests).
+    """
+    from converter.transcribe import AUDIO_EXTENSIONS
+
+    target = Path(path).expanduser()
+    if target.is_file() and target.suffix.lower() in AUDIO_EXTENSIONS:
+        files = [target]
+    elif target.is_dir():
+        walk = target.rglob("*") if recursive else target.iterdir()
+        files = [
+            p
+            for p in sorted(walk, key=lambda p: p.name)
+            if p.is_file() and p.suffix.lower() in AUDIO_EXTENSIONS
+        ]
+    else:
+        files = []
+    return {"path": str(target), "files": [str(f.resolve()) for f in files]}
+
+
 def _fs_open(path: str) -> dict:
     """Open a path in the OS default app (Finder / default handler)."""
     target = Path(path).expanduser()
@@ -549,6 +574,9 @@ def create_app() -> Flask:
     @app.get("/api/fs/glob")
     def fs_glob():
         recursive = request.args.get("recursive", "1") not in ("0", "false", "no")
+        kinds = request.args.get("kinds", "convert")
+        if kinds == "audio":
+            return jsonify(_fs_glob_audio(request.args.get("path", ""), recursive))
         return jsonify(_fs_glob(request.args.get("path", ""), recursive))
 
     @app.post("/api/fs/resolve")
