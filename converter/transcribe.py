@@ -17,7 +17,9 @@ Configuration (environment variables):
 - ``AUDIO_ENABLED`` — master switch. Default off.
 - ``AUDIO_MODEL`` — ASR model id, default
   ``mlx-community/whisper-large-v3-mlx`` (max quality; override to
-  ``…-large-v3-turbo`` for speed).
+  ``…-large-v3-turbo`` for speed). Set to ``nb-whisper-large`` to route ASR
+  through the audio server's NB-Whisper route instead (``/v1/asr``, ADR-0044);
+  if that route fails, transcription falls back to ``mlx_whisper``.
 - ``AUDIO_MLX_WHISPER_BIN`` — mlx-whisper CLI, default ``mlx_whisper``.
 - ``AUDIO_FFMPEG_BIN`` — ffmpeg binary, default ``ffmpeg``.
 - ``AUDIO_LANGUAGE`` — Whisper language hint (default ``no``; set to ``auto`` /
@@ -50,6 +52,7 @@ from converter.audio import (
     AUDIO_DEREVERB_ENABLED,
     AUDIO_ENHANCE_ENABLED,
     AUDIO_ISOLATE_ENABLED,
+    asr,
     assign_speakers,
     dereverb,
     diarize,
@@ -72,7 +75,15 @@ AUDIO_PREPROCESS = os.environ.get("AUDIO_PREPROCESS", "1").strip().lower() in {
     "yes",
     "on",
 }
-AUDIO_MODEL = os.environ.get("AUDIO_MODEL", "mlx-community/whisper-large-v3-mlx")
+DEFAULT_MLX_MODEL = "mlx-community/whisper-large-v3-mlx"
+
+# When ``AUDIO_MODEL`` is this sentinel, transcription runs on the audio server's
+# NB-Whisper route (``/v1/asr``, ADR-0044) instead of the ``mlx_whisper``
+# subprocess. The server owns the actual HF model id; ``converter`` only knows
+# the routing sentinel.
+AUDIO_ASR_SERVER_SENTINEL = "nb-whisper-large"
+
+AUDIO_MODEL = os.environ.get("AUDIO_MODEL", DEFAULT_MLX_MODEL)
 AUDIO_MLX_WHISPER_BIN = os.environ.get("AUDIO_MLX_WHISPER_BIN", "mlx_whisper")
 AUDIO_FFMPEG_BIN = os.environ.get("AUDIO_FFMPEG_BIN", "ffmpeg")
 AUDIO_FFPROBE_BIN = os.environ.get("AUDIO_FFPROBE_BIN", "ffprobe")
@@ -549,6 +560,22 @@ def transcribe_audio(
             if warnings is not None:
                 warnings.append(f"Voice isolation failed: {exc}; using unisolated audio")
 
+    use_server_asr = AUDIO_MODEL == AUDIO_ASR_SERVER_SENTINEL
+
+    if use_server_asr:
+        if on_line is not None:
+            on_line(f"transcribing with {AUDIO_MODEL} (audio server) …\n")
+        try:
+            lang = language or AUDIO_LANGUAGE or "no"
+            # Resolve to an absolute path: the audio server runs from a
+            # different cwd and cannot open a relative ``target``.
+            return asr(str(target.resolve()), language=lang, timeout=timeout)
+        except Exception as exc:  # noqa: BLE001 - degrade to the mlx-whisper fallback
+            if warnings is not None:
+                warnings.append(
+                    f"Server ASR ({AUDIO_MODEL}) failed: {exc}; falling back to mlx-whisper"
+                )
+
     if on_line is not None:
         on_line(f"transcribing with {mlx_bin or AUDIO_MLX_WHISPER_BIN} …\n")
 
@@ -557,7 +584,7 @@ def transcribe_audio(
         cmd = [
             mlx_bin or AUDIO_MLX_WHISPER_BIN,
             str(target),
-            "--model", model or AUDIO_MODEL,
+            "--model", (model or AUDIO_MODEL) if not use_server_asr else DEFAULT_MLX_MODEL,
             "--output-format", "json",
             "--output-dir", str(tmpdir),
         ]

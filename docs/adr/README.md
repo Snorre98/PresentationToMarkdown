@@ -43,3 +43,5 @@ Index of architectural decisions for PresentationToMarkdown, in
 | [0041](0041-tui-transcription.md) | Audio transcription in the native Go TUI | Accepted |
 | [0042](0042-multi-speaker-diarization.md) | Multi-speaker diarization with injectable speaker count | Accepted |
 | [0043](0043-quality-first-asr-defaults.md) | Quality-first ASR defaults, engine-backed transcription settings | Accepted |
+| [0044](0044-nb-whisper-server-asr.md) | NB-Whisper Norwegian ASR in the audio server | Accepted |
+| [0045](0045-engine-hosted-transcription.md) | Engine-hosted audio transcription and unified job progress | Proposed |

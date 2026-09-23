@@ -44,7 +44,7 @@ class _FakeConfig:
             "pdf_mode": "slide",
             "duplicate": False,
             "vault_root": None,
-            "audio_model": "mlx-community/whisper-large-v3-mlx",
+            "audio_model": "nb-whisper-large",
             "audio_language": "no",
             "audio_diarize": True,
             "audio_speakers": 2,
@@ -135,7 +135,7 @@ def test_engine_config_get(client):
     assert c["pdf_mode"] in ("slide", "paper")
     assert "features" in c
     assert "vault_root" in c
-    assert c["audio_model"] == "mlx-community/whisper-large-v3-mlx"
+    assert c["audio_model"] == "nb-whisper-large"
     assert c["audio_language"] == "no"
     assert c["audio_diarize"] is True
     assert c["audio_speakers"] == 2

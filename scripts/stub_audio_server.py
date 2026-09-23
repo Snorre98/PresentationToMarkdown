@@ -57,6 +57,19 @@ def _speaker_turns(duration: float, min_speakers: int | None, max_speakers: int 
     return turns
 
 
+def _asr_segments(duration: float) -> list[dict]:
+    """Fabricate ``[{start, end, text}, ...]`` ASR segments spanning ``duration``."""
+    segments: list[dict] = []
+    t = 0.0
+    i = 0
+    while t < duration:
+        end = min(t + _TURN_SECONDS, duration)
+        segments.append({"start": t, "end": end, "text": f"segment {i}"})
+        t = end
+        i += 1
+    return segments
+
+
 class _Handler(BaseHTTPRequestHandler):
     def _send(self, code: int, payload) -> None:
         body = json.dumps(payload).encode("utf-8")
@@ -79,6 +92,8 @@ class _Handler(BaseHTTPRequestHandler):
         route = self.path.rstrip("/")
         if route == "/v1/diarize":
             self._handle_diarize()
+        elif route == "/v1/asr":
+            self._handle_asr()
         elif route == "/v1/enhance":
             self._handle_enhance()
         elif route == "/v1/dereverb":
@@ -87,6 +102,16 @@ class _Handler(BaseHTTPRequestHandler):
             self._handle_copy()
         else:
             self._send(404, {"error": "not found"})
+
+    def _handle_asr(self):
+        req = self._read_json()
+        if req is None:
+            return
+        path = req.get("path")
+        if not path:
+            self._send(400, {"error": "missing 'path'"})
+            return
+        self._send(200, _asr_segments(_audio_duration(path)))
 
     def _handle_diarize(self):
         req = self._read_json()

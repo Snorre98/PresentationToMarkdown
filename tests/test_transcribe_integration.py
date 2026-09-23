@@ -24,7 +24,7 @@ from pathlib import Path
 import pytest
 
 from converter import transcribe as t
-from converter.audio import dereverb, diarize, enhance, isolate
+from converter.audio import asr, dereverb, diarize, enhance, isolate
 
 
 def _make_tone_wav(path: Path, seconds: float = 1.0, rate: int = 16000) -> None:
@@ -85,6 +85,24 @@ def test_diarize_client_exact_speakers_against_stub(tmp_path):
 
     labels = sorted({turn["speaker"] for turn in turns})
     assert labels == ["SPEAKER_00", "SPEAKER_01"]
+
+
+def test_asr_client_against_stub(tmp_path):
+    httpd, port, thread = _start_stub()
+    audio = tmp_path / "talk.wav"
+    _make_tone_wav(audio, seconds=30.0)
+    try:
+        segments = asr(str(audio), base_url=f"http://127.0.0.1:{port}/v1")
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        thread.join(timeout=5)
+
+    assert isinstance(segments, list) and segments
+    for seg in segments:
+        assert set(seg) == {"start", "end", "text"}
+        assert seg["end"] > seg["start"]
+        assert seg["text"]
 
 
 def test_enhance_client_against_stub(tmp_path):

@@ -121,6 +121,64 @@ def test_transcribe_diarize_skipped_when_not_requested(monkeypatch, tmp_path):
     assert segs[0].get("speaker") is None
 
 
+def test_transcribe_audio_routes_to_server_asr(monkeypatch, tmp_path):
+    calls: dict = {}
+    monkeypatch.setattr(t, "AUDIO_MODEL", t.AUDIO_ASR_SERVER_SENTINEL)
+    monkeypatch.setattr(
+        t,
+        "asr",
+        lambda path, language="no", **kw: calls.update(path=path, language=language)
+        or [{"start": 0.0, "end": 2.5, "text": "hello"}],
+    )
+
+    def fake_run(cmd, timeout=3600.0, **kw):
+        if cmd[0] == t.AUDIO_FFMPEG_BIN:
+            Path(cmd[-1]).write_bytes(b"clean")
+            return ""
+        raise AssertionError("mlx_whisper should not run")
+
+    monkeypatch.setattr(t, "_run", fake_run)
+    monkeypatch.setattr(t, "AUDIO_DEREVERB_ENABLED", False)
+    monkeypatch.setattr(t, "AUDIO_ENHANCE_ENABLED", False)
+    clean = tmp_path / "x.clean.flac"
+    segs = t.transcribe_audio(tmp_path / "x.mp3", clean)
+    assert segs == [{"start": 0.0, "end": 2.5, "text": "hello"}]
+    assert calls["language"] == "no"
+    assert Path(calls["path"]) == clean
+
+
+def test_transcribe_audio_server_asr_falls_back_to_mlx(monkeypatch, tmp_path):
+    called: dict = {}
+    monkeypatch.setattr(t, "AUDIO_MODEL", t.AUDIO_ASR_SERVER_SENTINEL)
+    monkeypatch.setattr(
+        t,
+        "asr",
+        lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("server down")),
+    )
+    monkeypatch.setattr(t, "AUDIO_DEREVERB_ENABLED", False)
+    monkeypatch.setattr(t, "AUDIO_ENHANCE_ENABLED", False)
+
+    def fake_run(cmd, timeout=3600.0, **kw):
+        if cmd[0] == t.AUDIO_FFMPEG_BIN:
+            Path(cmd[-1]).write_bytes(b"clean")
+            return ""
+        called["whisper_model"] = cmd[cmd.index("--model") + 1]
+        idx = cmd.index("--output-dir")
+        (Path(cmd[idx + 1]) / (Path(cmd[1]).stem + ".json")).write_text(
+            json.dumps({"segments": [{"start": 0.0, "end": 2.5, "text": "hello"}]}),
+            encoding="utf-8",
+        )
+        return ""
+
+    monkeypatch.setattr(t, "_run", fake_run)
+    warnings: list[str] = []
+    clean = tmp_path / "x.clean.flac"
+    segs = t.transcribe_audio(tmp_path / "x.mp3", clean, warnings=warnings)
+    assert segs == [{"start": 0.0, "end": 2.5, "text": "hello"}]
+    assert any("falling back to mlx-whisper" in w for w in warnings)
+    assert called["whisper_model"] == t.DEFAULT_MLX_MODEL
+
+
 def test_assign_speakers():
     segs = [
         {"start": 0.0, "end": 10.0, "text": "a"},

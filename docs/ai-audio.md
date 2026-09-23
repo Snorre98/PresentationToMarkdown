@@ -17,7 +17,8 @@ cleaned audio is **persisted** as a `.clean.flac`.
 
 | Role | Model | Runtime | Notes |
 | --- | --- | --- | --- |
-| ASR (default) | `mlx-community/whisper-large-v3-mlx` | `mlx-whisper` (MLX) | 1.55B params, ~1× realtime on Apple Silicon — the quality ceiling (ADR-0043) |
+| ASR (Norwegian, TUI default) | `NbAiLab/nb-whisper-large` (via `/v1/asr`) | audio server (PyTorch) | ~2× fewer Norwegian errors than stock Whisper (6.6%/2.2% vs 10.4%/6.8% WER); Apache-2.0 (ADR-0044) |
+| ASR (default, CLI) | `mlx-community/whisper-large-v3-mlx` | `mlx-whisper` (MLX) | 1.55B params, ~1× realtime on Apple Silicon — the generic quality ceiling (ADR-0043) |
 | ASR (speed override) | `mlx-community/whisper-large-v3-turbo` | `mlx-whisper` (MLX) | 809M params, ~4–5× realtime, near-equal quality |
 | Enhancement | DeepFilterNet (denoise + dereverb) | PyTorch server (`:8089`, manifest `audio` daemon) | optional, ~8 MB, no gating |
 | Diarization | `pyannote/speaker-diarization-3.1` | PyTorch server (`:8089`, manifest `audio` daemon) | optional, gated HF model |
@@ -138,30 +139,36 @@ diarized turn, so heavy crosstalk/overlapping speech can still be mislabelled.
 
 ### Defaults and TUI control
 
-The default ASR model is the max-quality `whisper-large-v3-mlx` and the default
-language hint is `no` (Norwegian), so a bare `ptm-transcribe file.m4a` is a
-Norwegian, quality-first transcript (ADR-0043). Both — plus diarization and the
-speaker count — are persisted **settings** the TUI controls:
+The **CLI** default is the max-quality `whisper-large-v3-mlx` with a `no`
+language hint, so a bare `ptm-transcribe file.m4a` is a Norwegian, quality-first
+transcript (ADR-0043). The **TUI/engine default** is `nb-whisper-large` — a
+Norwegian fine-tuned Whisper served by the audio server (`/v1/asr`, ADR-0044)
+that roughly halves Norwegian ASR errors; if that route is down it falls back to
+`mlx-whisper` with a warning. Both — plus diarization and the speaker count —
+are persisted **settings** the TUI controls:
 
 - In `ptm-tui`, the settings screen (`s`) shows `model`, `language`, `diarize`
-  and `speakers` rows. Model cycles between `large-v3 (max)` and `turbo (fast)`;
-  language is a freeform edit where `auto` means auto-detect. Changes round-trip
-  through the engine's `/api/config` (stored in `converter.settings`, the same
-  SQLite store as the GUI preferences) and are injected into the spawned
-  `ptm-transcribe` argv at run time — no restart needed (ADR-0043).
-- Defaults: model `whisper-large-v3-mlx`, language `no`, diarize **on**,
-  speakers `2` (interview-first). The CLI is unaffected by the TUI's stored
-  values; it honours `AUDIO_MODEL`/`AUDIO_LANGUAGE` env vars and `--language`
-  / `--env` flags instead.
-- Override per run: `ptm-transcribe --language en file.m4a`, or set the TUI's
-  language row to `auto`.
+  and `speakers` rows. Model cycles `nb-whisper (no)` → `large-v3 (max)` →
+  `turbo (fast)`; language is a freeform edit where `auto` means auto-detect.
+  Changes round-trip through the engine's `/api/config` (stored in
+  `converter.settings`, the same SQLite store as the GUI preferences) and are
+  injected into the spawned `ptm-transcribe` argv at run time — no restart
+  needed (ADR-0043).
+- Defaults: model `nb-whisper-large`, language `no`, diarize **on**, speakers
+  `2` (interview-first). The CLI is unaffected by the TUI's stored values; it
+  honours `AUDIO_MODEL`/`AUDIO_LANGUAGE` env vars and `--language` / `--env`
+  flags instead.
+- Override per run: `ptm-transcribe --language en file.m4a` (mlx-whisper stays
+  the engine unless `AUDIO_MODEL=nb-whisper-large`), or set the TUI's model/language
+  rows. NB-Whisper is Norwegian/English focused — keep an mlx-whisper model for
+  other languages.
 
 ## Configuration
 
 | Var | Default | Purpose |
 | --- | --- | --- |
 | `AUDIO_ENABLED` | *(unset = off)* | Master switch — `1`/`true`/`yes`/`on` |
-| `AUDIO_MODEL` | `mlx-community/whisper-large-v3-mlx` | ASR model id (override to `…-large-v3-turbo` for speed) |
+| `AUDIO_MODEL` | `mlx-community/whisper-large-v3-mlx` | ASR model id. `nb-whisper-large` routes ASR through the audio server's NB-Whisper (`/v1/asr`, ADR-0044); `…-large-v3-turbo` for speed |
 | `AUDIO_MLX_WHISPER_BIN` | `mlx_whisper` | mlx-whisper CLI |
 | `AUDIO_FFMPEG_BIN` | `ffmpeg` | ffmpeg binary |
 | `AUDIO_LANGUAGE` | `no` | Whisper language hint (set to `auto` or empty for auto-detection) |
@@ -246,6 +253,12 @@ AUDIO_PREPROCESS=0 AUDIO_ENHANCE_ENABLED=0 ptm-transcribe deck.md   # raw audio
 
 ## Limitations
 
+- **Overlapping speech is not separated.** Whisper (MLX or NB-Whisper) transcribes
+  a single stream, so when two people talk at once the overlapping text is
+  garbled and speaker attribution at those moments is unreliable (midpoint
+  assignment, ADR-0042). Dual-stream isolation is a documented, deferred idea;
+  for occasional overlap the NB-Whisper + diarization combo is the practical
+  mitigation.
 - **Segment-level timestamps only** — word-level precision needs wav2vec2 forced
   alignment, deferred to v2.
 - **No per-slide alignment yet** — the transcript is timestamped, not placed

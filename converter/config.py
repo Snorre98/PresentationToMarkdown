@@ -475,7 +475,7 @@ def snapshot(probe: bool = True) -> dict:
         "need_gate": os.environ.get("NEED_GATE", "on").strip().lower() or "on",
         "duplicate": _duplicate_if_exists(),
         "vault_root": _vault_root(),
-        "audio_model": _audio_setting("model", "mlx-community/whisper-large-v3-mlx"),
+        "audio_model": _audio_setting("model", "nb-whisper-large"),
         "audio_language": _audio_setting("language", "no"),
         "audio_diarize": _audio_setting("diarize", "on").strip().lower() in _TRUE,
         "audio_speakers": _audio_int("speakers", 2),

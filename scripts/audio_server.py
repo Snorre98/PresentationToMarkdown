@@ -1,9 +1,9 @@
-"""Audio-model service (diarization + enhancement + dereverb + isolation).
+"""Audio-model service (diarization + enhancement + dereverb + isolation + ASR).
 
 PyTorch models are deliberately kept out of ``converter`` (ADR-0006/0008/0010),
-so speaker labelling, speech enhancement (DeepFilterNet), dereverberation (WPE)
-and voice isolation (SepFormer) run here, in their own venv. The converter talks
-to it via ``converter.audio``.
+so speaker labelling, speech enhancement (DeepFilterNet), dereverberation (WPE),
+voice isolation (SepFormer) and the NB-Whisper Norwegian ASR (ADR-0044) run
+here, in their own venv. The converter talks to it via ``converter.audio``.
 
 One-time setup (see ``docs/runbook.md``):
 
@@ -13,11 +13,12 @@ One-time setup (see ``docs/runbook.md``):
 - enhancement: ``pip install deepfilternet`` (small, no gating).
 - dereverberation: ``pip install nara_wpe`` (pure NumPy, no gating).
 - isolation: ``pip install speechbrain`` (SepFormer, no gating).
+- ASR: ``pip install transformers`` (NB-Whisper, Apache-2.0, no gating).
 
 Run::
 
     python3.12 -m venv ~/tools/audio-env
-    ~/tools/audio-env/bin/pip install pyannote.audio torch torchaudio deepfilternet nara_wpe speechbrain
+    ~/tools/audio-env/bin/pip install pyannote.audio torch torchaudio deepfilternet nara_wpe speechbrain transformers
     HF_TOKEN=hf_... ~/tools/audio-env/bin/python scripts/audio_server.py --port 8083
 
 Contract (matches ``converter.audio``)::
@@ -25,6 +26,10 @@ Contract (matches ``converter.audio``)::
     POST /v1/diarize
     {"path": "/abs/lecture.flac", "min_speakers": 1, "max_speakers": 4}
     -> [{"start": 0.0, "end": 9.2, "speaker": "SPEAKER_00"}, ...]
+
+    POST /v1/asr
+    {"path": "/abs/lecture.clean.flac", "language": "no"}
+    -> [{"start": 0.0, "end": 9.2, "text": "..."}, ...]
 
     POST /v1/enhance
     {"path": "/abs/lecture.flac", "output": "/abs/lecture.clean.flac"}
@@ -53,6 +58,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 DIARIZE_MODEL = os.environ.get("PYANNOTE_MODEL", "pyannote/speaker-diarization-3.1")
 HF_TOKEN = os.environ.get("HF_TOKEN")
+ASR_MODEL = os.environ.get("NB_WHISPER_MODEL", "NbAiLab/nb-whisper-large")
+ASR_DEVICE = os.environ.get("AUDIO_ASR_DEVICE", "mps")
 ISOLATE_MODEL = os.environ.get("SEPARATOR_MODEL", "speechbrain/sepformer-whamr")
 SEPARATOR_SAVEDIR = os.environ.get(
     "SPEECHBRAIN_SAVEDIR", os.path.join(os.path.expanduser("~/.cache"), "speechbrain")
@@ -84,6 +91,7 @@ AUDIO_ISOLATE_MIN_SPEECH_SEC = float(_MIN_SPEECH) if _MIN_SPEECH and _MIN_SPEECH
 _CTX = multiprocessing.get_context("spawn")
 
 _pipeline = None
+_asr_pipe = None
 _enhancer = None
 _separator = None
 _vad = None
@@ -100,6 +108,22 @@ def _get_pipeline():
             # Older pyannote used `use_auth_token` instead of `token`.
             _pipeline = Pipeline.from_pretrained(DIARIZE_MODEL, use_auth_token=HF_TOKEN)
     return _pipeline
+
+
+def _get_asr_pipe():
+    global _asr_pipe
+    if _asr_pipe is None:
+        from transformers import pipeline
+
+        try:
+            _asr_pipe = pipeline(
+                "automatic-speech-recognition", model=ASR_MODEL, device=ASR_DEVICE
+            )
+        except Exception:  # noqa: BLE001 - MPS can be finicky; fall back to CPU
+            _asr_pipe = pipeline(
+                "automatic-speech-recognition", model=ASR_MODEL, device="cpu"
+            )
+    return _asr_pipe
 
 
 def _get_enhancer():
@@ -155,6 +179,66 @@ def _run_diarization(path: str, min_speakers, max_speakers) -> list[dict]:
         {"start": float(turn.start), "end": float(turn.end), "speaker": str(speaker)}
         for turn, _, speaker in diarization.itertracks(yield_label=True)
     ]
+
+
+def _run_asr(path: str, language: str | None) -> list[dict]:
+    """Transcribe ``path`` with NB-Whisper, returning ``[{start, end, text}, ...]``.
+
+    Runs in a worker subprocess (heavy); the pipeline is loaded lazily on the
+    worker's first task. Word-level timestamps with explicit 30 s chunking
+    (``return_timestamps=True, chunk_length_s=30, stride_length_s=5``) give
+    complete coverage — plain ``return_timestamps="chunk"`` silently drops whole
+    30 s windows on long recordings. Words are grouped into utterance segments
+    at sentence boundaries (and hard length/time caps).
+    """
+    pipe = _get_asr_pipe()
+    gen = {"task": "transcribe", "num_beams": 1}
+    if language:
+        gen["language"] = language
+    res = pipe(
+        path,
+        generate_kwargs=gen,
+        return_timestamps=True,
+        chunk_length_s=30,
+        stride_length_s=5,
+    )
+    words: list[tuple[float, float, str]] = []
+    for chunk in res.get("chunks", []):
+        ts = chunk.get("timestamp")
+        text = (chunk.get("text") or "").strip()
+        if not text or not ts:
+            continue
+        words.append((float(ts[0] or 0.0), float(ts[1] or 0.0), text))
+    return _group_words(words)
+
+
+def _group_words(
+    words: list[tuple[float, float, str]],
+    max_dur: float = 20.0,
+    max_chars: int = 240,
+) -> list[dict]:
+    """Group word-level ``(start, end, text)`` tuples into utterance segments.
+
+    A new segment starts at a sentence-ending word (``.?!``) or when the
+    accumulated utterance hits ``max_dur`` seconds or ``max_chars`` characters.
+    """
+    segments: list[dict] = []
+    cur: list[str] = []
+    start: float | None = None
+    end: float = 0.0
+    for ts0, ts1, text in words:
+        if start is None:
+            start = ts0
+        cur.append(text)
+        end = ts1
+        joined = " ".join(cur)
+        sentence_end = text.rstrip().endswith((".", "?", "!"))
+        if sentence_end or (ts1 - start) >= max_dur or len(joined) >= max_chars:
+            segments.append({"start": start, "end": end, "text": joined.strip()})
+            cur, start = [], None
+    if cur and start is not None:
+        segments.append({"start": start, "end": end, "text": " ".join(cur).strip()})
+    return segments
 
 
 def _run_enhance(path: str, output: str) -> None:
@@ -379,7 +463,7 @@ def _worker_main(stage: str, task_q, result_q) -> None:
     (which cache on this child's own globals), so a model-load failure surfaces
     as a clean error result instead of killing the worker.
     """
-    runner = {"isolate": _run_isolate, "diarize": _run_diarization}[stage]
+    runner = {"isolate": _run_isolate, "diarize": _run_diarization, "asr": _run_asr}[stage]
     while True:
         task = task_q.get()
         if task is None:
@@ -489,6 +573,8 @@ class _Handler(BaseHTTPRequestHandler):
         route = self.path.rstrip("/")
         if route == "/v1/diarize":
             self._handle_diarize()
+        elif route == "/v1/asr":
+            self._handle_asr()
         elif route == "/v1/enhance":
             self._handle_enhance()
         elif route == "/v1/dereverb":
@@ -514,6 +600,29 @@ class _Handler(BaseHTTPRequestHandler):
                     "min_speakers": req.get("min_speakers"),
                     "max_speakers": req.get("max_speakers"),
                 },
+                AUDIO_STAGE_TIMEOUT_SEC,
+            )
+        except Exception as exc:  # noqa: BLE001 - report a clean 500
+            traceback.print_exc()
+            self._send(500, {"error": str(exc)})
+            return
+        if not res["ok"]:
+            self._send(500, {"error": res["error"]})
+            return
+        self._send(200, res["result"])
+
+    def _handle_asr(self):
+        req = self._read_json()
+        if req is None:
+            return
+        path = req.get("path")
+        if not path:
+            self._send(400, {"error": "missing 'path'"})
+            return
+        try:
+            res = _run_in_worker(
+                "asr",
+                {"path": path, "language": req.get("language")},
                 AUDIO_STAGE_TIMEOUT_SEC,
             )
         except Exception as exc:  # noqa: BLE001 - report a clean 500
@@ -600,7 +709,7 @@ def main() -> None:
         )
 
     httpd = ThreadingHTTPServer((args.host, args.port), _Handler)
-    print(f"audio server on http://{args.host}:{args.port}/v1/{{diarize,enhance,dereverb,isolate}}")
+    print(f"audio server on http://{args.host}:{args.port}/v1/{{asr,diarize,enhance,dereverb,isolate}}")
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

@@ -10,6 +10,10 @@ client:
     {"path": "<audio>", "min_speakers": n, "max_speakers": n}
     -> [{"start": float, "end": float, "speaker": "SPEAKER_00"}, ...]
 
+    POST {base}/asr
+    {"path": "<clean.flac>", "language": "no"}
+    -> [{"start": float, "end": float, "text": "..."}, ...]
+
     POST {base}/enhance
     {"path": "<in.flac>", "output": "<out.flac>"}
     -> {"ok": true}
@@ -144,6 +148,7 @@ AUDIO_ISOLATE_ENABLED = os.environ.get("AUDIO_ISOLATE_ENABLED", "").strip().lowe
 }
 
 _DIARIZE_TIMEOUT = 1800.0
+_ASR_TIMEOUT = 3600.0
 _ENHANCE_TIMEOUT = 1800.0
 _DEREVERB_TIMEOUT = 1800.0
 _ISOLATE_TIMEOUT = 1800.0
@@ -205,6 +210,37 @@ def diarize(
             }
         )
     return result
+
+
+def asr(
+    audio_path: str,
+    language: str = "no",
+    base_url: str | None = None,
+    api_key: str | None = None,
+    timeout: float = _ASR_TIMEOUT,
+) -> list[dict]:
+    """Transcribe ``audio_path`` via the server's NB-Whisper ASR (ADR-0044).
+
+    Returns ``[{start, end, text}, ...]`` segments. Raises on any network/HTTP
+    error so callers can degrade to the mlx-whisper fallback.
+    """
+    payload: dict = {"path": str(audio_path)}
+    if language:
+        payload["language"] = language
+    url = (base_url or AUDIO_DIARIZE_BASE_URL).rstrip("/") + "/asr"
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        url, data=data, headers={"Content-Type": "application/json"}
+    )
+    key = api_key or AUDIO_DIARIZE_API_KEY
+    if key:
+        req.add_header("Authorization", f"Bearer {key}")
+    body = _post_json(req, timeout, "ASR")
+    segs = body if isinstance(body, list) else body.get("segments", [])
+    return [
+        {"start": float(s["start"]), "end": float(s["end"]), "text": s["text"]}
+        for s in segs
+    ]
 
 
 def enhance(

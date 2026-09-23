@@ -230,7 +230,7 @@ def test_snapshot_reports_audio_defaults(tmp_path, monkeypatch):
     db_engine.reset()
     try:
         snap = config.snapshot(probe=False)
-        assert snap["audio_model"] == "mlx-community/whisper-large-v3-mlx"
+        assert snap["audio_model"] == "nb-whisper-large"
         assert snap["audio_language"] == "no"
         assert snap["audio_diarize"] is True
         assert snap["audio_speakers"] == 2

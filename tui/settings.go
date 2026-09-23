@@ -22,10 +22,13 @@ var featureOrder = []string{"vision", "classify", "interpret", "format", "summar
 // pdf_mode, duplicate, diarize, speakers, model, language, output_dir.
 const settingsExtraRows = 7
 
-// audioModels is the cycle of bundled ASR models the TUI offers (ADR-0043).
+// audioModels is the cycle of ASR models the TUI offers (ADR-0043/0044). The
+// first is the machine default: NB-Whisper (Norwegian, routed through the audio
+// server's /v1/asr).
 var audioModels = []string{
-	"mlx-community/whisper-large-v3-mlx",    // max quality (default)
-	"mlx-community/whisper-large-v3-turbo",  // speed
+	"nb-whisper-large",                      // norwegian (audio server ASR)
+	"mlx-community/whisper-large-v3-mlx",    // max quality (mlx-whisper)
+	"mlx-community/whisper-large-v3-turbo",  // speed (mlx-whisper)
 }
 
 func (m *model) updateSettings(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -211,6 +214,9 @@ func (m *model) settingsLabel(i int) string {
 
 // modelShort renders a compact label for the current ASR model.
 func modelShort(id string) string {
+	if id == "nb-whisper-large" {
+		return "nb-whisper (no)"
+	}
 	if strings.HasSuffix(id, "whisper-large-v3-turbo") {
 		return "turbo (fast)"
 	}
