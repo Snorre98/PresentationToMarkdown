@@ -86,15 +86,35 @@ type ConfigUpdate struct {
 
 // JobEvent is one WebSocket frame from the engine's /ws stream.
 type JobEvent struct {
-	Type    string `json:"type"` // file | page | log | done | error
+	Type    string `json:"type"` // file | page | log | phase | done | error
 	Idx     int    `json:"idx"`
 	Total   int    `json:"total"`
 	Name    string `json:"name"`
 	Page    int    `json:"page"`
-	Kind    string `json:"kind"` // log kind: ok | warn | err
+	Kind    string `json:"kind"` // log kind: ok | warn | err | info
 	Message string `json:"message"`
 	Ok      int    `json:"ok"`
 	Error   string `json:"error"`
+	Phase   string `json:"phase"` // transcribe phase (ADR-0045)
+}
+
+// Job is the engine's structured current_job (ADR-0045).
+type Job struct {
+	Kind      string   `json:"kind"`
+	Status    string   `json:"status"`
+	Paths     []string `json:"paths"`
+	Idx       int      `json:"idx"`
+	Total     int      `json:"total"`
+	Page      int      `json:"page"`
+	PageTotal int      `json:"page_total"`
+	Phase     string   `json:"phase"`
+	LogTail   []string `json:"log_tail"`
+}
+
+// Status is the engine's /api/status payload.
+type Status struct {
+	Status     string `json:"status"`
+	CurrentJob *Job   `json:"current_job"`
 }
 
 // Health returns the engine's health.
@@ -104,6 +124,15 @@ func (c *Client) Health(ctx context.Context) (Health, error) {
 		return Health{}, err
 	}
 	return h, nil
+}
+
+// Status returns the engine's shared state (including current_job; ADR-0045).
+func (c *Client) Status(ctx context.Context) (Status, error) {
+	var s Status
+	if err := c.getJSON(ctx, "/api/status", &s); err != nil {
+		return Status{}, err
+	}
+	return s, nil
 }
 
 // Glob returns the supported inputs under path (the engine reuses
@@ -178,17 +207,30 @@ func (c *Client) Shutdown(ctx context.Context) error {
 // RunJob streams one conversion over /ws, invoking onEvent per frame until
 // "done" or "error". outputDir may be "" (the engine then uses its default).
 func (c *Client) RunJob(ctx context.Context, paths []string, outputDir string, duplicate bool, onEvent func(JobEvent)) error {
+	return c.runWS(ctx, map[string]any{
+		"type":       "start",
+		"paths":      paths,
+		"output_dir": outputDir,
+		"duplicate":  duplicate,
+	}, onEvent)
+}
+
+// RunTranscribeJob streams one engine-hosted transcription over /ws (ADR-0045).
+func (c *Client) RunTranscribeJob(ctx context.Context, paths []string, audioOptions map[string]any, onEvent func(JobEvent)) error {
+	return c.runWS(ctx, map[string]any{
+		"type":          "transcribe",
+		"paths":         paths,
+		"audio_options": audioOptions,
+	}, onEvent)
+}
+
+func (c *Client) runWS(ctx context.Context, payload map[string]any, onEvent func(JobEvent)) error {
 	conn, _, err := websocket.DefaultDialer.DialContext(ctx, wsURL(c.baseURL), nil)
 	if err != nil {
 		return err
 	}
 	defer conn.Close()
-	if err := conn.WriteJSON(map[string]any{
-		"type":       "start",
-		"paths":      paths,
-		"output_dir": outputDir,
-		"duplicate":  duplicate,
-	}); err != nil {
+	if err := conn.WriteJSON(payload); err != nil {
 		return err
 	}
 	for {

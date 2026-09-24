@@ -148,3 +148,70 @@ func TestWsURL(t *testing.T) {
 		t.Fatalf("wsURL = %q", got)
 	}
 }
+
+func TestStatus(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/status" {
+			http.NotFound(w, r)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]any{
+			"status": "running",
+			"current_job": map[string]any{
+				"kind": "transcribe", "status": "running",
+				"paths": []string{"/a/21-sep.m4a"}, "idx": 1, "total": 1,
+				"phase": "diarize",
+			},
+		})
+	}))
+	defer srv.Close()
+
+	c := NewClient(srv.URL)
+	s, err := c.Status(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.Status != "running" || s.CurrentJob == nil {
+		t.Fatalf("status = %+v", s)
+	}
+	if s.CurrentJob.Kind != "transcribe" || s.CurrentJob.Phase != "diarize" {
+		t.Fatalf("job = %+v", s.CurrentJob)
+	}
+}
+
+func TestRunTranscribeJobWS(t *testing.T) {
+	upgrader := websocket.Upgrader{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer conn.Close()
+		var start map[string]any
+		if err := conn.ReadJSON(&start); err != nil {
+			return
+		}
+		if start["type"] != "transcribe" {
+			return
+		}
+		conn.WriteJSON(map[string]any{"type": "file", "idx": 1, "total": 1, "name": "21-sep.m4a"})
+		conn.WriteJSON(map[string]any{"type": "phase", "phase": "diarize"})
+		conn.WriteJSON(map[string]any{"type": "done", "ok": 1, "total": 1})
+	}))
+	defer srv.Close()
+
+	c := NewClient(srv.URL)
+	var events []JobEvent
+	err := c.RunTranscribeJob(context.Background(), []string{"/a/21-sep.m4a"}, map[string]any{"model": "nb-whisper-large"}, func(ev JobEvent) {
+		events = append(events, ev)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 3 {
+		t.Fatalf("events = %d", len(events))
+	}
+	if events[0].Type != "file" || events[1].Type != "phase" || events[1].Phase != "diarize" || events[2].Type != "done" {
+		t.Fatalf("events = %+v", events)
+	}
+}

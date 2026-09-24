@@ -28,8 +28,14 @@ Contract (matches ``converter.audio``)::
     -> [{"start": 0.0, "end": 9.2, "speaker": "SPEAKER_00"}, ...]
 
     POST /v1/asr
-    {"path": "/abs/lecture.clean.flac", "language": "no"}
+    {"path": "/abs/lecture.clean.flac", "language": "no", "return_words": false}
     -> [{"start": 0.0, "end": 9.2, "text": "..."}, ...]
+    (``return_words=true`` returns per-word ``{start, end, text}`` instead of
+    grouped utterances; ``num_beams`` overrides ``AUDIO_ASR_BEAMS`` per request.)
+
+    POST /v1/vad
+    {"path": "/abs/lecture.clean.flac"}
+    -> [{"start": 0.0, "end": 2.4}, ...]
 
     POST /v1/enhance
     {"path": "/abs/lecture.flac", "output": "/abs/lecture.clean.flac"}
@@ -60,6 +66,12 @@ DIARIZE_MODEL = os.environ.get("PYANNOTE_MODEL", "pyannote/speaker-diarization-3
 HF_TOKEN = os.environ.get("HF_TOKEN")
 ASR_MODEL = os.environ.get("NB_WHISPER_MODEL", "NbAiLab/nb-whisper-large")
 ASR_DEVICE = os.environ.get("AUDIO_ASR_DEVICE", "mps")
+# NB-Whisper's model card reports better results at 28 s than 30 s for longer
+# files; both knobs are exposed so a quality lane can raise beams without editing
+# code. ``condition_on_previous_text`` is forced off in ``_run_asr`` (see ADR-0008:
+# it triggers the classic repetition-loop hallucination).
+AUDIO_ASR_BEAMS = int(os.environ.get("AUDIO_ASR_BEAMS", "1"))
+NB_WHISPER_CHUNK_SEC = int(os.environ.get("NB_WHISPER_CHUNK_SEC", "28"))
 ISOLATE_MODEL = os.environ.get("SEPARATOR_MODEL", "speechbrain/sepformer-whamr")
 SEPARATOR_SAVEDIR = os.environ.get(
     "SPEECHBRAIN_SAVEDIR", os.path.join(os.path.expanduser("~/.cache"), "speechbrain")
@@ -181,25 +193,40 @@ def _run_diarization(path: str, min_speakers, max_speakers) -> list[dict]:
     ]
 
 
-def _run_asr(path: str, language: str | None) -> list[dict]:
+def _run_asr(
+    path: str,
+    language: str | None,
+    return_words: bool = False,
+    num_beams: int | None = None,
+) -> list[dict]:
     """Transcribe ``path`` with NB-Whisper, returning ``[{start, end, text}, ...]``.
 
     Runs in a worker subprocess (heavy); the pipeline is loaded lazily on the
-    worker's first task. Word-level timestamps with explicit 30 s chunking
-    (``return_timestamps=True, chunk_length_s=30, stride_length_s=5``) give
-    complete coverage — plain ``return_timestamps="chunk"`` silently drops whole
-    30 s windows on long recordings. Words are grouped into utterance segments
-    at sentence boundaries (and hard length/time caps).
+    worker's first task. Word-level timestamps with explicit chunking
+    (``return_timestamps=True``) give complete coverage — plain
+    ``return_timestamps="chunk"`` silently drops whole windows on long
+    recordings. ``condition_on_previous_text`` is disabled to avoid the
+    repetition loop; ``num_beams`` defaults to ``AUDIO_ASR_BEAMS`` (overridable
+    per request for a quality re-decode) and ``chunk_length_s`` to
+    ``NB_WHISPER_CHUNK_SEC``.
+
+    With ``return_words`` the raw word list is returned instead of
+    sentence-grouped utterances (the default), so callers that want to
+    re-segment at speaker/pause boundaries (ADR-0045) get the finest grain.
     """
     pipe = _get_asr_pipe()
-    gen = {"task": "transcribe", "num_beams": 1}
+    gen = {
+        "task": "transcribe",
+        "num_beams": num_beams if num_beams is not None else AUDIO_ASR_BEAMS,
+        "condition_on_previous_text": False,
+    }
     if language:
         gen["language"] = language
     res = pipe(
         path,
         generate_kwargs=gen,
         return_timestamps=True,
-        chunk_length_s=30,
+        chunk_length_s=NB_WHISPER_CHUNK_SEC,
         stride_length_s=5,
     )
     words: list[tuple[float, float, str]] = []
@@ -209,6 +236,8 @@ def _run_asr(path: str, language: str | None) -> list[dict]:
         if not text or not ts:
             continue
         words.append((float(ts[0] or 0.0), float(ts[1] or 0.0), text))
+    if return_words:
+        return [{"start": s, "end": e, "text": t} for s, e, t in words]
     return _group_words(words)
 
 
@@ -343,6 +372,18 @@ def _run_vad(path: str):
     return [(float(seg.start), float(seg.end)) for seg in annotation.get_timeline()]
 
 
+def _run_vad_export(path: str) -> list[dict]:
+    """Return VAD speech regions as ``[{start, end}, ...]`` for the ``/v1/vad`` route.
+
+    Raises when the VAD is unavailable (surfaced as a clean 500 upstream) and
+    returns ``[]`` when it ran but found no speech.
+    """
+    regions = _run_vad(path)
+    if regions is None:
+        raise RuntimeError("voice-activity detection unavailable")
+    return [{"start": start, "end": end} for start, end in regions]
+
+
 def _run_isolate(path: str, output: str) -> None:
     """Separate the dominant voice (SepFormer) and write a 16 kHz result to ``output``.
 
@@ -463,7 +504,12 @@ def _worker_main(stage: str, task_q, result_q) -> None:
     (which cache on this child's own globals), so a model-load failure surfaces
     as a clean error result instead of killing the worker.
     """
-    runner = {"isolate": _run_isolate, "diarize": _run_diarization, "asr": _run_asr}[stage]
+    runner = {
+        "isolate": _run_isolate,
+        "diarize": _run_diarization,
+        "asr": _run_asr,
+        "vad": _run_vad_export,
+    }[stage]
     while True:
         task = task_q.get()
         if task is None:
@@ -581,6 +627,8 @@ class _Handler(BaseHTTPRequestHandler):
             self._handle_dereverb()
         elif route == "/v1/isolate":
             self._handle_isolate()
+        elif route == "/v1/vad":
+            self._handle_vad()
         else:
             self._send(404, {"error": "not found"})
 
@@ -620,9 +668,23 @@ class _Handler(BaseHTTPRequestHandler):
             self._send(400, {"error": "missing 'path'"})
             return
         try:
+            return_words = str(req.get("return_words", "")).lower() in {
+                "1",
+                "true",
+                "yes",
+                "on",
+            }
+            num_beams = req.get("num_beams")
+            if num_beams is not None:
+                num_beams = int(num_beams)
             res = _run_in_worker(
                 "asr",
-                {"path": path, "language": req.get("language")},
+                {
+                    "path": path,
+                    "language": req.get("language"),
+                    "return_words": return_words,
+                    "num_beams": num_beams,
+                },
                 AUDIO_STAGE_TIMEOUT_SEC,
             )
         except Exception as exc:  # noqa: BLE001 - report a clean 500
@@ -650,6 +712,25 @@ class _Handler(BaseHTTPRequestHandler):
             self._send(500, {"error": str(exc)})
             return
         self._send(200, {"ok": True})
+
+    def _handle_vad(self):
+        req = self._read_json()
+        if req is None:
+            return
+        path = req.get("path")
+        if not path:
+            self._send(400, {"error": "missing 'path'"})
+            return
+        try:
+            res = _run_in_worker("vad", {"path": path}, AUDIO_STAGE_TIMEOUT_SEC)
+        except Exception as exc:  # noqa: BLE001 - report a clean 500
+            traceback.print_exc()
+            self._send(500, {"error": str(exc)})
+            return
+        if not res["ok"]:
+            self._send(500, {"error": res["error"]})
+            return
+        self._send(200, res["result"])
 
     def _handle_dereverb(self):
         req = self._read_json()

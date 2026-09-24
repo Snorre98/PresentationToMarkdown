@@ -56,10 +56,38 @@ _engine_state = {
     "duplicate": False,
     "results": None,
     "log": [],
+    "current_job": None,  # structured job progress (ADR-0045)
 }
 
 _job_lock = threading.Lock()
 _job_running = threading.Event()
+
+
+def _new_job(kind: str, paths: list[str]) -> dict:
+    """Return a fresh ``current_job`` record for a conversion or transcribe job."""
+    return {
+        "kind": kind,
+        "status": "running",
+        "paths": paths,
+        "idx": 0,
+        "total": len(paths),
+        "page": 0,
+        "page_total": 0,
+        "phase": None,
+        "log_tail": [],
+    }
+
+
+def _set_job(**fields) -> None:
+    """Update the shared ``current_job`` record (ADR-0045); ``reset`` replaces it."""
+    if fields.pop("reset", False):
+        _engine_state["current_job"] = _new_job(fields.pop("kind"), fields.pop("paths"))
+    job = _engine_state["current_job"]
+    if job is None:
+        return
+    job.update(fields)
+    if "log_tail" in fields and len(job["log_tail"]) > 20:
+        job["log_tail"] = job["log_tail"][-20:]
 
 
 def _import_converter():
@@ -506,15 +534,21 @@ def _job_execute(wsock, paths: list[str], output_dir: str | None, duplicate: boo
         status="running", paths=paths, output_dir=output_dir, duplicate=duplicate,
         results=None, log=[],
     )
+    _set_job(reset=True, kind="convert", paths=paths)
 
     def log(kind: str, msg: str) -> None:
         _engine_state["log"].append((kind, msg))
+        job = _engine_state.get("current_job")
+        if job is not None:
+            job["log_tail"].append(f"[{kind}] {msg}")
         wsock.send(json.dumps({"type": "log", "kind": kind, "message": msg}))
 
     def on_progress(idx: int, total: int, name: str) -> None:
+        _set_job(idx=idx, total=total, phase=name)
         wsock.send(json.dumps({"type": "file", "idx": idx, "total": total, "name": name}))
 
     def on_page_progress(page: int, total: int, name: str) -> None:
+        _set_job(page=page, page_total=total, phase=name)
         wsock.send(json.dumps({"type": "page", "page": page, "total": total, "name": name}))
 
     if output_dir:
@@ -548,12 +582,145 @@ def _job_execute(wsock, paths: list[str], output_dir: str | None, duplicate: boo
                     log("warn", f"{result.source_path.name}: {warning}")
         _engine_state["results"] = [r.error or str(r.md_path) for r in results]
         _engine_state["status"] = "done"
+        _set_job(status="done", phase=None)
         wsock.send(json.dumps({"type": "done", "ok": sum(1 for r in results if not r.error), "total": len(results)}))
     except Exception as exc:  # noqa: BLE001
         _engine_state["status"] = "error"
+        _set_job(status="error")
         log("err", f"Conversion failed: {exc}")
         wsock.send(json.dumps({"type": "done", "ok": 0, "total": len(paths), "error": str(exc)}))
     finally:
+        _job_running.clear()
+
+
+# Recognized phase lines emitted by ``converter.transcribe``'s ``on_line``
+# callback, mapped to short phase labels for the WS/TUI (ADR-0045).
+_PHASE_MARKERS: list[tuple[str, str]] = [
+    ("ffmpeg: cleaning audio", "cleaning"),
+    ("dereverberating", "dereverb"),
+    ("enhancing", "enhance"),
+    ("isolating", "isolate"),
+    ("transcribing", "transcribe"),
+    ("diarizing", "diarize"),
+    ("checking coverage", "coverage"),
+    ("re-decoding", "re-decode"),
+    ("aligning interview guide", "guide"),
+    ("editing transcript", "edit"),
+]
+
+
+def _map_phase(line: str) -> str | None:
+    """Map an ``on_line`` phase line to a short phase label, else ``None``."""
+    low = line.strip().lower()
+    for marker, phase in _PHASE_MARKERS:
+        if low.startswith(marker):
+            return phase
+    return None
+
+
+def _apply_audio_options(options: dict) -> None:
+    """Apply transcription options to the converter's module-level config.
+
+    ``converter.transcribe``/``converter.audio`` read their settings at import
+    time (ADR-0043); for engine-hosted transcription we set the same module
+    attributes per job from the request payload (model/language/diarize/speakers).
+    """
+    from converter import audio as audio_mod
+    from converter import transcribe as transcribe_mod
+
+    transcribe_mod.AUDIO_ENABLED = True
+    model = options.get("model")
+    if model:
+        transcribe_mod.AUDIO_MODEL = model
+    language = options.get("language")
+    transcribe_mod.AUDIO_LANGUAGE = None if language in (None, "", "auto") else language
+    speakers = int(options.get("speakers") or 0)
+    diarize = bool(options.get("diarize", False)) or speakers > 0
+    audio_mod.AUDIO_DIARIZE_ENABLED = diarize
+    audio_mod.AUDIO_DIARIZE_SPEAKERS = speakers if speakers > 0 else None
+    audio_mod.AUDIO_DIARIZE_MIN_SPEAKERS = None
+    audio_mod.AUDIO_DIARIZE_MAX_SPEAKERS = None
+
+
+def _transcribe_execute(wsock, paths: list[str], audio_options: dict | None) -> None:
+    """Run engine-hosted transcription for ``paths`` (ADR-0045).
+
+    Owns the ``transcribe.lock`` flock for the job's duration and streams
+    structured ``phase``/``file``/``log`` frames over the WS. Each path is either
+    a Markdown file (transcript attached to it) or an audio file (paired to a
+    sibling ``.md`` if present, else a standalone transcript).
+    """
+    with _job_lock:
+        if _job_running.is_set():
+            _engine_state["status"] = "error"
+            _engine_state["log"] = [("err", "A job is already running.")]
+            wsock.send(json.dumps({"type": "error", "message": "A job is already running."}))
+            return
+        _job_running.set()
+
+    _apply_audio_options(audio_options or {})
+
+    from converter.transcribe import attach_transcript, transcribe_to_markdown
+    import lock
+
+    lock_handle = lock.acquire_transcribe_lock()
+    if not lock_handle.held:
+        _job_running.clear()
+        _engine_state["status"] = "error"
+        _engine_state["log"] = [("err", "Another transcription is already running.")]
+        wsock.send(json.dumps({"type": "error", "message": "Another transcription is already running."}))
+        return
+
+    _engine_state.update(status="running", results=None, log=[])
+    _set_job(reset=True, kind="transcribe", paths=paths)
+
+    def on_line(line: str) -> None:
+        phase = _map_phase(line)
+        if phase is not None:
+            _set_job(phase=phase)
+            wsock.send(json.dumps({"type": "phase", "phase": phase}))
+            return
+        text = line.rstrip("\n").strip()
+        if text:
+            _engine_state["log"].append(("info", text))
+            job = _engine_state.get("current_job")
+            if job is not None:
+                job["log_tail"].append(text)
+                job["log_tail"] = job["log_tail"][-20:]
+            wsock.send(json.dumps({"type": "log", "kind": "info", "message": text}))
+
+    ok = 0
+    total = len(paths)
+    try:
+        for idx, raw in enumerate(paths, start=1):
+            path = Path(raw)
+            _set_job(idx=idx, total=total, phase="starting")
+            wsock.send(json.dumps({"type": "file", "idx": idx, "total": total, "name": path.name}))
+            warnings: list[str] = []
+            if path.suffix.lower() == ".md":
+                result = attach_transcript(path, warnings, on_line=on_line)
+            else:
+                md = path.with_suffix(".md")
+                if md.exists():
+                    result = attach_transcript(md, warnings, audio_path=path, on_line=on_line)
+                else:
+                    result = transcribe_to_markdown(path, warnings, on_line=on_line)
+            for warning in warnings:
+                wsock.send(json.dumps({"type": "log", "kind": "warn", "message": f"{path.name}: {warning}"}))
+            if result is None and not warnings:
+                wsock.send(json.dumps({"type": "log", "kind": "warn", "message": f"{path.name}: no transcript produced"}))
+            else:
+                ok += 1
+        _engine_state["status"] = "done"
+        _set_job(status="done", phase=None)
+        wsock.send(json.dumps({"type": "done", "ok": ok, "total": total}))
+    except Exception as exc:  # noqa: BLE001
+        _engine_state["status"] = "error"
+        _set_job(status="error")
+        wsock.send(json.dumps({"type": "log", "kind": "err", "message": f"Transcription failed: {exc}"}))
+        wsock.send(json.dumps({"type": "done", "ok": 0, "total": total, "error": str(exc)}))
+    finally:
+        lock_handle.release()
         _job_running.clear()
 
 
@@ -661,6 +828,10 @@ def create_app() -> Flask:
                 )
         return jsonify({"servers": results, "missing": config.missing_servers()})
 
+    @app.get("/api/status")
+    def status():
+        return jsonify(_engine_state)
+
     @sock.route("/ws")
     def job_ws(wsock):
         while True:
@@ -677,6 +848,12 @@ def create_app() -> Flask:
                     data.get("paths", []),
                     data.get("output_dir"),
                     bool(data.get("duplicate", False)),
+                )
+            elif data.get("type") == "transcribe":
+                _transcribe_execute(
+                    wsock,
+                    data.get("paths", []),
+                    data.get("audio_options"),
                 )
 
     return app

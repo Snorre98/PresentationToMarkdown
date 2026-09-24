@@ -70,6 +70,19 @@ def _asr_segments(duration: float) -> list[dict]:
     return segments
 
 
+def _asr_words(duration: float) -> list[dict]:
+    """Fabricate per-word ``[{start, end, text}, ...]`` (finer than ``_asr_segments``)."""
+    words: list[dict] = []
+    t = 0.0
+    i = 0
+    while t < duration:
+        end = min(t + 1.0, duration)
+        words.append({"start": t, "end": end, "text": f"word {i}"})
+        t = end
+        i += 1
+    return words
+
+
 class _Handler(BaseHTTPRequestHandler):
     def _send(self, code: int, payload) -> None:
         body = json.dumps(payload).encode("utf-8")
@@ -100,6 +113,8 @@ class _Handler(BaseHTTPRequestHandler):
             self._handle_copy()
         elif route == "/v1/isolate":
             self._handle_copy()
+        elif route == "/v1/vad":
+            self._handle_vad()
         else:
             self._send(404, {"error": "not found"})
 
@@ -111,7 +126,16 @@ class _Handler(BaseHTTPRequestHandler):
         if not path:
             self._send(400, {"error": "missing 'path'"})
             return
-        self._send(200, _asr_segments(_audio_duration(path)))
+        return_words = str(req.get("return_words", "")).lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        if return_words:
+            self._send(200, _asr_words(_audio_duration(path)))
+        else:
+            self._send(200, _asr_segments(_audio_duration(path)))
 
     def _handle_diarize(self):
         req = self._read_json()
@@ -158,6 +182,16 @@ class _Handler(BaseHTTPRequestHandler):
             self._send(500, {"error": str(exc)})
             return
         self._send(200, {"ok": True})
+
+    def _handle_vad(self):
+        req = self._read_json()
+        if req is None:
+            return
+        path = req.get("path")
+        if not path:
+            self._send(400, {"error": "missing 'path'"})
+            return
+        self._send(200, [{"start": 0.0, "end": _audio_duration(path)}])
 
     def log_message(self, fmt, *args):  # noqa: N802 - quiet the default logging
         pass

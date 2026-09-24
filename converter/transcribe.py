@@ -54,12 +54,14 @@ from converter.audio import (
     AUDIO_ISOLATE_ENABLED,
     asr,
     assign_speakers,
+    assign_speakers_by_words,
     dereverb,
     diarize,
     diarize_bounds,
     diarize_requested,
     enhance,
     isolate,
+    vad,
 )
 from converter.logstore import record_segment
 
@@ -91,6 +93,36 @@ AUDIO_LANGUAGE = os.environ.get("AUDIO_LANGUAGE", "no").strip().lower()
 AUDIO_LANGUAGE = None if not AUDIO_LANGUAGE or AUDIO_LANGUAGE == "auto" else AUDIO_LANGUAGE
 AUDIO_TIMEOUT = float(os.environ.get("AUDIO_TIMEOUT", "3600"))
 AUDIO_HEARTBEAT_SECONDS = float(os.environ.get("AUDIO_HEARTBEAT_SECONDS", "20"))
+
+# Coverage + fallback re-decode (ADR-0045). ``AUDIO_COVERAGE_ENABLED`` runs a VAD
+# round-trip after transcription and warns about speech spans with no words —
+# the same check that would have caught the 21-sep block pass. With
+# ``AUDIO_FALLBACK_REDECODE`` those windows are re-decoded with beam search.
+AUDIO_COVERAGE_ENABLED = os.environ.get("AUDIO_COVERAGE_ENABLED", "").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+AUDIO_FALLBACK_REDECODE = os.environ.get("AUDIO_FALLBACK_REDECODE", "").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+AUDIO_REDECODE_BEAMS = int(os.environ.get("AUDIO_REDECODE_BEAMS", "5"))
+
+# Interview-guide alignment (ADR-0045): with ``AUDIO_GUIDE_ENABLED`` and
+# ``AUDIO_GUIDE_PATH`` set, the guide's questions are aligned to the transcript
+# and used to re-attribute interviewer/participant roles and insert any question
+# the ASR dropped (see ``converter.guide``).
+AUDIO_GUIDE_ENABLED = os.environ.get("AUDIO_GUIDE_ENABLED", "").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+AUDIO_GUIDE_PATH = os.environ.get("AUDIO_GUIDE_PATH", "")
 
 # mlx-whisper's default (``--condition-on-previous-text True``) feeds the previous
 # window's text back as a prompt, which triggers the classic repetition-loop
@@ -489,6 +521,7 @@ def transcribe_audio(
     warnings: list[str] | None = None,
     on_line: Callable[[str], None] | None = None,
     heartbeat: float | None = None,
+    return_words: bool = False,
 ) -> list[dict]:
     """Enhance ``audio_path``, persist it as a FLAC, and transcribe it.
 
@@ -497,6 +530,10 @@ def transcribe_audio(
     DeepFilterNet when those steps are enabled and the server is up. With
     ``AUDIO_ISOLATE_ENABLED``, a voice-isolated ``<stem>.isolated.flac`` is also
     produced and that is what Whisper transcribes (each failure only warns).
+
+    ``return_words`` requests per-word timestamps from the *server* ASR lane
+    (ADR-0045); it is ignored on the mlx-whisper fallback, which always yields
+    segments. The returned list is ``[{start, end, text}, ...]`` either way.
 
     ``on_line`` (optional) receives raw subprocess output plus short phase lines
     as they happen; ``heartbeat`` overrides the quiet-interval before a
@@ -569,7 +606,7 @@ def transcribe_audio(
             lang = language or AUDIO_LANGUAGE or "no"
             # Resolve to an absolute path: the audio server runs from a
             # different cwd and cannot open a relative ``target``.
-            return asr(str(target.resolve()), language=lang, timeout=timeout)
+            return asr(str(target.resolve()), language=lang, timeout=timeout, return_words=return_words)
         except Exception as exc:  # noqa: BLE001 - degrade to the mlx-whisper fallback
             if warnings is not None:
                 warnings.append(
@@ -633,14 +670,62 @@ def format_timestamp(seconds: float) -> str:
     return f"{h:02d}:{m:02d}:{s:02d}"
 
 
-def merge_utterances(segments: list[dict]) -> list[dict]:
+# Gap (seconds) between consecutive words above which a new utterance starts
+# (ADR-0045): speaker changes and pauses longer than this split an utterance.
+PAUSE_GAP_SECONDS = 0.7
+
+
+def words_to_utterances(
+    words: list[dict], pause_gap: float = PAUSE_GAP_SECONDS
+) -> list[dict]:
+    """Group speaker-labelled words into utterances at speaker and pause boundaries.
+
+    ``words`` are ``[{start, end, text, speaker}]`` (see
+    :func:`converter.audio.assign_speakers_by_words`). A new utterance starts
+    when the speaker changes or the inter-word gap exceeds ``pause_gap``; each
+    utterance keeps the first word's ``start``, the last word's ``end``, and its
+    speaker, with texts joined by single spaces. Empty words are dropped.
+    """
+    utterances: list[dict] = []
+    current: list[dict] = []
+    for word in words:
+        text = (word.get("text") or "").strip()
+        if not text:
+            continue
+        if current:
+            prev = current[-1]
+            if (
+                word.get("speaker") != prev.get("speaker")
+                or (word["start"] - prev["end"]) > pause_gap
+            ):
+                utterances.append(_join_words(current))
+                current = []
+        current.append(word)
+    if current:
+        utterances.append(_join_words(current))
+    return utterances
+
+
+def _join_words(words: list[dict]) -> dict:
+    return {
+        "start": words[0]["start"],
+        "end": words[-1]["end"],
+        "text": " ".join((w.get("text") or "").strip() for w in words).strip(),
+        "speaker": words[0].get("speaker"),
+    }
+
+
+def merge_utterances(
+    segments: list[dict], pause_gap: float = PAUSE_GAP_SECONDS
+) -> list[dict]:
     """Merge consecutive same-speaker ASR segments into continuous utterances.
 
     A two-person interview then reads as alternating ``**SPEAKER_00:**`` blocks
-    instead of many fragmented ~5 s lines. A segment without a speaker (or a
-    speaker change) starts a new entry; the merged utterance keeps the first
-    segment's ``start`` and the last segment's ``end``, with texts joined by a
-    single space. ``segments`` is not mutated.
+    instead of many fragmented ~5 s lines. A segment without a speaker, a speaker
+    change, or an inter-segment pause longer than ``pause_gap`` starts a new
+    entry; the merged utterance keeps the first segment's ``start`` and the last
+    segment's ``end``, with texts joined by a single space. ``segments`` is not
+    mutated.
     """
     merged: list[dict] = []
     for seg in segments:
@@ -653,15 +738,13 @@ def merge_utterances(segments: list[dict]) -> list[dict]:
             prev is not None
             and speaker is not None
             and prev.get("speaker") == speaker
-            and seg["start"] >= prev.get("_end", 0.0)
+            and seg["start"] >= prev["end"]
+            and (seg["start"] - prev["end"]) <= pause_gap
         ):
             prev["text"] = prev["text"] + " " + text
             prev["end"] = seg["end"]
-            prev["_end"] = seg["end"]
         else:
             merged.append(dict(seg))
-    for item in merged:
-        item.pop("_end", None)
     return merged
 
 
@@ -713,6 +796,104 @@ def _strip_transcript(md: str) -> str:
     return md
 
 
+def detect_low_coverage(
+    segments: list[dict],
+    vad_regions: list[dict],
+    min_overlap: float = 0.3,
+) -> list[dict]:
+    """Return VAD speech spans with too little ASR word coverage.
+
+    ``segments`` are ASR ``[{start, end, ...}]`` and ``vad_regions`` are
+    ``[{start, end}]`` speech regions. A region whose span is less than
+    ``min_overlap``-covered by ASR timestamps is returned as
+    ``{start, end, covered_fraction}`` — exactly the signature of the 21-sep
+    block pass, which dropped whole answer windows while VAD still saw speech.
+    """
+    gaps: list[dict] = []
+    for region in vad_regions:
+        total = region["end"] - region["start"]
+        if total <= 0:
+            continue
+        covered = 0.0
+        for seg in segments:
+            covered += max(
+                0.0,
+                min(seg["end"], region["end"]) - max(seg["start"], region["start"]),
+            )
+        fraction = min(1.0, covered / total)
+        if fraction < min_overlap:
+            gaps.append(
+                {
+                    "start": region["start"],
+                    "end": region["end"],
+                    "covered_fraction": fraction,
+                }
+            )
+    return gaps
+
+
+def redecode_windows(
+    clean_path: Path,
+    windows: list[dict],
+    language: str | None = None,
+    warnings: list[str] | None = None,
+    on_line: Callable[[str], None] | None = None,
+) -> list[dict]:
+    """Re-decode low-coverage windows with beam search; return replacement segments.
+
+    Each window is sliced from ``clean_path`` with ffmpeg and re-POSTed to the
+    server ASR with ``AUDIO_REDECODE_BEAMS``; returned segments are shifted back
+    into the original timeline. Best-effort: a failed window only appends a
+    warning and yields nothing for that window.
+    """
+    warnings = warnings if warnings is not None else []
+    out: list[dict] = []
+    for window in windows:
+        w_start = window["start"]
+        w_end = window["end"]
+        if on_line is not None:
+            on_line(f"re-decoding {w_start:.1f}-{w_end:.1f}s with beam search …\n")
+        tmp = _temp_sibling(clean_path)
+        try:
+            _run(
+                [
+                    AUDIO_FFMPEG_BIN,
+                    "-y",
+                    "-ss",
+                    f"{w_start:.3f}",
+                    "-to",
+                    f"{w_end:.3f}",
+                    "-i",
+                    str(clean_path),
+                    "-c:a",
+                    "flac",
+                    "-f",
+                    "flac",
+                    tmp,
+                ],
+                timeout=AUDIO_TIMEOUT,
+            )
+            segs = asr(
+                str(Path(tmp).resolve()),
+                language=language or AUDIO_LANGUAGE or "no",
+                num_beams=AUDIO_REDECODE_BEAMS,
+            )
+            for seg in segs:
+                seg["start"] += w_start
+                seg["end"] += w_start
+            out.extend(segs)
+        except Exception as exc:  # noqa: BLE001 - best-effort window re-decode
+            warnings.append(
+                f"Fallback re-decode failed for {w_start:.1f}-{w_end:.1f}s: {exc}"
+            )
+        finally:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+    return out
+
+
 def _transcribe(
     audio_path: Path,
     clean_path: Path,
@@ -726,9 +907,20 @@ def _transcribe(
     Persists the cleaned audio to ``clean_path``, records every segment to
     ``ptm.sqlite`` under ``source``, and returns the segment list. Diarization
     failure only warns; any fatal subprocess failure is raised to the caller.
+
+    When diarization is requested and the server ASR lane is in use, per-word
+    timestamps are requested so speakers are assigned per word and utterances
+    re-derived at speaker/pause boundaries (ADR-0045); otherwise the coarser
+    segment-level overlap assignment runs.
     """
+    want_words = diarize_requested() and AUDIO_MODEL == AUDIO_ASR_SERVER_SENTINEL
     segments = transcribe_audio(
-        audio_path, clean_path, warnings=warnings, on_line=on_line, heartbeat=heartbeat
+        audio_path,
+        clean_path,
+        warnings=warnings,
+        on_line=on_line,
+        heartbeat=heartbeat,
+        return_words=want_words,
     )
     if not segments:
         return segments
@@ -737,9 +929,22 @@ def _transcribe(
             on_line("diarizing …\n")
         try:
             turns = diarize(str(clean_path.resolve()), **diarize_bounds())
-            assign_speakers(segments, turns)
+            turns = _ensure_speaker_count(turns, warnings)
+            if want_words:
+                assign_speakers_by_words(segments, turns)
+                segments = words_to_utterances(segments)
+            else:
+                assign_speakers(segments, turns)
         except Exception as exc:  # noqa: BLE001 - degrade to unlabelled transcript
             warnings.append(f"Diarization failed: {exc}; keeping unlabelled transcript")
+
+    if AUDIO_COVERAGE_ENABLED:
+        _run_coverage_check(clean_path, segments, warnings, on_line)
+
+    if AUDIO_GUIDE_ENABLED and AUDIO_GUIDE_PATH:
+        _apply_guide(segments, warnings, on_line)
+
+    _apply_edit(segments, warnings, on_line)
 
     for seg in segments:
         record_segment(
@@ -751,6 +956,122 @@ def _transcribe(
             model=AUDIO_MODEL,
         )
     return segments
+
+
+def _ensure_speaker_count(turns: list[dict], warnings: list[str]) -> list[dict]:
+    """Split a collapsed single-cluster diarization back into ``min_speakers``.
+
+    pyannote can return fewer clusters than requested (22-sep collapsed to one
+    despite ``min=max=2``). When that happens we warn, split the cluster at its
+    turn/pause boundaries into ``min_speakers`` alternating labels, and return
+    the corrected turns. A healthy result (enough distinct labels) passes through
+    unchanged.
+    """
+    bounds = diarize_bounds()
+    min_speakers = bounds.get("min_speakers")
+    if min_speakers is None or not turns:
+        return turns
+    distinct = {turn.get("speaker") for turn in turns}
+    if len(distinct) >= min_speakers:
+        return turns
+    warnings.append(
+        f"Diarization found {len(distinct)} speaker(s), fewer than the requested "
+        f"{min_speakers}; splitting the cluster by pause"
+    )
+    turns = sorted(turns, key=lambda t: t["start"])
+    while len(turns) < min_speakers:
+        longest = max(turns, key=lambda t: t["end"] - t["start"])
+        mid = (longest["start"] + longest["end"]) / 2.0
+        turns.remove(longest)
+        turns.append({"start": longest["start"], "end": mid, "speaker": longest["speaker"]})
+        turns.append({"start": mid, "end": longest["end"], "speaker": longest["speaker"]})
+        turns.sort(key=lambda t: t["start"])
+    for i, turn in enumerate(turns):
+        turn["speaker"] = f"SPEAKER_{i % min_speakers:02d}"
+    return turns
+
+
+def _run_coverage_check(
+    clean_path: Path,
+    segments: list[dict],
+    warnings: list[str],
+    on_line: Callable[[str], None] | None,
+) -> None:
+    """VAD-gate the transcript: warn about low-coverage speech, optionally re-decode.
+
+    Runs a VAD round-trip (``converter.audio.vad``), diffs speech regions against
+    ASR segment coverage, and warns for any speech span with too few words. When
+    ``AUDIO_FALLBACK_REDECODE`` is on, those windows are re-decoded with beam
+    search and their segments spliced (in place) into ``segments``. Never raises;
+    any failure only warns.
+    """
+    if on_line is not None:
+        on_line("checking coverage …\n")
+    try:
+        regions = vad(str(clean_path.resolve()))
+        gaps = detect_low_coverage(segments, regions)
+    except Exception as exc:  # noqa: BLE001 - coverage is best-effort
+        warnings.append(f"Coverage check failed: {exc}")
+        return
+    for gap in gaps:
+        warnings.append(
+            f"Low ASR coverage {gap['start']:.1f}-{gap['end']:.1f}s "
+            f"({gap['covered_fraction']:.0%} covered)"
+        )
+    if gaps and AUDIO_FALLBACK_REDECODE:
+        extra = redecode_windows(clean_path, gaps, warnings=warnings, on_line=on_line)
+        if extra:
+            segments.extend(extra)
+            segments.sort(key=lambda s: s["start"])
+
+
+def _apply_guide(
+    segments: list[dict],
+    warnings: list[str],
+    on_line: Callable[[str], None] | None,
+) -> None:
+    """Re-attribute segments by the interview guide (opt-in, in place via rebind).
+
+    Loads the guide at ``AUDIO_GUIDE_PATH``, aligns its questions to the
+    transcript, and replaces ``segments``' contents with the interviewer/
+    participant re-attributed list (missing questions inserted). Any failure only
+    warns and leaves the transcript unchanged.
+    """
+    try:
+        from converter.guide import load_guide, apply_guide
+
+        questions = load_guide(AUDIO_GUIDE_PATH)
+        if not questions:
+            return
+        if on_line is not None:
+            on_line("aligning interview guide …\n")
+        re_attributed = apply_guide(segments, questions)
+        segments[:] = re_attributed
+    except Exception as exc:  # noqa: BLE001 - guide pass degrades to unlabelled
+        warnings.append(f"Guide alignment failed: {exc}; keeping diarized labels")
+
+
+def _apply_edit(
+    segments: list[dict],
+    warnings: list[str],
+    on_line: Callable[[str], None] | None,
+) -> None:
+    """Apply the opt-in LLM transcript edit (word-preserving, in place via rebind).
+
+    No-op unless ``TRANSCRIPT_EDIT_ENABLED`` is set (the pass is gated off by
+    default because the local text model is weak at Norwegian). Any failure only
+    warns and leaves the transcript verbatim.
+    """
+    try:
+        from converter.transcript_edit import TRANSCRIPT_EDIT_ENABLED, edit_transcript
+
+        if not TRANSCRIPT_EDIT_ENABLED:
+            return
+        if on_line is not None:
+            on_line("editing transcript …\n")
+        segments[:] = edit_transcript(segments)
+    except Exception as exc:  # noqa: BLE001 - edit degrades to verbatim
+        warnings.append(f"Transcript edit failed: {exc}; keeping verbatim")
 
 
 def attach_transcript(

@@ -1,19 +1,15 @@
 package main
 
-// The Bubble Tea model: file picking (`@` fuzzy), conversion progress, and
-// settings (ADR-0040). The model owns no conversion logic — it drives ptm-engine.
+// The Bubble Tea model: file picking (`@` fuzzy), conversion/transcription
+// progress as a compact jobs strip on the picker, and settings (ADR-0040/0045).
+// The model owns no conversion logic — it drives ptm-engine, whose hosted
+// transcription streams the same structured WS frames as conversion.
 
 import (
-	"bufio"
 	"context"
 	"fmt"
-	"io"
-	"os/exec"
 	"path/filepath"
-	"regexp"
-	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -24,7 +20,6 @@ type screen int
 
 const (
 	screenPick screen = iota
-	screenRun
 	screenSettings
 )
 
@@ -37,6 +32,20 @@ var (
 	hintStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
 	errStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("9"))
 )
+
+// jobView is one entry in the compact jobs strip (running first, then done/failed).
+type jobView struct {
+	kind      string // "convert" | "transcribe"
+	status    string // "running" | "done" | "error"
+	name      string
+	idx       int
+	total     int
+	page      int
+	pageTotal int
+	phase     string
+	ok        int
+	err       string
+}
 
 type model struct {
 	client  *Client
@@ -56,24 +65,13 @@ type model struct {
 	filter    string
 	loadErr   error
 
-	// running
-	eventsCh      <-chan JobEvent
-	transEventsCh chan tea.Msg
-	runPhase      string // "convert" | "transcribe"
-	audioPending  []string
-	transcribing  bool
-	transcribeBin string
-	transcribeCmd *exec.Cmd
-	transOk       int
-	transTotal    int
-	transFailed   bool
-	curFile       string
-	curIdx        int
-	curTotal      int
-	curPage       int
-	curPageTot    int
-	logs          []string
-	done          *JobEvent
+	// running jobs (engine-hosted)
+	eventsCh     <-chan JobEvent
+	audioPending []string
+	jobs         []jobView
+	logs         []string
+	done         *JobEvent
+	showLog      bool
 
 	// settings
 	cfg            Config
@@ -93,12 +91,11 @@ type model struct {
 
 func newModel(client *Client, cwd string, spawned bool) *model {
 	return &model{
-		client:        client,
-		cwd:           cwd,
-		spawned:       spawned,
-		screen:        screenPick,
-		selected:      map[int]bool{},
-		transcribeBin: TranscribeBin(),
+		client:   client,
+		cwd:      cwd,
+		spawned:  spawned,
+		screen:   screenPick,
+		selected: map[int]bool{},
 	}
 }
 
@@ -115,20 +112,15 @@ type cfgMsg struct {
 	err error
 }
 
-type transLineMsg struct {
-	line string
-}
-
-type transDoneMsg struct {
-	err error
-}
-
 type jobClosedMsg struct{}
 
-var transDoneRe = regexp.MustCompile(`Done: (\d+) of (\d+) transcribed\.`)
+type statusMsg struct {
+	status Status
+	err    error
+}
 
 func (m *model) Init() tea.Cmd {
-	return m.loadFiles()
+	return tea.Batch(m.loadFiles(), m.statusTick())
 }
 
 func (m *model) loadFiles() tea.Cmd {
@@ -155,6 +147,21 @@ func (m *model) fetchConfig() tea.Cmd {
 	}
 }
 
+func (m *model) fetchStatus() tea.Msg {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	s, err := m.client.Status(ctx)
+	return statusMsg{s, err}
+}
+
+// statusTick re-arms the /api/status poll once per second, so externally-started
+// jobs show up on the picker without the TUI owning their socket (ADR-0045).
+func (m *model) statusTick() tea.Cmd {
+	return tea.Tick(time.Second, func(time.Time) tea.Msg {
+		return m.fetchStatus()
+	})
+}
+
 func waitEvent(ch <-chan JobEvent) tea.Cmd {
 	return func() tea.Msg {
 		ev, ok := <-ch
@@ -165,16 +172,6 @@ func waitEvent(ch <-chan JobEvent) tea.Cmd {
 	}
 }
 
-func waitTransMsg(ch <-chan tea.Msg) tea.Cmd {
-	return func() tea.Msg {
-		msg, ok := <-ch
-		if !ok {
-			return transDoneMsg{}
-		}
-		return msg
-	}
-}
-
 // --- update ------------------------------------------------------------------
 
 func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -182,6 +179,10 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 		return m, nil
+
+	case statusMsg:
+		m.mergeExternalJob(msg)
+		return m, m.statusTick()
 
 	case globMsg:
 		if msg.err != nil {
@@ -206,39 +207,12 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case JobEvent:
 		return m.onJobEvent(msg)
 
-	case transLineMsg:
-		if m.screen == screenRun && m.transcribing {
-			m.logs = append(m.logs, msg.line)
-			if mm := transDoneRe.FindStringSubmatch(msg.line); mm != nil {
-				m.transOk, _ = strconv.Atoi(mm[1])
-				m.transTotal, _ = strconv.Atoi(mm[2])
-			}
-		}
-		return m, waitTransMsg(m.transEventsCh)
-
-	case transDoneMsg:
-		m.transcribing = false
-		m.audioPending = nil
-		m.transcribeCmd = nil
-		if msg.err != nil {
-			m.transFailed = true
-			m.logs = append(m.logs, "transcription failed: "+msg.err.Error())
-		}
-		m.screen = screenPick
-		return m, nil
-
 	case jobClosedMsg:
-		if m.screen == screenRun && !m.transcribing {
-			m.screen = screenPick
-		}
 		return m, nil
 
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "ctrl+c":
-			if m.transcribeCmd != nil && m.transcribeCmd.Process != nil {
-				_ = m.transcribeCmd.Process.Kill()
-			}
 			return m, tea.Quit
 		case "q":
 			if m.screen == screenPick && !m.filtering {
@@ -248,8 +222,6 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch m.screen {
 		case screenPick:
 			return m.updatePick(msg)
-		case screenRun:
-			return m, nil // ignore keys while running
 		case screenSettings:
 			return m.updateSettings(msg)
 		}
@@ -285,6 +257,8 @@ func (m *model) updatePick(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.filtering = true
 		m.filter = ""
 		m.refilter()
+	case "l":
+		m.showLog = !m.showLog
 	case "up", "k":
 		if m.cursor > 0 {
 			m.cursor--
@@ -325,29 +299,28 @@ func (m *model) toggleSelect() {
 func (m *model) startJob() tea.Cmd {
 	convertPaths, audioPaths := partitionSelected(m.files, m.kinds, m.selected)
 
-	m.screen = screenRun
-	m.runPhase = "convert"
-	m.audioPending = audioPaths
-	m.transcribeCmd = nil
-	m.transcribing = false
-	m.transOk, m.transTotal, m.transFailed = 0, 0, false
-	m.curFile, m.curIdx, m.curTotal = "", 0, len(convertPaths)
-	m.curPage, m.curPageTot = 0, 0
-	m.logs = nil
+	m.jobs = nil
 	m.done = nil
+	m.showLog = false
+	m.audioPending = audioPaths
 
-	if len(convertPaths) == 0 {
-		// audio-only selection: skip the engine, go straight to transcription
-		m.runPhase = "transcribe"
-		m.curTotal = len(audioPaths)
-		return m.startTranscription()
+	if len(convertPaths) > 0 {
+		m.jobs = append(m.jobs, jobView{kind: "convert", status: "running", total: len(convertPaths)})
+		return m.runConvert(convertPaths)
 	}
+	if len(audioPaths) > 0 {
+		m.jobs = append(m.jobs, jobView{kind: "transcribe", status: "running", total: len(audioPaths)})
+		return m.runTranscribe(audioPaths)
+	}
+	return nil
+}
 
+func (m *model) runConvert(paths []string) tea.Cmd {
 	ch := make(chan JobEvent, 32)
 	m.eventsCh = ch
 	go func() {
 		defer close(ch)
-		if err := m.client.RunJob(context.Background(), convertPaths, m.outputDir, m.duplicate, func(ev JobEvent) {
+		if err := m.client.RunJob(context.Background(), paths, m.outputDir, m.duplicate, func(ev JobEvent) {
 			ch <- ev
 		}); err != nil {
 			ch <- JobEvent{Type: "error", Message: err.Error()}
@@ -356,85 +329,102 @@ func (m *model) startJob() tea.Cmd {
 	return waitEvent(ch)
 }
 
-// startTranscription spawns ptm-transcribe for every pending audio file and
-// streams its stdout/stderr lines into the log pane. stdin is the null device
-// so ptm-transcribe's interactive lecture picker (sys.stdin.isatty()) degrades
-// to a standalone transcript instead of blocking the TUI.
-func (m *model) startTranscription() tea.Cmd {
-	m.transcribing = true
-	cmd := exec.Command(
-		m.transcribeBin,
-		buildTranscribeArgs(
-			m.audioPending,
-			m.cfg.AudioDiarize,
-			m.cfg.AudioSpeakers,
-			m.cfg.AudioModel,
-			m.cfg.AudioLanguage,
-		)...,
-	)
-	cmd.Stdin = nil
-	m.transcribeCmd = cmd
-
-	ch := make(chan tea.Msg, 64)
-	m.transEventsCh = ch
+// runTranscribe starts an engine-hosted transcription (ADR-0045) rather than
+// spawning ptm-transcribe; progress arrives as the same structured WS frames.
+func (m *model) runTranscribe(paths []string) tea.Cmd {
+	ch := make(chan JobEvent, 32)
+	m.eventsCh = ch
+	opts := map[string]any{
+		"model":    m.cfg.AudioModel,
+		"language": m.cfg.AudioLanguage,
+		"diarize":  m.cfg.AudioDiarize,
+		"speakers": m.cfg.AudioSpeakers,
+	}
 	go func() {
 		defer close(ch)
-		stdout, err1 := cmd.StdoutPipe()
-		stderr, err2 := cmd.StderrPipe()
-		if err1 != nil || err2 != nil {
-			ch <- transDoneMsg{fmt.Errorf("cannot stream ptm-transcribe output")}
-			return
+		if err := m.client.RunTranscribeJob(context.Background(), paths, opts, func(ev JobEvent) {
+			ch <- ev
+		}); err != nil {
+			ch <- JobEvent{Type: "error", Message: err.Error()}
 		}
-		if err := cmd.Start(); err != nil {
-			ch <- transDoneMsg{fmt.Errorf("ptm-transcribe failed to start: %w", err)}
-			return
-		}
-		var wg sync.WaitGroup
-		wg.Add(2)
-		scan := func(r io.Reader) {
-			defer wg.Done()
-			sc := bufio.NewScanner(r)
-			sc.Buffer(make([]byte, 64*1024), 1024*1024)
-			for sc.Scan() {
-				ch <- transLineMsg{sc.Text()}
-			}
-		}
-		go scan(stdout)
-		go scan(stderr)
-		wg.Wait()
-		ch <- transDoneMsg{cmd.Wait()}
 	}()
-	return waitTransMsg(ch)
+	return waitEvent(ch)
 }
 
 func (m *model) onJobEvent(ev JobEvent) (tea.Model, tea.Cmd) {
-	if m.screen != screenRun {
-		return m, nil
-	}
 	switch ev.Type {
 	case "file":
-		m.curFile = ev.Name
-		m.curIdx = ev.Idx
-		m.curTotal = ev.Total
+		m.updateJob(func(j *jobView) { j.name = ev.Name; j.idx = ev.Idx; j.total = ev.Total })
 	case "page":
-		m.curPage = ev.Page
-		m.curPageTot = ev.Total
+		m.updateJob(func(j *jobView) { j.page = ev.Page; j.pageTotal = ev.Total })
+	case "phase":
+		m.updateJob(func(j *jobView) { j.phase = ev.Phase })
 	case "log":
 		m.logs = append(m.logs, fmt.Sprintf("[%s] %s", ev.Kind, ev.Message))
 	case "done", "error":
-		m.done = &ev
-		if len(m.audioPending) > 0 {
-			// chained dispatch: conversion done (or failed) -> transcribe audio
-			m.runPhase = "transcribe"
-			m.curFile = ""
-			m.curPage, m.curPageTot = 0, 0
-			m.curTotal = len(m.audioPending)
-			return m, m.startTranscription()
+		m.finishJob(ev)
+		if ev.Type == "done" && len(m.audioPending) > 0 {
+			pending := m.audioPending
+			m.audioPending = nil
+			m.jobs = append(m.jobs, jobView{kind: "transcribe", status: "running", total: len(pending)})
+			return m, m.runTranscribe(pending)
 		}
-		m.screen = screenPick
 		return m, nil
 	}
 	return m, waitEvent(m.eventsCh)
+}
+
+func (m *model) updateJob(fn func(*jobView)) {
+	for i := len(m.jobs) - 1; i >= 0; i-- {
+		if m.jobs[i].status == "running" {
+			fn(&m.jobs[i])
+			return
+		}
+	}
+}
+
+func (m *model) finishJob(ev JobEvent) {
+	for i := len(m.jobs) - 1; i >= 0; i-- {
+		if m.jobs[i].status == "running" {
+			if ev.Type == "error" {
+				m.jobs[i].status = "error"
+				if ev.Error != "" {
+					m.jobs[i].err = ev.Error
+				} else {
+					m.jobs[i].err = ev.Message
+				}
+			} else {
+				m.jobs[i].status = "done"
+				m.jobs[i].ok = ev.Ok
+			}
+			m.done = &ev
+			return
+		}
+	}
+}
+
+// mergeExternalJob surfaces an externally-started job found via /api/status,
+// but only when the WS is not already the live source of progress.
+func (m *model) mergeExternalJob(msg statusMsg) {
+	if msg.err != nil || msg.status.CurrentJob == nil {
+		return
+	}
+	for _, existing := range m.jobs {
+		if existing.status == "running" {
+			return
+		}
+	}
+	j := msg.status.CurrentJob
+	m.jobs = append(m.jobs, jobView{
+		kind:      j.Kind,
+		status:    j.Status,
+		name:      lastName(j.Paths),
+		idx:       j.Idx,
+		total:     j.Total,
+		page:      j.Page,
+		pageTotal: j.PageTotal,
+		phase:     j.Phase,
+	})
 }
 
 func (m *model) refilter() {
@@ -458,8 +448,6 @@ func (m *model) refilter() {
 
 func (m *model) View() string {
 	switch m.screen {
-	case screenRun:
-		return runView(m)
 	case screenSettings:
 		return settingsView(m)
 	default:
@@ -467,17 +455,68 @@ func (m *model) View() string {
 	}
 }
 
+func jobsStrip(m *model) string {
+	if len(m.jobs) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	for _, j := range m.jobs {
+		glyph := "●"
+		if j.status == "done" {
+			glyph = "✓"
+		} else if j.status == "error" {
+			glyph = "✗"
+		}
+		line := fmt.Sprintf("%s %s", glyph, j.kind)
+		if j.name != "" {
+			line += "  " + filepath.Base(j.name)
+		}
+		if j.total > 0 {
+			line += fmt.Sprintf("  %d/%d", j.idx, j.total)
+		}
+		if j.kind == "convert" && j.pageTotal > 0 {
+			line += fmt.Sprintf("  page %d/%d", j.page, j.pageTotal)
+		}
+		if j.kind == "transcribe" && j.phase != "" {
+			line += fmt.Sprintf("  phase: %s", j.phase)
+		}
+		if j.status == "error" && j.err != "" {
+			line += "  " + j.err
+		}
+		b.WriteString(line)
+		b.WriteString("\n")
+	}
+	return b.String()
+}
+
 func pickView(m *model) string {
 	var b strings.Builder
 	b.WriteString(headerStyle.Render("ptm-tui"))
 	b.WriteString("\n")
 	b.WriteString(subtleStyle.Render(m.cwd))
-	b.WriteString("\n\n")
+	b.WriteString("\n")
+
+	if strip := jobsStrip(m); strip != "" {
+		b.WriteString("\n")
+		b.WriteString(strip)
+	}
+
+	if m.showLog {
+		b.WriteString("\n")
+		for _, line := range tail(m.logs, 12) {
+			b.WriteString(subtleStyle.Render("  " + line))
+			b.WriteString("\n")
+		}
+		b.WriteString("\n")
+	}
 
 	if m.loadErr != nil {
+		b.WriteString("\n")
 		b.WriteString(errStyle.Render("discovery failed: " + m.loadErr.Error()))
-		b.WriteString("\n\n")
+		b.WriteString("\n")
 	}
+
+	b.WriteString("\n")
 
 	if m.filtering {
 		b.WriteString(promptStyle.Render("@") + m.filter + cursorStyle.Render("▌"))
@@ -505,49 +544,15 @@ func pickView(m *model) string {
 	}
 
 	b.WriteString("\n")
-	b.WriteString(hintStyle.Render("↑/↓ move · space select · @ filter · enter convert/transcribe · s settings · q quit"))
+	b.WriteString(hintStyle.Render("↑/↓ move · space select · @ filter · enter convert/transcribe · l log · s settings · q quit"))
 
 	if m.done != nil {
 		b.WriteString("\n")
 		if m.done.Type == "error" {
 			b.WriteString(errStyle.Render(fmt.Sprintf("error: %s", m.done.Message)))
 		} else {
-			b.WriteString(fmt.Sprintf("%d/%d converted", m.done.Ok, m.done.Total))
+			b.WriteString(fmt.Sprintf("%d/%d done", m.done.Ok, m.done.Total))
 		}
-	}
-	if m.transOk > 0 || m.transFailed {
-		b.WriteString("\n")
-		if m.transFailed {
-			b.WriteString(errStyle.Render("transcription failed"))
-		} else {
-			b.WriteString(fmt.Sprintf("%d/%d transcribed", m.transOk, m.transTotal))
-		}
-	}
-	return b.String()
-}
-
-func runView(m *model) string {
-	var b strings.Builder
-	title := "converting"
-	if m.runPhase == "transcribe" {
-		title = "transcribing"
-	}
-	b.WriteString(headerStyle.Render(title))
-	b.WriteString("\n\n")
-	if m.runPhase == "transcribe" {
-		b.WriteString(fmt.Sprintf("  transcribing %d audio file(s)", m.curTotal))
-		b.WriteString("\n")
-	} else if m.curFile != "" {
-		b.WriteString(fmt.Sprintf("  [%d/%d] %s", m.curIdx, m.curTotal, m.curFile))
-		b.WriteString("\n")
-	}
-	if m.curPageTot > 0 {
-		b.WriteString(fmt.Sprintf("  page %d/%d", m.curPage, m.curPageTot))
-		b.WriteString("\n")
-	}
-	for _, line := range tail(m.logs, 12) {
-		b.WriteString("  " + subtleStyle.Render(line))
-		b.WriteString("\n")
 	}
 	return b.String()
 }
@@ -557,6 +562,13 @@ func tail(lines []string, n int) []string {
 		return lines
 	}
 	return lines[len(lines)-n:]
+}
+
+func lastName(paths []string) string {
+	if len(paths) == 0 {
+		return ""
+	}
+	return filepath.Base(paths[len(paths)-1])
 }
 
 func relPaths(cwd string, abs []string) []string {

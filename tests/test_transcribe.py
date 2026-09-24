@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from converter import transcribe as t
-from converter.audio import assign_speakers
+from converter.audio import assign_speakers, assign_speakers_by_words
 
 
 def test_format_timestamp():
@@ -184,6 +184,7 @@ def test_assign_speakers():
         {"start": 0.0, "end": 10.0, "text": "a"},
         {"start": 10.0, "end": 20.0, "text": "b"},
         {"start": 20.0, "end": 30.0, "text": "c"},
+        {"start": 40.0, "end": 50.0, "text": "d"},
     ]
     turns = [
         {"start": 0.0, "end": 9.0, "speaker": "S1"},
@@ -192,7 +193,130 @@ def test_assign_speakers():
     assign_speakers(segs, turns)
     assert segs[0]["speaker"] == "S1"
     assert segs[1]["speaker"] == "S2"
-    assert segs[2]["speaker"] is None
+    # 20-30 is majority-covered by S2 (20-25), unlike the old midpoint rule.
+    assert segs[2]["speaker"] == "S2"
+    assert segs[3]["speaker"] is None
+
+
+def test_assign_speakers_by_words():
+    words = [
+        {"start": 0.0, "end": 0.5, "text": "one"},
+        {"start": 0.5, "end": 1.0, "text": "two"},
+        {"start": 1.0, "end": 1.5, "text": "three"},
+    ]
+    turns = [
+        {"start": 0.0, "end": 1.0, "speaker": "S1"},
+        {"start": 1.0, "end": 2.0, "speaker": "S2"},
+    ]
+    assign_speakers_by_words(words, turns)
+    assert [w["speaker"] for w in words] == ["S1", "S1", "S2"]
+
+
+def test_words_to_utterances_splits_speaker_and_pause():
+    words = [
+        {"start": 0.0, "end": 0.5, "text": "hei", "speaker": "S1"},
+        {"start": 0.5, "end": 1.0, "text": "der", "speaker": "S1"},
+        {"start": 2.0, "end": 2.5, "text": "ja", "speaker": "S1"},
+        {"start": 2.5, "end": 3.0, "text": "nei", "speaker": "S2"},
+    ]
+    utterances = t.words_to_utterances(words)
+    # 0-1 (S1), then a >0.7 s pause splits 2.0, then S2 change at 2.5.
+    assert [u["speaker"] for u in utterances] == ["S1", "S1", "S2"]
+    assert utterances[0]["text"] == "hei der"
+    assert utterances[1]["text"] == "ja"
+    assert utterances[2]["text"] == "nei"
+
+
+def test_merge_utterances_pause_split():
+    segs = [
+        {"start": 0.0, "end": 2.0, "text": "one", "speaker": "S1"},
+        {"start": 4.0, "end": 6.0, "text": "two", "speaker": "S1"},
+    ]
+    out = t.merge_utterances(segs)
+    assert len(out) == 2  # 2 s pause splits even same-speaker segments
+
+
+def test_ensure_speaker_count_splits_single_cluster(monkeypatch):
+    monkeypatch.setattr(t, "diarize_bounds", lambda: {"min_speakers": 2})
+    turns = [{"start": 0.0, "end": 100.0, "speaker": "SPEAKER_00"}]
+    warnings: list[str] = []
+    out = t._ensure_speaker_count(turns, warnings)
+    assert any("fewer than" in w for w in warnings)
+    labels = sorted({turn["speaker"] for turn in out})
+    assert labels == ["SPEAKER_00", "SPEAKER_01"]
+
+
+def test_ensure_speaker_count_passes_through_healthy(monkeypatch):
+    monkeypatch.setattr(t, "diarize_bounds", lambda: {"min_speakers": 2})
+    turns = [
+        {"start": 0.0, "end": 5.0, "speaker": "SPEAKER_00"},
+        {"start": 5.0, "end": 10.0, "speaker": "SPEAKER_01"},
+    ]
+    warnings: list[str] = []
+    out = t._ensure_speaker_count(turns, warnings)
+    assert warnings == []
+    assert out == turns
+
+
+def test_detect_low_coverage():
+    segments = [
+        {"start": 0.0, "end": 10.0},
+        {"start": 20.0, "end": 22.0},
+    ]
+    vad_regions = [
+        {"start": 0.0, "end": 10.0},
+        {"start": 20.0, "end": 22.0},
+        {"start": 40.0, "end": 50.0},
+    ]
+    gaps = t.detect_low_coverage(segments, vad_regions)
+    assert len(gaps) == 1
+    assert gaps[0]["start"] == 40.0 and gaps[0]["end"] == 50.0
+    assert gaps[0]["covered_fraction"] == 0.0
+
+
+def test_redecode_windows_shifts_timestamps(monkeypatch, tmp_path):
+    clean = tmp_path / "x.clean.flac"
+    clean.write_bytes(b"clean")
+    monkeypatch.setattr(t, "_run", lambda cmd, timeout=3600.0: None)
+    monkeypatch.setattr(
+        t,
+        "asr",
+        lambda path, language="no", num_beams=None, **kw: [
+            {"start": 0.0, "end": 1.0, "text": "hello"}
+        ],
+    )
+    out = t.redecode_windows(clean, [{"start": 100.0, "end": 101.0}])
+    assert out == [{"start": 100.0, "end": 101.0, "text": "hello"}]
+
+
+def test_run_coverage_check_warns_and_fills(monkeypatch, tmp_path):
+    clean = tmp_path / "x.clean.flac"
+    monkeypatch.setattr(t, "vad", lambda path: [{"start": 0.0, "end": 5.0}])
+    monkeypatch.setattr(t, "AUDIO_FALLBACK_REDECODE", True)
+    monkeypatch.setattr(t, "_run", lambda cmd, timeout=3600.0: None)
+    monkeypatch.setattr(
+        t,
+        "asr",
+        lambda path, language="no", num_beams=None, **kw: [
+            {"start": 0.0, "end": 1.0, "text": "filled"}
+        ],
+    )
+    segments = [{"start": 0.0, "end": 0.5, "text": "partial"}]
+    warnings: list[str] = []
+    t._run_coverage_check(clean, segments, warnings, None)
+    assert any("Low ASR coverage" in w for w in warnings)
+    assert any(s["text"] == "filled" for s in segments)
+
+
+def test_run_coverage_check_degrades_when_vad_fails(monkeypatch, tmp_path):
+    clean = tmp_path / "x.clean.flac"
+    monkeypatch.setattr(
+        t, "vad", lambda path: (_ for _ in ()).throw(RuntimeError("down"))
+    )
+    segments = [{"start": 0.0, "end": 1.0, "text": "x"}]
+    warnings: list[str] = []
+    t._run_coverage_check(clean, segments, warnings, None)
+    assert any("Coverage check failed" in w for w in warnings)
 
 
 def test_find_audio_for(tmp_path):

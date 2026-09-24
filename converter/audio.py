@@ -218,15 +218,24 @@ def asr(
     base_url: str | None = None,
     api_key: str | None = None,
     timeout: float = _ASR_TIMEOUT,
+    return_words: bool = False,
+    num_beams: int | None = None,
 ) -> list[dict]:
     """Transcribe ``audio_path`` via the server's NB-Whisper ASR (ADR-0044).
 
-    Returns ``[{start, end, text}, ...]`` segments. Raises on any network/HTTP
-    error so callers can degrade to the mlx-whisper fallback.
+    Returns ``[{start, end, text}, ...]`` segments. With ``return_words`` the
+    server returns per-word timestamps instead of grouped utterances (ADR-0045),
+    which the caller re-segments by speaker/pause. ``num_beams`` overrides the
+    server's default beam width for a quality re-decode. Raises on any
+    network/HTTP error so callers can degrade to the mlx-whisper fallback.
     """
     payload: dict = {"path": str(audio_path)}
     if language:
         payload["language"] = language
+    if return_words:
+        payload["return_words"] = True
+    if num_beams is not None:
+        payload["num_beams"] = int(num_beams)
     url = (base_url or AUDIO_DIARIZE_BASE_URL).rstrip("/") + "/asr"
     data = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
@@ -240,6 +249,34 @@ def asr(
     return [
         {"start": float(s["start"]), "end": float(s["end"]), "text": s["text"]}
         for s in segs
+    ]
+
+
+def vad(
+    audio_path: str,
+    base_url: str | None = None,
+    api_key: str | None = None,
+    timeout: float = _ASR_TIMEOUT,
+) -> list[dict]:
+    """Return VAD speech regions as ``[{start, end}, ...]`` (ADR-0045).
+
+    Used by the coverage detector to find speech spans the ASR produced no words
+    for. Raises on any network/HTTP error so callers can degrade to "no coverage
+    report".
+    """
+    payload: dict = {"path": str(audio_path)}
+    url = (base_url or AUDIO_DIARIZE_BASE_URL).rstrip("/") + "/vad"
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        url, data=data, headers={"Content-Type": "application/json"}
+    )
+    key = api_key or AUDIO_DIARIZE_API_KEY
+    if key:
+        req.add_header("Authorization", f"Bearer {key}")
+    body = _post_json(req, timeout, "VAD")
+    regions = body if isinstance(body, list) else body.get("regions", [])
+    return [
+        {"start": float(r["start"]), "end": float(r["end"])} for r in regions
     ]
 
 
@@ -311,18 +348,47 @@ def _post_audio(
         raise RuntimeError(body.get("error") or f"{what} failed")
 
 
+def _overlap(a: tuple[float, float], b: tuple[float, float]) -> float:
+    """Seconds of temporal overlap between two ``[start, end)`` intervals."""
+    return max(0.0, min(a[1], b[1]) - max(a[0], b[0]))
+
+
 def assign_speakers(segments: list[dict], turns: list[dict]) -> list[dict]:
-    """Label each segment with the speaker active at its midpoint.
+    """Label each segment with the speaker occupying most of its span.
 
     ``segments`` and ``turns`` are both ``[{start, end, ...}]`` dicts; the
-    segment's ``speaker`` key is set in place and the list is returned. Segments
-    with no overlapping turn keep ``speaker = None``.
+    segment's ``speaker`` key is set in place and the list is returned. Each
+    segment is assigned by **temporal-overlap majority** rather than its
+    midpoint, so a segment straddling a speaker change takes the label of the
+    speaker who actually held the floor for most of it (and a segment with no
+    overlapping turn keeps ``speaker = None``).
     """
     for seg in segments:
-        midpoint = (seg["start"] + seg["end"]) / 2.0
-        seg["speaker"] = None
+        best_speaker: str | None = None
+        best_overlap = 0.0
+        for turn in turns:
+            ov = _overlap((seg["start"], seg["end"]), (turn["start"], turn["end"]))
+            if ov > best_overlap:
+                best_overlap = ov
+                best_speaker = turn["speaker"]
+        seg["speaker"] = best_speaker if best_overlap > 0 else None
+    return segments
+
+
+def assign_speakers_by_words(words: list[dict], turns: list[dict]) -> list[dict]:
+    """Label each word with the speaker active at its midpoint.
+
+    ``words`` are ``[{start, end, text}]`` (the server's per-word timestamps,
+    ADR-0045); ``turns`` are ``[{start, end, speaker}]``. The word's ``speaker``
+    key is set in place and the list returned. Word timestamps are fine-grained,
+    so the containing turn is unambiguous; uncovered words keep ``speaker =
+    None``.
+    """
+    for word in words:
+        midpoint = (word["start"] + word["end"]) / 2.0
+        word["speaker"] = None
         for turn in turns:
             if turn["start"] <= midpoint < turn["end"]:
-                seg["speaker"] = turn["speaker"]
+                word["speaker"] = turn["speaker"]
                 break
-    return segments
+    return words

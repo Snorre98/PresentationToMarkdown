@@ -644,5 +644,79 @@ def test_job_execute_uses_resolver_when_no_output_dir(isolated_db, monkeypatch, 
     assert resolver(Path(staged)) == real.parent / "markdown"
 
 
+class _RecordingWS:
+    def __init__(self):
+        self.sent: list[dict] = []
+
+    def send(self, msg):
+        import json
+
+        self.sent.append(json.loads(msg))
+
+
+def test_engine_status_endpoint(client):
+    r = client.get("/api/status").get_json()
+    assert "status" in r
+    assert "current_job" in r
+
+
+def test_map_phase():
+    import engine
+
+    assert engine._map_phase("transcribing with nb-whisper-large …") == "transcribe"
+    assert engine._map_phase("diarizing …") == "diarize"
+    assert engine._map_phase("ffmpeg: cleaning audio …") == "cleaning"
+    assert engine._map_phase("some raw stdout line") is None
+
+
+def test_transcribe_execute_streams_structured_frames(monkeypatch, tmp_path):
+    import threading
+
+    import converter.transcribe as T
+    import engine
+
+    monkeypatch.setattr(engine, "_job_running", threading.Event())
+    monkeypatch.setattr(engine, "_apply_audio_options", lambda options: None)
+    fake_lock = type("_L", (), {"held": True, "release": lambda self: None})()
+    monkeypatch.setattr("lock.acquire_transcribe_lock", lambda: fake_lock)
+
+    def fake_attach(md, warnings, audio_path=None, on_line=None, **kw):
+        if on_line is not None:
+            on_line("transcribing with nb-whisper-large …\n")
+            on_line("diarizing …\n")
+        return [{"start": 0.0, "end": 1.0, "text": "hi"}]
+
+    monkeypatch.setattr(T, "attach_transcript", fake_attach)
+    monkeypatch.setattr(
+        T, "transcribe_to_markdown", lambda p, warnings, on_line=None, **kw: None
+    )
+
+    ws = _RecordingWS()
+    engine._transcribe_execute(ws, ["/tmp/deck.md"], {"model": "nb-whisper-large"})
+
+    types = [m["type"] for m in ws.sent]
+    assert "file" in types and "done" in types
+    phases = [m["phase"] for m in ws.sent if m["type"] == "phase"]
+    assert "transcribe" in phases and "diarize" in phases
+    done = next(m for m in ws.sent if m["type"] == "done")
+    assert done["ok"] == 1 and done["total"] == 1
+
+
+def test_transcribe_execute_rejects_when_lock_held(monkeypatch):
+    import threading
+
+    import engine
+
+    monkeypatch.setattr(engine, "_job_running", threading.Event())
+    monkeypatch.setattr(engine, "_apply_audio_options", lambda options: None)
+    fake_lock = type("_L", (), {"held": False, "pid": 42})()
+    monkeypatch.setattr("lock.acquire_transcribe_lock", lambda: fake_lock)
+
+    ws = _RecordingWS()
+    engine._transcribe_execute(ws, ["/tmp/x.m4a"], None)
+
+    assert any(m["type"] == "error" for m in ws.sent)
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))

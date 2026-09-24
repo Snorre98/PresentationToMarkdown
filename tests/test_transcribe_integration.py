@@ -24,7 +24,7 @@ from pathlib import Path
 import pytest
 
 from converter import transcribe as t
-from converter.audio import asr, dereverb, diarize, enhance, isolate
+from converter.audio import asr, dereverb, diarize, enhance, isolate, vad
 
 
 def _make_tone_wav(path: Path, seconds: float = 1.0, rate: int = 16000) -> None:
@@ -103,6 +103,40 @@ def test_asr_client_against_stub(tmp_path):
         assert set(seg) == {"start", "end", "text"}
         assert seg["end"] > seg["start"]
         assert seg["text"]
+
+
+def test_asr_client_return_words_against_stub(tmp_path):
+    httpd, port, thread = _start_stub()
+    audio = tmp_path / "talk.wav"
+    _make_tone_wav(audio, seconds=3.0)
+    try:
+        words = asr(str(audio), base_url=f"http://127.0.0.1:{port}/v1", return_words=True)
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        thread.join(timeout=5)
+
+    assert isinstance(words, list) and words
+    for word in words:
+        assert set(word) == {"start", "end", "text"}
+        assert word["text"].startswith("word")  # finer than the "segment N" default
+
+
+def test_vad_client_against_stub(tmp_path):
+    httpd, port, thread = _start_stub()
+    audio = tmp_path / "talk.wav"
+    _make_tone_wav(audio, seconds=5.0)
+    try:
+        regions = vad(str(audio), base_url=f"http://127.0.0.1:{port}/v1")
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        thread.join(timeout=5)
+
+    assert isinstance(regions, list) and regions
+    for region in regions:
+        assert set(region) == {"start", "end"}
+        assert region["end"] > region["start"]
 
 
 def test_enhance_client_against_stub(tmp_path):
