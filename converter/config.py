@@ -8,9 +8,9 @@ state at import time, but the GUI can now flip the same state with checkboxes �
 no restart required.
 
 It also owns non-AI *output* preferences that share the same runtime-toggle
-contract (``IMAGE_LINKS``, ADR-0047): those are read lazily at conversion time
-so a GUI/engine flip takes effect on the next conversion, mirroring the lazy
-``PDF_MODE`` read.
+contract (``IMAGE_LINKS``, ADR-0047; ``PDF_COMPRESS``, ADR-0049): those are read
+lazily at conversion time so a GUI/engine flip takes effect on the next
+conversion, mirroring the lazy ``PDF_MODE`` read.
 
 The AI modules consult :func:`is_enabled` at call time instead of reading a
 module-level ``*_ENABLED`` constant, so a toggle takes effect on the next
@@ -232,6 +232,17 @@ def image_links_enabled() -> bool:
     emitted in their place. ``IMAGE_LINKS=on`` restores the legacy behaviour.
     """
     return _env_true(os.environ.get("IMAGE_LINKS"))
+
+
+def pdf_compress_enabled() -> bool:
+    """Whether archived PDFs are compressed after the archive move (ADR-0049).
+
+    A non-AI output preference read lazily at archive time like ``IMAGE_LINKS``
+    so the GUI and engine can flip it per conversion without a restart. Default
+    **on**; ``PDF_COMPRESS=off`` disables compression. Compression itself is
+    best-effort (see ``converter.compress``).
+    """
+    return (os.environ.get("PDF_COMPRESS", "on").strip().lower() or "on") in _TRUE
 
 
 def enabled_keys() -> list[str]:
@@ -465,8 +476,9 @@ def snapshot(probe: bool = True) -> dict:
     """Return a JSON-serialisable snapshot of the runtime AI configuration (ADR-0022).
 
     Captures ``PDF_MODE``, the on/off state of every feature, each enabled pass's
-    resolved base URLs and model id, the embeddings model, the duplicate-if-exists
-    preference, and — when ``probe`` is true — the ``missing_servers()`` result.
+    resolved base URLs and model id, the embeddings model, the
+    duplicate-if-exists preference, the image-link and PDF-compression output
+    preferences, and — when ``probe`` is true — the ``missing_servers()`` result.
     Never raises; used to persist a per-run record of "what models/toggles/servers
     were in effect".
     """
@@ -490,6 +502,7 @@ def snapshot(probe: bool = True) -> dict:
     return {
         "pdf_mode": os.environ.get("PDF_MODE", "").strip().lower() or "slide",
         "image_links": image_links_enabled(),
+        "pdf_compress": pdf_compress_enabled(),
         "need_gate": os.environ.get("NEED_GATE", "on").strip().lower() or "on",
         "duplicate": _duplicate_if_exists(),
         "vault_root": _vault_root(),

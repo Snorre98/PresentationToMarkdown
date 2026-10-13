@@ -76,6 +76,11 @@ def test_image_links_maps_to_env():
     assert ai_env_vars(parse(["--image-links"])) == {"IMAGE_LINKS": "on"}
 
 
+def test_no_compress_maps_to_env():
+    assert ai_env_vars(parse([])) == {}
+    assert ai_env_vars(parse(["--no-compress"])) == {"PDF_COMPRESS": "off"}
+
+
 def test_ab_parser_builds():
     import cli_ab
 
@@ -176,6 +181,27 @@ def test_main_records_recent(monkeypatch, tmp_path, capsys):
     code = cli.main([str(PPTX), "-o", str(tmp_path)])
     assert code == 0
     assert recorded and recorded[0].endswith("test_deck.pptx")
+
+
+def test_main_default_layout_archives_source(monkeypatch, tmp_path, capsys):
+    import shutil
+
+    from converter import settings
+
+    src = tmp_path / "Deck One.pptx"
+    shutil.copy(PPTX, src)
+    recorded = []
+    monkeypatch.setattr(settings, "record_recent", lambda p: recorded.append(p))
+    code = cli.main([str(src)])
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "[OK]" in out
+    assert (tmp_path / "deck-one.md").exists()
+    assert (tmp_path / "source" / "deck-one.pptx").exists()
+    assert not src.exists()
+    # The recorded recent file is the archived source, which is where the
+    # file really lives after organizing (ADR-0048).
+    assert recorded == [str((tmp_path / "source" / "deck-one.pptx").resolve())]
 
 
 def test_main_quiet_suppresses_progress(tmp_path, capsys):

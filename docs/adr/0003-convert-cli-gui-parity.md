@@ -1,6 +1,6 @@
 # 0003. `ptm` mirrors the GUI conversion semantics
 
-- Status: Accepted
+- Status: Amended by [0048](0048-markdown-beside-source-archive.md)
 - Date: 2026-08-26
 
 ## Context

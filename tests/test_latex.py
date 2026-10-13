@@ -72,6 +72,18 @@ def test_convert_latex_project(tmp_path):
 
 
 @needs_pandoc
+def test_convert_latex_project_default_layout(tmp_path):
+    """A project folder defaults to <folder>.md beside it + source/<folder>/ (ADR-0048)."""
+    project = build_project(tmp_path)
+    result = convert_file(project)
+    assert result.error is None
+    assert result.md_path == tmp_path / "paper.md"
+    assert result.moved_to == tmp_path / "source" / "paper"
+    assert (result.moved_to / "main.tex").exists()
+    assert not project.exists()
+
+
+@needs_pandoc
 def test_convert_latex_image_links_legacy(tmp_path, monkeypatch):
     monkeypatch.setenv("IMAGE_LINKS", "on")
     project = build_project(tmp_path)

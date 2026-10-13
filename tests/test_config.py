@@ -234,6 +234,17 @@ def test_snapshot_reports_image_links(monkeypatch):
     assert config.image_links_enabled() is False
 
 
+def test_snapshot_reports_pdf_compress(monkeypatch):
+    monkeypatch.delenv("PDF_COMPRESS", raising=False)
+    assert config.pdf_compress_enabled() is True
+    assert config.snapshot(probe=False)["pdf_compress"] is True
+    monkeypatch.setenv("PDF_COMPRESS", "off")
+    assert config.pdf_compress_enabled() is False
+    assert config.snapshot(probe=False)["pdf_compress"] is False
+    monkeypatch.setenv("PDF_COMPRESS", "on")
+    assert config.pdf_compress_enabled() is True
+
+
 def test_snapshot_reports_audio_defaults(tmp_path, monkeypatch):
     from converter.db import engine as db_engine
 

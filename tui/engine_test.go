@@ -70,7 +70,8 @@ func TestConfigRoundTrip(t *testing.T) {
 		if r.Method == http.MethodGet {
 			json.NewEncoder(w).Encode(map[string]any{
 				"pdf_mode": "slide", "need_gate": "on", "duplicate": false,
-				"features": map[string]bool{"vision": true, "format": false},
+				"pdf_compress": true,
+				"features":     map[string]bool{"vision": true, "format": false},
 			})
 			return
 		}
@@ -78,6 +79,7 @@ func TestConfigRoundTrip(t *testing.T) {
 		json.NewDecoder(r.Body).Decode(&body)
 		json.NewEncoder(w).Encode(map[string]any{
 			"pdf_mode": body.PDFMode, "features": body.Features,
+			"pdf_compress": body.PDFCompress != nil && *body.PDFCompress,
 		})
 	}))
 	defer srv.Close()
@@ -87,18 +89,20 @@ func TestConfigRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.PDFMode != "slide" || cfg.Features["vision"] != true {
+	if cfg.PDFMode != "slide" || cfg.Features["vision"] != true || !cfg.PDFCompress {
 		t.Fatalf("cfg = %+v", cfg)
 	}
 
+	compressOff := false
 	updated, err := c.SetConfig(context.Background(), ConfigUpdate{
-		PDFMode:  "paper",
-		Features: map[string]bool{"vision": false},
+		PDFMode:     "paper",
+		Features:    map[string]bool{"vision": false},
+		PDFCompress: &compressOff,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if updated.PDFMode != "paper" || updated.Features["vision"] != false {
+	if updated.PDFMode != "paper" || updated.Features["vision"] != false || updated.PDFCompress {
 		t.Fatalf("updated = %+v", updated)
 	}
 }

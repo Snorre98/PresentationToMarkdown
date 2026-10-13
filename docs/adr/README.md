@@ -7,7 +7,7 @@ Index of architectural decisions for PresentationToMarkdown, in
 | --- | --- | --- |
 | [0001](0001-cli-entry-points.md) | Add `ptm` and `ptm-start` console-script entry points | Accepted |
 | [0002](0002-ai-flags-to-env.md) | Expose AI capabilities as flags mapped onto env vars | Accepted |
-| [0003](0003-convert-cli-gui-parity.md) | `ptm` mirrors the GUI conversion semantics | Accepted |
+| [0003](0003-convert-cli-gui-parity.md) | `ptm` mirrors the GUI conversion semantics | Amended by [0048](0048-markdown-beside-source-archive.md) |
 | [0004](0004-audio-transcription-pass.md) | Add an opt-in local audio-transcription post-pass | Accepted |
 | [0005](0005-asr-engine-and-model.md) | Use mlx-whisper (large-v3-turbo / large-v3) as the ASR engine | Accepted |
 | [0006](0006-diarization-isolated-server.md) | Run speaker diarization in a dedicated PyTorch server | Accepted |
@@ -32,7 +32,7 @@ Index of architectural decisions for PresentationToMarkdown, in
 | [0025](0025-web-gui-native-engine.md) | Web GUI with a native engine process | Accepted |
 | [0026](0026-sqlalchemy-orm.md) | SQLAlchemy 2.0 ORM for the ptm.sqlite log/settings/RAG store | Accepted |
 | [0027](0027-browser-file-upload.md) | Browser file upload to the native engine | Accepted |
-| [0028](0028-upload-output-location.md) | Upload output location | Accepted |
+| [0028](0028-upload-output-location.md) | Upload output location | Amended by [0048](0048-markdown-beside-source-archive.md) |
 | [0029](0029-serving-via-control-daemon.md) | Serving control via the macos-dev-config control daemon | Accepted |
 | [0035](0035-audio-on-fleet-manifest.md) | Audio server on the fleet manifest | Accepted |
 | [0036](0036-terminal-tui.md) | Terminal UI (ptm-tui) — one native terminal surface for the whole app | Superseded by [0040](0040-native-go-tui.md) |
@@ -47,3 +47,5 @@ Index of architectural decisions for PresentationToMarkdown, in
 | [0045](0045-engine-hosted-transcription.md) | Engine-hosted audio transcription and unified job progress | Proposed |
 | [0046](0046-pdf-latex-backend.md) | PDF LaTeX backend (PDF → LaTeX → Markdown) | Deprecated |
 | [0047](0047-text-only-output-image-links-opt-in.md) | Text-only Markdown by default; image links behind `IMAGE_LINKS` | Accepted |
+| [0048](0048-markdown-beside-source-archive.md) | Markdown beside the source; sources archived to `source/` under kebab-case names | Accepted |
+| [0049](0049-pdf-compression-on-archive.md) | Best-effort PDF compression when sources are archived | Accepted |

@@ -37,6 +37,9 @@ class ConvertResult:
     md_path: Path | None = None
     error: str | None = None
     warnings: list[str] = field(default_factory=list)
+    # Where the converted source was archived (ADR-0048); ``None`` when it was
+    # left in place (no organizing, already archived, or the move failed).
+    moved_to: Path | None = None
 
 
 class Converter(ABC):

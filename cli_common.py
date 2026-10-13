@@ -98,6 +98,11 @@ def add_ai_flags(parser: argparse.ArgumentParser) -> None:
         help="keep image/page links in the Markdown and extract assets "
         "(legacy; default: no image links, AI descriptions only)",
     )
+    output.add_argument(
+        "--no-compress",
+        action="store_true",
+        help="do not compress PDFs archived into each folder's source/ (default: compress)",
+    )
 
 
 def ai_env_vars(args: argparse.Namespace) -> dict[str, str]:
@@ -135,6 +140,9 @@ def ai_env_vars(args: argparse.Namespace) -> dict[str, str]:
 
     if getattr(args, "image_links", False):
         env["IMAGE_LINKS"] = "on"
+
+    if getattr(args, "no_compress", False):
+        env["PDF_COMPRESS"] = "off"
 
     for item in getattr(args, "env", None) or []:
         if "=" not in item:

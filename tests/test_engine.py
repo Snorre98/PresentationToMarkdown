@@ -640,6 +640,7 @@ def test_job_execute_uses_resolver_when_no_output_dir(isolated_db, monkeypatch, 
 
     def fake_convert(paths, output_dir, **kw):
         captured["output_dir"] = output_dir
+        captured.update(kw)
         return []
 
     monkeypatch.setattr(
@@ -657,7 +658,79 @@ def test_job_execute_uses_resolver_when_no_output_dir(isolated_db, monkeypatch, 
     engine._job_execute(_WS(), [staged], None, False)
     resolver = captured["output_dir"]
     assert callable(resolver)
-    assert resolver(Path(staged)) == real.parent / "markdown"
+    # Markdown lands beside the real on-disk file (ADR-0048) ...
+    assert resolver(Path(staged)) == real.parent
+    # ... and the resolver names the original as the file to organize.
+    source_resolver = captured["source_resolver"]
+    assert source_resolver(Path(staged)) == real
+
+
+def test_job_execute_disables_organizing_for_unknown_uploads(isolated_db, monkeypatch, tmp_path):
+    from pathlib import Path
+
+    import engine
+
+    staged = str(tmp_path / "state" / "uploads" / "deck.pdf")
+    monkeypatch.setenv("PTM_STATE_DIR", str(tmp_path / "state"))
+
+    captured = {}
+
+    def fake_convert(paths, output_dir, **kw):
+        captured["output_dir"] = output_dir
+        captured.update(kw)
+        return []
+
+    monkeypatch.setattr(
+        "engine._import_converter",
+        lambda: (frozenset(), _FakeConfig(), fake_convert),
+    )
+    import converter.settings as settings_mod
+
+    monkeypatch.setattr(settings_mod, "record_recent", lambda p: None)
+
+    class _WS:
+        def send(self, msg):
+            pass
+
+    engine._job_execute(_WS(), [staged], None, False)
+    # Unknown uploads keep the prune-safe uploads/markdown fallback and are
+    # never moved or renamed.
+    assert captured["output_dir"](Path(staged)) == Path(staged).parent / "markdown"
+    assert captured["source_resolver"](Path(staged)) is None
+
+
+def test_job_execute_organizes_browser_picked_files(isolated_db, monkeypatch, tmp_path):
+    from pathlib import Path
+
+    import engine
+
+    picked = tmp_path / "papers" / "Deck.pdf"
+    picked.parent.mkdir()
+    picked.write_bytes(b"x")
+    monkeypatch.setenv("PTM_STATE_DIR", str(tmp_path / "state"))
+
+    captured = {}
+
+    def fake_convert(paths, output_dir, **kw):
+        captured["output_dir"] = output_dir
+        captured.update(kw)
+        return []
+
+    monkeypatch.setattr(
+        "engine._import_converter",
+        lambda: (frozenset(), _FakeConfig(), fake_convert),
+    )
+    import converter.settings as settings_mod
+
+    monkeypatch.setattr(settings_mod, "record_recent", lambda p: None)
+
+    class _WS:
+        def send(self, msg):
+            pass
+
+    engine._job_execute(_WS(), [str(picked)], None, False)
+    assert captured["output_dir"](picked) == picked.parent
+    assert captured["source_resolver"](picked) == picked
 
 
 class _RecordingWS:

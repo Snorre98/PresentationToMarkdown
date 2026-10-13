@@ -2,9 +2,11 @@
 
 Converts ``.pptx``/``.pdf`` files and LaTeX projects (``.tex``, or folders,
 scanned recursively) to Markdown, mirroring the desktop GUI's semantics:
-per-file ``[OK]``/``[ERR]``/``[WARN]`` log lines, an optional output folder
-(defaulting to ``<source>/markdown``), recent-file recording, and the same
-AI-capability flags.
+per-file ``[OK]``/``[ERR]``/``[WARN]`` log lines, an optional output folder,
+recent-file recording, and the same AI-capability flags. By default each
+file's Markdown is written beside the source and the converted source is moved
+into a sibling ``source/`` folder under a kebab-case name (ADR-0048), with
+archived PDFs compressed best-effort (ADR-0049); ``--output`` opts out.
 """
 from __future__ import annotations
 
@@ -30,7 +32,8 @@ def build_parser() -> argparse.ArgumentParser:
         "-o",
         "--output",
         metavar="DIR",
-        help="write all output to DIR (default: <source>/markdown per file)",
+        help="write all output to DIR, leaving sources untouched (default: each "
+        "file's Markdown beside the source, source moved to a source/ folder)",
     )
     parser.add_argument(
         "--no-recursive",
@@ -85,7 +88,10 @@ def main(argv: list[str] | None = None) -> int:
 
     if not args.quiet:
         if output_dir is None:
-            print(f"Converting {len(files)} file(s) to <input-folder>/markdown ...")
+            print(
+                f"Converting {len(files)} file(s) beside each source "
+                f"(sources -> source/) ..."
+            )
         else:
             print(f"Converting {len(files)} file(s) to {output_dir} ...")
 
@@ -101,7 +107,7 @@ def main(argv: list[str] | None = None) -> int:
         from converter.settings import record_recent
 
         for result in results:
-            record_recent(str(result.source_path.resolve()))
+            record_recent(str((result.moved_to or result.source_path).resolve()))
 
     ok = 0
     for result in results:

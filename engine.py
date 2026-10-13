@@ -189,6 +189,15 @@ def _uploads_dir() -> Path:
     return _state_dir() / "uploads"
 
 
+def _is_staged_upload(path: Path) -> bool:
+    """Whether ``path`` lives under the browser-upload staging dir (ADR-0027)."""
+    try:
+        uploads = _uploads_dir().resolve()
+        return uploads in path.resolve().parents
+    except OSError:
+        return False
+
+
 def _safe_upload_name(name: str) -> str:
     """Reduce a client-supplied filename to a safe basename, or '' when rejected."""
     base = (name or "").replace("\\", "/").rsplit("/", 1)[-1]
@@ -553,14 +562,36 @@ def _job_execute(wsock, paths: list[str], output_dir: str | None, duplicate: boo
 
     if output_dir:
         out = Path(output_dir)
+        source_resolver = None
     else:
+        from converter.organize import default_output_dir
+
         def resolve_output(path):
-            original = get_upload_original(str(Path(path).resolve()))
+            resolved = Path(path).resolve()
+            original = get_upload_original(str(resolved))
             if original:
-                return Path(original).parent / "markdown"
-            return None
+                return default_output_dir(Path(original))
+            if _is_staged_upload(resolved):
+                # Unknown original: keep the Markdown inside the uploads tree
+                # (the prune sweep only touches files directly in uploads/).
+                return Path(path).parent / "markdown"
+            return default_output_dir(Path(path))
+
+        def resolve_source(path):
+            """The real on-disk file a conversion represents (ADR-0028/0048).
+
+            Uploaded files convert their staged copy but organize (kebab name,
+            ``source/`` archive, compression) the original on disk. A staged
+            upload with no known original is left to the prune-safe fallback.
+            """
+            resolved = Path(path).resolve()
+            original = get_upload_original(str(resolved))
+            if original:
+                return Path(original)
+            return None if _is_staged_upload(resolved) else Path(path)
 
         out = resolve_output
+        source_resolver = resolve_source
 
     try:
         results = convert_files(
@@ -569,11 +600,15 @@ def _job_execute(wsock, paths: list[str], output_dir: str | None, duplicate: boo
             progress_callback=on_progress,
             page_progress_callback=on_page_progress,
             duplicate_if_exists=duplicate,
+            source_resolver=source_resolver,
         )
         for result in results:
             src = str(result.source_path.resolve())
             original = get_upload_original(src)
-            record_recent(original or src)
+            recorded = result.moved_to or (
+                Path(original) if original else result.source_path
+            )
+            record_recent(str(recorded.resolve()))
             if result.error:
                 log("err", f"{result.source_path.name}: {result.error}")
             else:
@@ -798,6 +833,10 @@ def create_app() -> Flask:
             value = "on" if data["image_links"] else "off"
             os.environ["IMAGE_LINKS"] = value
             set_setting("image_links", value)
+        if "pdf_compress" in data:
+            value = "on" if data["pdf_compress"] else "off"
+            os.environ["PDF_COMPRESS"] = value
+            set_setting("pdf_compress", value)
         if "vault_root" in data:
             set_setting("vault_root", str(data["vault_root"]).strip())
         if "duplicate" in data:

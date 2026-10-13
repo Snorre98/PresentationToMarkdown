@@ -105,7 +105,7 @@ files, and watches history through a native engine process. The **desktop GUI**
 
 1. **Add files** — click *Add Files...* to pick `.pptx`/`.pdf` files, *Add Folder...* to scan a folder (and subfolders) for supported files, or drag-and-drop either onto the list.
 2. **Adjust the list** — *Remove* selected entries or *Clear* everything.
-3. **Pick an output folder (optional)** — by default each file is written to its own `<input-folder>/markdown/`; enter a path and click *Browse...* to override and send everything to one folder instead.
+3. **Pick an output folder (optional)** — by default each file's Markdown is written beside the source under a kebab-case name, and the source is moved into a sibling `source/` folder (archived PDFs are compressed); enter a path to override and send everything to one folder, leaving sources untouched.
 4. **Convert** — click *Convert*. Conversion runs on a background thread, so the UI stays responsive while a progress bar advances and the log reports one line per file:
    - `[OK]  deck.pptx -> /path/deck.md`
    - `[ERR] broken.pdf: ...` on failure
@@ -132,6 +132,7 @@ ptm --all --quiet folder_of_slides/
 ptm --paper whitepaper.pdf       # two-column paper -> continuous document
 ptm --slide handout.pdf          # force per-page slide layout (the default)
 ptm --image-links deck.pptx      # legacy: extract assets, emit image/page links
+ptm --no-compress deck.pdf       # skip Ghostscript compression of the archived PDF
 
 # launch the GUI, enabling AI passes via flags
 ptm-start --vision
@@ -175,13 +176,13 @@ These are the five entry points: `ptm`, `ptm-start`, `ptm-transcribe`,
 rather than by hand).
 
 **`ptm`** — headless batch conversion, mirroring the GUI: folders are scanned
-recursively for `.pptx`/`.pdf`, the output folder defaults to
-`<source>/markdown`, progress and per-file results are logged as
-`[N/M]` / `[OK]` / `[ERR]` / `[WARN]` lines, and converted files are recorded
-in the recent list.
+recursively for `.pptx`/`.pdf`, the Markdown is written beside each source under
+a kebab-case name and the source is archived into `source/` unless `--output`
+is given, progress and per-file results are logged as `[N/M]` / `[OK]` /
+`[ERR]` / `[WARN]` lines, and converted files are recorded in the recent list.
 
 ```
-ptm [AI flags] [--image-links] [-o DIR] [--no-recursive] [--no-recent] [-q] PATH...
+ptm [AI flags] [--image-links] [--no-compress] [-o DIR] [--no-recursive] [--no-recent] [-q] PATH...
 ```
 
 **`ptm-start`** — the same GUI as `./python main.py`, with AI capabilities toggled
@@ -206,6 +207,7 @@ Both accept the same AI flags (default: all off):
 | `--paper` | Treat PDFs as multi-column whitepapers (continuous document layout) |
 | `--slide` | Treat PDFs as slide decks (the default) |
 | `--image-links` | Legacy output: extract `assets/<name>/` and emit `![…]`/`[Page N](…)` links (default: no image links, AI descriptions only) |
+| `--no-compress` | Skip Ghostscript/qpdf compression of PDFs archived into `source/` (default: compress) |
 | `--env KEY=VALUE` | Set any other env var (repeatable) — model ids, URLs, log DB |
 
 Audio transcription is **not** an AI flag on `ptm`/`ptm-start` — it is its own
@@ -220,7 +222,7 @@ See the [ADR index](docs/adr/README.md) for the rationale.
 ```python
 from converter import convert_file, convert_files, SUPPORTED_EXTENSIONS
 
-# one file (output defaults to <input-folder>/markdown)
+# one file (Markdown beside the source; source archived into source/)
 result = convert_file("deck.pptx")
 print(result.md_path or result.error)
 
@@ -241,9 +243,9 @@ for r in results:
 - `convert_file(path, output_dir=None) -> ConvertResult`
 - `convert_files(paths, output_dir=None, progress_callback=None) -> list[ConvertResult]`
 - `progress_callback(idx: int, total: int, name: str) -> None`
-- `ConvertResult` fields: `source_path`, `md_path`, `error`, `warnings`
+- `ConvertResult` fields: `source_path`, `md_path`, `error`, `warnings`, `moved_to`
 - `SUPPORTED_EXTENSIONS` — e.g. `{".pptx", ".pdf"}`
-- `output_dir` is optional; when omitted, each file is written to `<source-folder>/markdown/`.
+- `output_dir` is optional; when omitted, each file's Markdown is written beside the source under a kebab-case name and the source is moved into a sibling `source/` folder (ADR-0048); an explicit `output_dir` disables that organizing. `ConvertResult.moved_to` points at the archived copy.
 
 ### Web GUI (dashboard + native engine)
 
@@ -266,7 +268,7 @@ Open the printed URL, then click **Start engine** in the header (or run
   *Add Folder* (server-side directory browser with recursive scan), or *Recent*.
 - **Output** — type a path, *Browse* a server-side folder, or *Open in Finder*
   (the engine invokes the OS `open`).
-- **Options** — Paper layout and Duplicate-if-exists checkboxes.
+- **Options** — Paper layout, Image links (legacy), Compress archived PDFs, and Duplicate-if-exists checkboxes.
 - **AI features** — the same six toggles as the GUI (with `implies`), plus
   *Check servers* for the up/down probe.
 - **Convert** — runs on the engine; per-file and per-page progress bars and the
@@ -346,20 +348,42 @@ in when that exact port is already occupied.
 
 ## Output layout
 
-By default one `.md` per source document — no `assets/` sidecar and no image
-links (AI descriptions stand in for figures where the vision passes run):
+By default the Markdown is written **beside the source** under a kebab-case
+name (normalized from the source: accents folded, spaces and punctuation
+become `-`), and the converted source is moved into a sibling `source/` folder
+with the same normalized name. Archived PDFs are compressed best-effort
+(Ghostscript, moderate 300 dpi; `--no-compress` / `PDF_COMPRESS=off` disables,
+see [ADR-0049](docs/adr/0049-pdf-compression-on-archive.md)):
 
 ```text
-out/
-├── deck.md
-└── handout.md
+lectures/
+├── 03-what-makes-things-fun-to-learn.md
+└── source/
+    └── 03-what-makes-things-fun-to-learn.pdf
 ```
 
-With `--image-links` the legacy sidecar is written too; images are deduplicated
-by content hash and named `<name>_<NN>_<hash>.<ext>`:
+One `.md` per source document — no `assets/` sidecar and no image links (AI
+descriptions stand in for figures where the vision passes run).
+
+- **LaTeX projects** are named after the project folder (`thesis/` →
+  `thesis.md` beside it) and the whole project folder moves into `source/`.
+- **Already-archived files** (directly inside a `source/` folder) are not
+  moved again; their Markdown is (re)written in the `source/` folder's parent,
+  so re-runs are idempotent. Recursive folder scans skip `source/` archives —
+  point at a file (or the `source/` folder) to reconvert one explicitly.
+- **Normalized-name collisions**: two different sources that normalize
+  identically in one batch get a `-2` suffix (Markdown *and* archive copy)
+  plus a warning, so nothing is silently overwritten. A pre-existing archive
+  copy is replaced on re-conversion (deterministic names).
+- **An explicit output folder disables the organizing** (`ptm -o DIR`, the
+  GUI/Web output field): Markdown keeps its original name, sources are left
+  untouched, and PDFs are neither moved nor compressed.
+
+With `--image-links` the legacy sidecar is written next to the Markdown;
+images are deduplicated by content hash and named `<name>_<NN>_<hash>.<ext>`:
 
 ```text
-out/
+lectures/
 ├── deck.md
 ├── handout.md
 └── assets/
@@ -368,8 +392,6 @@ out/
     └── handout/
         └── handout_01_164ea19d.png
 ```
-
-With the default `output_dir=None`, the same layout is written under each source file's own folder, i.e. `<input-folder>/markdown/`.
 
 ## Example
 
@@ -395,7 +417,7 @@ Slides are separated by an HTML page break (`<div style="page-break-after: alway
 
 ## Install
 
-Requires **Python 3.10+**. Dependencies: `python-pptx`, `PyMuPDF` (PDF), `PySide6` (desktop GUI), `flask`/`flask-sock` + `simple-websocket` (web GUI), `SQLAlchemy` + `sqlite-vec` (log/settings/RAG store), and `numpy`.
+Requires **Python 3.10+**. Dependencies: `python-pptx`, `PyMuPDF` (PDF), `PySide6` (desktop GUI), `flask`/`flask-sock` + `simple-websocket` (web GUI), `SQLAlchemy` + `sqlite-vec` (log/settings/RAG store), and `numpy`. External binaries, all optional except where noted: `pandoc` (required for `.tex`), `soffice` (PPTX chart transcription), and `gs`/`qpdf` (PDF compression on archive; Ghostscript preferred, qpdf the lossless fallback — `brew install ghostscript qpdf`).
 
 ### 1. Clone and set up a virtual environment
 

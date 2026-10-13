@@ -27,7 +27,13 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from converter import ConvertResult, collect_inputs, config, convert_files
+from converter import (
+    ConvertResult,
+    collect_inputs,
+    config,
+    convert_files,
+    default_output_dir,
+)
 from converter.settings import get_setting, recent_files, record_recent, set_setting
 
 _INPUT_DIR_KEY = "last_input_dir"
@@ -35,6 +41,7 @@ _OUTPUT_DIR_KEY = "last_output_dir"
 _WINDOW_GEOMETRY_KEY = "window_geometry"
 _PDF_MODE_KEY = "pdf_mode"
 _IMAGE_LINKS_KEY = "image_links"
+_COMPRESS_KEY = "pdf_compress"
 _DUPLICATE_KEY = "duplicate_if_exists"
 _AI_KEY_PREFIX = "ai_"
 
@@ -145,7 +152,9 @@ class MainWindow(QMainWindow):
         file_buttons.addWidget(clear_btn)
 
         self.output_edit = QLineEdit()
-        self.output_edit.setPlaceholderText("Defaults to <input-folder>/markdown")
+        self.output_edit.setPlaceholderText(
+            "Defaults to beside each source file (sources -> source/)"
+        )
         if self._last_output_dir:
             self.output_edit.setText(self._last_output_dir)
         browse_btn = QPushButton("Browse...")
@@ -187,6 +196,22 @@ class MainWindow(QMainWindow):
             startup_image_links.strip().lower() in _TRUE_VALUES
         )
         self.image_links_check.toggled.connect(self._remember_image_links)
+
+        self.compress_check = QCheckBox(
+            "Compress archived PDFs (Ghostscript, moderate 300 dpi)"
+        )
+        self.compress_check.setToolTip(
+            "On by default: after a PDF is moved into its folder's source/ "
+            "archive, it is compressed best-effort; the original is kept "
+            "whenever compression fails or saves nothing."
+        )
+        startup_compress = (
+            os.environ.get("PDF_COMPRESS") or get_setting(_COMPRESS_KEY, "on")
+        )
+        self.compress_check.setChecked(
+            startup_compress.strip().lower() in _TRUE_VALUES
+        )
+        self.compress_check.toggled.connect(self._remember_compress)
 
         self.ai_checks: dict[str, QCheckBox] = {}
         ai_label = QLabel("AI features (need local model servers):")
@@ -243,6 +268,7 @@ class MainWindow(QMainWindow):
         layout.addLayout(ai_status_row)
         layout.addWidget(self.paper_check)
         layout.addWidget(self.image_links_check)
+        layout.addWidget(self.compress_check)
         layout.addWidget(self.duplicate_check)
         layout.addWidget(self.convert_btn)
         layout.addWidget(self.progress)
@@ -350,7 +376,7 @@ class MainWindow(QMainWindow):
         if text:
             return Path(text)
         if self.file_list.count():
-            return Path(self.file_list.item(0).data(0)).parent / "markdown"
+            return default_output_dir(Path(self.file_list.item(0).data(0)))
         return None
 
     def open_output_folder(self):
@@ -371,6 +397,9 @@ class MainWindow(QMainWindow):
 
     def _remember_image_links(self, checked: bool):
         set_setting(_IMAGE_LINKS_KEY, "on" if checked else "off")
+
+    def _remember_compress(self, checked: bool):
+        set_setting(_COMPRESS_KEY, "on" if checked else "off")
 
     def _remember_duplicate(self, checked: bool):
         set_setting(_DUPLICATE_KEY, "on" if checked else "off")
@@ -465,6 +494,8 @@ class MainWindow(QMainWindow):
         self._remember_pdf_mode(self.paper_check.isChecked())
         os.environ["IMAGE_LINKS"] = "on" if self.image_links_check.isChecked() else "off"
         self._remember_image_links(self.image_links_check.isChecked())
+        os.environ["PDF_COMPRESS"] = "on" if self.compress_check.isChecked() else "off"
+        self._remember_compress(self.compress_check.isChecked())
         paths = [
             Path(self.file_list.item(i).data(0))
             for i in range(self.file_list.count())
@@ -486,8 +517,9 @@ class MainWindow(QMainWindow):
                 QMessageBox.warning(
                     self,
                     "Files from different folders",
-                    "Selected files come from different folders. Each file will be "
-                    "written to its own <folder>/markdown/ subfolder.",
+                    "Selected files come from different folders. Each file's "
+                    "Markdown is written beside its source, and every source is "
+                    "moved into its own folder's source/ archive.",
                 )
 
         self.convert_btn.setEnabled(False)
@@ -498,7 +530,8 @@ class MainWindow(QMainWindow):
         self.page_progress.setValue(0)
         if output_dir is None:
             self.log.appendPlainText(
-                f"Converting {len(paths)} file(s) to <input-folder>/markdown ..."
+                f"Converting {len(paths)} file(s) beside each source "
+                f"(sources -> source/) ..."
             )
         else:
             self.log.appendPlainText(f"Converting {len(paths)} file(s) to {output_dir} ...")
@@ -532,7 +565,7 @@ class MainWindow(QMainWindow):
     def _on_finished(self, results: list[ConvertResult]):
         ok = 0
         for result in results:
-            record_recent(str(result.source_path.resolve()))
+            record_recent(str((result.moved_to or result.source_path).resolve()))
             if result.error:
                 self.log.appendPlainText(f"[ERR] {result.source_path.name}: {result.error}")
             else:

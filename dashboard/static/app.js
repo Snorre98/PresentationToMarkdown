@@ -5,7 +5,7 @@ let state = {
   source: null, runId: null, tab: "convert", lastOk: Date.now(),
   engine: { running: false, base_url: "" },
   engineConfig: null, servers: null,
-  files: [], outputDir: "", duplicate: false, paperMode: false, imageLinks: false, vaultRoot: "",
+  files: [], outputDir: "", duplicate: false, paperMode: false, imageLinks: false, compress: true, vaultRoot: "",
   ws: null, converting: false, logLines: [],
 };
 const $ = (id) => document.getElementById(id);
@@ -55,6 +55,7 @@ async function load() {
         state.paperMode = cfg.body.pdf_mode === "paper";
         state.vaultRoot = cfg.body.vault_root || "";
         if (typeof cfg.body.image_links === "boolean") state.imageLinks = cfg.body.image_links;
+        if (typeof cfg.body.pdf_compress === "boolean") state.compress = cfg.body.pdf_compress;
         if (typeof cfg.body.duplicate === "boolean") state.duplicate = cfg.body.duplicate;
       }
       if (srv.status === 200) state.servers = srv.body;
@@ -124,7 +125,7 @@ function renderConvert() {
   html += '<div class="filelist" id="filelist">' + renderFileList() + '</div>';
 
   html += '<div class="section-head">Output</div>';
-  html += '<div class="row"><input class="field wide" id="output-edit" placeholder="Defaults to &lt;input-folder&gt;/markdown" value="' + esc(state.outputDir) + '"><button class="btn ghost" id="browse-out-btn">Browse</button><button class="btn ghost" id="open-out-btn">Open in Finder</button></div>';
+  html += '<div class="row"><input class="field wide" id="output-edit" placeholder="Defaults to beside each source (sources → source/)" value="' + esc(state.outputDir) + '"><button class="btn ghost" id="browse-out-btn">Browse</button><button class="btn ghost" id="open-out-btn">Open in Finder</button></div>';
   html += '<div class="section-head">Vault root</div>';
   html += '<div class="row"><input class="field wide" id="vault-root-edit" placeholder="Obsidian vault root (used to place uploads beside their source)" value="' + esc(state.vaultRoot || "") + '"><button class="btn ghost" id="browse-vault-btn">Browse</button></div>';
 
@@ -132,6 +133,7 @@ function renderConvert() {
   html += '<div class="checklist">';
   html += '<label><input type="checkbox" id="paper-check"' + (state.paperMode ? ' checked' : '') + '> Paper layout (multi-column whitepapers)</label>';
   html += '<label><input type="checkbox" id="imagelinks-check"' + (state.imageLinks ? ' checked' : '') + '> Image links (legacy — extract assets and link images/pages)</label>';
+  html += '<label><input type="checkbox" id="compress-check"' + (state.compress ? ' checked' : '') + '> Compress archived PDFs</label>';
   html += '<label><input type="checkbox" id="duplicate-check"' + (state.duplicate ? ' checked' : '') + '> Duplicate if exists (keep prior output)</label>';
   html += '</div>';
 
@@ -205,7 +207,12 @@ function bindConvertEvents() {
   $("clear-files-btn").onclick = () => { state.files = []; render(); };
   $("browse-out-btn").onclick = () => openBrowser("", "output");
   $("open-out-btn").onclick = async () => {
-    const target = state.outputDir || (state.files[0] ? state.files[0].replace(/[^/]+$/, "") + "markdown" : "");
+    let target = state.outputDir;
+    if (!target && state.files[0]) {
+      // Markdown goes beside the source; for an archived file, one level up.
+      target = state.files[0].replace(/[^/]+$/, "");
+      if (/\/source\/$/.test(target)) target = target.replace(/\/source\/$/, "/");
+    }
     if (!target) return;
     await api("/api/engine/fs/open", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path: target }) });
   };
@@ -214,6 +221,7 @@ function bindConvertEvents() {
   $("vault-root-edit").onchange = e => { state.vaultRoot = e.target.value; persistVaultRoot(e.target.value); };
   $("paper-check").onchange = e => { state.paperMode = e.target.checked; setPdfMode(e.target.checked ? "paper" : "slide"); };
   $("imagelinks-check").onchange = e => { state.imageLinks = e.target.checked; persistImageLinks(e.target.checked); };
+  $("compress-check").onchange = e => { state.compress = e.target.checked; persistCompress(e.target.checked); };
   $("duplicate-check").onchange = e => { state.duplicate = e.target.checked; persistDuplicate(e.target.checked); };
   $("check-servers-btn").onclick = async () => {
     const r = await api("/api/engine/health/servers");
@@ -352,6 +360,10 @@ async function persistImageLinks(v) {
   await api("/api/engine/config", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ image_links: v }) });
 }
 
+async function persistCompress(v) {
+  await api("/api/engine/config", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pdf_compress: v }) });
+}
+
 async function persistVaultRoot(path) {
   await api("/api/engine/config", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ vault_root: path }) });
 }
@@ -447,6 +459,7 @@ function renderTimeline() {
     const c = state.config;
     html = '<div class="page-head">Configuration</div><div class="kv">';
     html += '<div><span class="k">PDF_MODE</span></div><div class="v">' + esc(c.pdf_mode) + '</div>';
+    html += '<div><span class="k">PDF_COMPRESS</span></div><div class="v">' + (c.pdf_compress == null ? "\u2014" : (c.pdf_compress ? '<span class="badge ok">on</span>' : '<span class="badge">off</span>')) + '</div>';
     for (const key of Object.keys(c.features || {})) {
       const on = c.features[key];
       html += '<div><span class="k">' + esc(key) + '</span></div><div class="v">' + (on ? '<span class="badge ok">on</span>' : '<span class="badge">off</span>') + '</div>';

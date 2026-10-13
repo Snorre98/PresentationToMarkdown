@@ -173,15 +173,31 @@ def test_convert_files_page_progress(tmp_path):
         assert [e[0] for e in per] == list(range(1, total + 1))
 
 
-def test_convert_file_default_output_dir(tmp_path):
+def test_convert_file_default_layout(tmp_path):
     import shutil
 
-    src = tmp_path / "deck.pptx"
+    src = tmp_path / "Deck One.pptx"
     shutil.copy(PPTX, src)
     result = convert_file(src)
     assert result.error is None
-    assert result.md_path == tmp_path / "markdown" / "deck.md"
+    assert result.md_path == tmp_path / "deck-one.md"
     assert result.md_path.exists()
+    assert result.moved_to == tmp_path / "source" / "deck-one.pptx"
+    assert result.moved_to.exists()
+    assert not src.exists()
+
+
+def test_convert_file_explicit_output_leaves_source(tmp_path):
+    import shutil
+
+    src = tmp_path / "Deck One.pptx"
+    shutil.copy(PPTX, src)
+    out = tmp_path / "out"
+    result = convert_file(src, out)
+    assert result.error is None
+    assert result.md_path == out / "Deck One.md"
+    assert src.exists()
+    assert result.moved_to is None
 
 
 def test_convert_file_output_dir_resolver(tmp_path):
@@ -201,6 +217,10 @@ def test_convert_file_output_dir_resolver(tmp_path):
     assert received == [src]
     assert result.md_path == target / "deck.md"
     assert result.md_path.exists()
+    # A per-file output resolver without a source_resolver is a deliberate
+    # output choice: the source is left untouched (ADR-0028/0048).
+    assert src.exists()
+    assert result.moved_to is None
 
 
 def test_convert_file_output_dir_resolver_none_falls_back(tmp_path):
@@ -211,7 +231,8 @@ def test_convert_file_output_dir_resolver_none_falls_back(tmp_path):
 
     result = convert_file(src, lambda path: None)
     assert result.error is None
-    assert result.md_path == tmp_path / "markdown" / "deck.md"
+    assert result.md_path == tmp_path / "deck.md"
+    assert result.moved_to is None
 
 
 def test_convert_files_resolves_per_file(tmp_path):

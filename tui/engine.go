@@ -57,12 +57,13 @@ type GlobResult struct {
 
 // Config is the subset of config.snapshot() the TUI renders/edits.
 type Config struct {
-	PDFMode    string          `json:"pdf_mode"`
-	ImageLinks bool            `json:"image_links"`
-	NeedGate   string          `json:"need_gate"`
-	Duplicate  bool            `json:"duplicate"`
-	VaultRoot  string          `json:"vault_root"`
-	Features   map[string]bool `json:"features"`
+	PDFMode     string          `json:"pdf_mode"`
+	ImageLinks  bool            `json:"image_links"`
+	PDFCompress bool            `json:"pdf_compress"`
+	NeedGate    string          `json:"need_gate"`
+	Duplicate   bool            `json:"duplicate"`
+	VaultRoot   string          `json:"vault_root"`
+	Features    map[string]bool `json:"features"`
 
 	// Transcription settings (ADR-0043): persisted by the engine, injected
 	// into the spawned ptm-transcribe argv by the TUI.
@@ -74,11 +75,12 @@ type Config struct {
 
 // ConfigUpdate is the engine's /api/config POST body (engine.py config_set).
 type ConfigUpdate struct {
-	Features   map[string]bool `json:"features,omitempty"`
-	PDFMode    string          `json:"pdf_mode,omitempty"`
-	ImageLinks *bool           `json:"image_links,omitempty"`
-	VaultRoot  string          `json:"vault_root,omitempty"`
-	Duplicate  *bool           `json:"duplicate,omitempty"`
+	Features    map[string]bool `json:"features,omitempty"`
+	PDFMode     string          `json:"pdf_mode,omitempty"`
+	ImageLinks  *bool           `json:"image_links,omitempty"`
+	PDFCompress *bool           `json:"pdf_compress,omitempty"`
+	VaultRoot   string          `json:"vault_root,omitempty"`
+	Duplicate   *bool           `json:"duplicate,omitempty"`
 
 	AudioModel    *string `json:"audio_model,omitempty"`
 	AudioLanguage *string `json:"audio_language,omitempty"`
