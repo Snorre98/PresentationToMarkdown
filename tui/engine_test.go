@@ -228,3 +228,106 @@ func TestRunTranscribeJobWS(t *testing.T) {
 		t.Fatalf("events = %+v", events)
 	}
 }
+
+func TestGlobEntries(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{
+			"path":  "/a",
+			"files": []string{"/a/deck.pptx", "/a/paper"},
+			"entries": []map[string]any{
+				{"path": "/a/deck.pptx", "name": "deck.pptx", "kind": "convert", "size": 1234, "mtime": 1760000000.0, "is_dir": false},
+				{"path": "/a/paper", "name": "paper", "kind": "latex-project", "size": 0, "mtime": 1760000001.0, "is_dir": true},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	c := NewClient(srv.URL)
+	r, err := c.Glob(context.Background(), "/a", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(r.Entries) != 2 || r.Entries[0].Kind != "convert" || r.Entries[0].Size != 1234 {
+		t.Fatalf("entries = %+v", r.Entries)
+	}
+	if !r.Entries[1].IsDir || r.Entries[1].Kind != "latex-project" {
+		t.Fatalf("entries[1] = %+v", r.Entries[1])
+	}
+}
+
+func TestCancelJob(t *testing.T) {
+	var gotID int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/jobs/cancel" || r.Method != http.MethodPost {
+			http.NotFound(w, r)
+			return
+		}
+		var body map[string]int
+		json.NewDecoder(r.Body).Decode(&body)
+		gotID = body["id"]
+		json.NewEncoder(w).Encode(map[string]any{"ok": true, "job_id": body["id"], "status": "cancelling"})
+	}))
+	defer srv.Close()
+
+	c := NewClient(srv.URL)
+	if err := c.CancelJob(context.Background(), 7); err != nil {
+		t.Fatal(err)
+	}
+	if gotID != 7 {
+		t.Fatalf("id = %d, want 7", gotID)
+	}
+}
+
+func TestCancelJobConflict(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusConflict)
+		json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": "no job is running"})
+	}))
+	defer srv.Close()
+
+	c := NewClient(srv.URL)
+	if err := c.CancelJob(context.Background(), 1); err == nil {
+		t.Fatal("expected error for 409")
+	}
+}
+
+func TestRuns(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/runs" {
+			http.NotFound(w, r)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]any{
+			"runs": []map[string]any{
+				{"id": 2, "source": "/a/b.pdf", "name": "b.pdf", "status": "ok", "duration_ms": 1200},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	c := NewClient(srv.URL)
+	runs, err := c.Runs(context.Background(), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(runs) != 1 || runs[0].Status != "ok" || runs[0].DurationMS != 1200 {
+		t.Fatalf("runs = %+v", runs)
+	}
+}
+
+func TestOpenReveal(t *testing.T) {
+	var body map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewDecoder(r.Body).Decode(&body)
+		json.NewEncoder(w).Encode(map[string]any{"ok": true})
+	}))
+	defer srv.Close()
+
+	c := NewClient(srv.URL)
+	if err := c.Open(context.Background(), "/a/out.md", true); err != nil {
+		t.Fatal(err)
+	}
+	if body["path"] != "/a/out.md" || body["reveal"] != true {
+		t.Fatalf("body = %+v", body)
+	}
+}

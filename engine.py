@@ -69,6 +69,61 @@ _engine_state = {
 _job_lock = threading.Lock()
 _job_running = threading.Event()
 
+# --- job frames: initiator + watchers (ADR-0053) ------------------------------
+
+_watch_lock = threading.Lock()
+_send_lock = threading.Lock()
+_watchers: set = set()
+_job_cancel = threading.Event()
+
+
+class _JobCancelled(Exception):
+    """Raised inside job callbacks when a cancel was requested (ADR-0053)."""
+
+
+def _check_cancelled() -> None:
+    """Raise ``_JobCancelled`` when this job's cancel flag is set."""
+    if _job_cancel.is_set():
+        raise _JobCancelled("cancelled")
+
+
+def _send(sock, payload: str) -> bool:
+    """Send one frame; ``False`` when the socket is gone. Never raises."""
+    try:
+        with _send_lock:
+            sock.send(payload)
+        return True
+    except Exception:  # noqa: BLE001 - a dead socket must not break the job
+        return False
+
+
+def _emit(event: dict, origin=None) -> None:
+    """Send one job frame to every watcher (and the originating socket).
+
+    Watchers receive live frames without owning the job's socket, so several
+    TUI sessions can observe one engine (ADR-0053). Dead watchers are dropped.
+    """
+    payload = json.dumps(event)
+    targets = []
+    with _watch_lock:
+        targets = list(_watchers)
+    if origin is not None and origin not in targets:
+        targets.append(origin)
+    for sock in targets:
+        if not _send(sock, payload):
+            with _watch_lock:
+                _watchers.discard(sock)
+
+
+def _status_snapshot() -> dict:
+    """The subset of engine state a watcher needs to render jobs (ADR-0053)."""
+    return {
+        "status": _engine_state["status"],
+        "job_seq": _engine_state["job_seq"],
+        "current_job": _engine_state["current_job"],
+        "jobs": _engine_state["jobs"],
+    }
+
 
 def _new_job(kind: str, paths: list[str]) -> dict:
     """Return a fresh ``current_job`` record for a conversion or transcribe job."""
@@ -85,6 +140,7 @@ def _new_job(kind: str, paths: list[str]) -> dict:
         "phase": None,
         "started_at": time.time(),
         "finished_at": None,
+        "cancel_requested": False,
         "results": [],
         "log_tail": [],
     }
@@ -150,17 +206,48 @@ def _fs_list(path: str) -> dict:
     return {"path": str(target), "parent": str(target.parent), "entries": entries}
 
 
+def _entry_kind(path: Path) -> str:
+    """Classify one conversion discovery result for the picker (ADR-0053)."""
+    if path.is_dir():
+        return "latex-project"
+    if path.suffix.lower() == ".tex":
+        return "latex"
+    return "convert"
+
+
+def _fs_entry(path: Path, kind: str | None = None) -> dict:
+    """Path plus stat metadata for one picker row (ADR-0053)."""
+    try:
+        stat = path.stat()
+        size, mtime = stat.st_size, stat.st_mtime
+    except OSError:
+        size, mtime = 0, 0.0
+    return {
+        "path": str(path),
+        "name": path.name,
+        "kind": kind or _entry_kind(path),
+        "size": size,
+        "mtime": mtime,
+        "is_dir": path.is_dir(),
+    }
+
+
 def _fs_glob(path: str, recursive: bool = True) -> dict:
     """Expand a file or folder into supported inputs (the Add Folder equivalent).
 
     A folder that is a LaTeX project (ADR-0038) is yielded once, as the folder;
-    other folders are scanned for supported files.
+    other folders are scanned for supported files. ``entries`` carries the
+    same paths with size/mtime/kind metadata for the TUI picker (ADR-0053).
     """
     from converter import collect_inputs
 
     target = Path(path).expanduser()
-    files = collect_inputs([target], recursive=recursive)
-    return {"path": str(target), "files": [str(f.resolve()) for f in files]}
+    files = [f.resolve() for f in collect_inputs([target], recursive=recursive)]
+    return {
+        "path": str(target),
+        "files": [str(f) for f in files],
+        "entries": [_fs_entry(f) for f in files],
+    }
 
 
 def _fs_glob_audio(path: str, recursive: bool = True) -> dict:
@@ -185,16 +272,22 @@ def _fs_glob_audio(path: str, recursive: bool = True) -> dict:
         ]
     else:
         files = []
-    return {"path": str(target), "files": [str(f.resolve()) for f in files]}
+    resolved = [f.resolve() for f in files]
+    return {
+        "path": str(target),
+        "files": [str(f) for f in resolved],
+        "entries": [_fs_entry(f, kind="audio") for f in resolved],
+    }
 
 
-def _fs_open(path: str) -> dict:
-    """Open a path in the OS default app (Finder / default handler)."""
+def _fs_open(path: str, reveal: bool = False) -> dict:
+    """Open a path in the OS default app; ``reveal`` selects it in Finder."""
     target = Path(path).expanduser()
     if not target.exists():
         return {"path": path, "error": f"does not exist: {path}"}
+    cmd = ["open", "-R", str(target)] if reveal else ["open", str(target)]
     try:
-        subprocess.Popen(["open", str(target)])
+        subprocess.Popen(cmd)
     except OSError as exc:
         return {"path": path, "error": str(exc)}
     return {"path": str(target), "ok": True}
@@ -580,9 +673,10 @@ def _job_execute(wsock, paths: list[str], output_dir: str | None, duplicate: boo
         if _job_running.is_set():
             _engine_state["status"] = "error"
             _engine_state["log"] = [("err", "A conversion is already running.")]
-            wsock.send(json.dumps({"type": "error", "message": "A conversion is already running."}))
+            _emit({"type": "error", "message": "A conversion is already running."}, origin=wsock)
             return
         _job_running.set()
+        _job_cancel.clear()
 
     _engine_state.update(
         status="running", paths=paths, output_dir=output_dir, duplicate=duplicate,
@@ -596,22 +690,24 @@ def _job_execute(wsock, paths: list[str], output_dir: str | None, duplicate: boo
         job = _engine_state.get("current_job")
         if job is not None:
             job["log_tail"].append(f"[{kind}] {msg}")
-        wsock.send(json.dumps({"type": "log", "kind": kind, "message": msg}))
+        _emit({"type": "log", "kind": kind, "message": msg, "job_id": job_id}, origin=wsock)
 
     file_durations: list[float] = []
     last_mark = time.time()
 
     def on_progress(idx: int, total: int, name: str) -> None:
         nonlocal last_mark
+        _check_cancelled()
         now = time.time()
         file_durations.append(now - last_mark)
         last_mark = now
         _set_job(idx=idx, total=total, phase=name)
-        wsock.send(json.dumps({"type": "file", "idx": idx, "total": total, "name": name}))
+        _emit({"type": "file", "idx": idx, "total": total, "name": name, "job_id": job_id}, origin=wsock)
 
     def on_page_progress(page: int, total: int, name: str) -> None:
+        _check_cancelled()
         _set_job(page=page, page_total=total, phase=name)
-        wsock.send(json.dumps({"type": "page", "page": page, "total": total, "name": name}))
+        _emit({"type": "page", "page": page, "total": total, "name": name, "job_id": job_id}, origin=wsock)
 
     if output_dir:
         out = Path(output_dir)
@@ -673,12 +769,17 @@ def _job_execute(wsock, paths: list[str], output_dir: str | None, duplicate: boo
         records = [_result_record(r, file_durations, i) for i, r in enumerate(results)]
         ok = sum(1 for r in results if not r.error)
         _finish_job("done", ok=ok, results=records)
-        wsock.send(json.dumps({"type": "done", "ok": ok, "total": len(results), "job_id": job_id}))
+        _emit({"type": "done", "ok": ok, "total": len(results), "job_id": job_id}, origin=wsock)
+    except _JobCancelled:
+        _engine_state["status"] = "cancelled"
+        log("warn", "Conversion cancelled")
+        _finish_job("cancelled", ok=len(file_durations))
+        _emit({"type": "cancelled", "ok": len(file_durations), "total": len(paths), "job_id": job_id}, origin=wsock)
     except Exception as exc:  # noqa: BLE001
         _engine_state["status"] = "error"
         log("err", f"Conversion failed: {exc}")
         _finish_job("error", ok=0, error=str(exc))
-        wsock.send(json.dumps({"type": "done", "ok": 0, "total": len(paths), "error": str(exc), "job_id": job_id}))
+        _emit({"type": "done", "ok": 0, "total": len(paths), "error": str(exc), "job_id": job_id}, origin=wsock)
     finally:
         _job_running.clear()
 
@@ -744,9 +845,10 @@ def _transcribe_execute(wsock, paths: list[str], audio_options: dict | None) -> 
         if _job_running.is_set():
             _engine_state["status"] = "error"
             _engine_state["log"] = [("err", "A job is already running.")]
-            wsock.send(json.dumps({"type": "error", "message": "A job is already running."}))
+            _emit({"type": "error", "message": "A job is already running."}, origin=wsock)
             return
         _job_running.set()
+        _job_cancel.clear()
 
     _apply_audio_options(audio_options or {})
 
@@ -758,7 +860,7 @@ def _transcribe_execute(wsock, paths: list[str], audio_options: dict | None) -> 
         _job_running.clear()
         _engine_state["status"] = "error"
         _engine_state["log"] = [("err", "Another transcription is already running.")]
-        wsock.send(json.dumps({"type": "error", "message": "Another transcription is already running."}))
+        _emit({"type": "error", "message": "Another transcription is already running."}, origin=wsock)
         return
 
     _engine_state.update(status="running", results=None, log=[])
@@ -769,7 +871,7 @@ def _transcribe_execute(wsock, paths: list[str], audio_options: dict | None) -> 
         phase = _map_phase(line)
         if phase is not None:
             _set_job(phase=phase)
-            wsock.send(json.dumps({"type": "phase", "phase": phase}))
+            _emit({"type": "phase", "phase": phase, "job_id": job_id}, origin=wsock)
             return
         text = line.rstrip("\n").strip()
         if text:
@@ -778,15 +880,16 @@ def _transcribe_execute(wsock, paths: list[str], audio_options: dict | None) -> 
             if job is not None:
                 job["log_tail"].append(text)
                 job["log_tail"] = job["log_tail"][-_JOB_LOG_TAIL_MAX:]
-            wsock.send(json.dumps({"type": "log", "kind": "info", "message": text}))
+            _emit({"type": "log", "kind": "info", "message": text, "job_id": job_id}, origin=wsock)
 
     ok = 0
     total = len(paths)
     try:
         for idx, raw in enumerate(paths, start=1):
+            _check_cancelled()
             path = Path(raw)
             _set_job(idx=idx, total=total, phase="starting")
-            wsock.send(json.dumps({"type": "file", "idx": idx, "total": total, "name": path.name}))
+            _emit({"type": "file", "idx": idx, "total": total, "name": path.name, "job_id": job_id}, origin=wsock)
             warnings: list[str] = []
             if path.suffix.lower() == ".md":
                 result = attach_transcript(path, warnings, on_line=on_line)
@@ -797,19 +900,23 @@ def _transcribe_execute(wsock, paths: list[str], audio_options: dict | None) -> 
                 else:
                     result = transcribe_to_markdown(path, warnings, on_line=on_line)
             for warning in warnings:
-                wsock.send(json.dumps({"type": "log", "kind": "warn", "message": f"{path.name}: {warning}"}))
+                _emit({"type": "log", "kind": "warn", "message": f"{path.name}: {warning}", "job_id": job_id}, origin=wsock)
             if result is None and not warnings:
-                wsock.send(json.dumps({"type": "log", "kind": "warn", "message": f"{path.name}: no transcript produced"}))
+                _emit({"type": "log", "kind": "warn", "message": f"{path.name}: no transcript produced", "job_id": job_id}, origin=wsock)
             else:
                 ok += 1
         _engine_state["status"] = "done"
         _finish_job("done", ok=ok)
-        wsock.send(json.dumps({"type": "done", "ok": ok, "total": total, "job_id": job_id}))
+        _emit({"type": "done", "ok": ok, "total": total, "job_id": job_id}, origin=wsock)
+    except _JobCancelled:
+        _engine_state["status"] = "cancelled"
+        _finish_job("cancelled", ok=ok)
+        _emit({"type": "cancelled", "ok": ok, "total": total, "job_id": job_id}, origin=wsock)
     except Exception as exc:  # noqa: BLE001
         _engine_state["status"] = "error"
         _finish_job("error", ok=ok, error=str(exc))
-        wsock.send(json.dumps({"type": "log", "kind": "err", "message": f"Transcription failed: {exc}"}))
-        wsock.send(json.dumps({"type": "done", "ok": 0, "total": total, "error": str(exc), "job_id": job_id}))
+        _emit({"type": "log", "kind": "err", "message": f"Transcription failed: {exc}", "job_id": job_id}, origin=wsock)
+        _emit({"type": "done", "ok": 0, "total": total, "error": str(exc), "job_id": job_id}, origin=wsock)
     finally:
         lock_handle.release()
         _job_running.clear()
@@ -843,7 +950,8 @@ def create_app() -> Flask:
 
     @app.post("/api/fs/open")
     def fs_open():
-        return jsonify(_fs_open((request.get_json(silent=True) or {}).get("path", "")))
+        data = request.get_json(silent=True) or {}
+        return jsonify(_fs_open(data.get("path", ""), reveal=bool(data.get("reveal", False))))
 
     @app.post("/api/fs/upload")
     def fs_upload():
@@ -935,29 +1043,77 @@ def create_app() -> Flask:
     def status():
         return jsonify(_engine_state)
 
+    @app.post("/api/jobs/cancel")
+    def jobs_cancel():
+        """Request cooperative cancellation of the running job (ADR-0053).
+
+        The job stops at the next page/file boundary; the final frame is
+        ``{"type": "cancelled", ...}`` and the job retires with status
+        ``cancelled``.
+        """
+        data = request.get_json(silent=True) or {}
+        with _job_lock:
+            job = _engine_state.get("current_job")
+            if not _job_running.is_set() or job is None:
+                return jsonify({"ok": False, "error": "no job is running"}), 409
+            wanted = data.get("id")
+            try:
+                wanted = int(wanted) if wanted is not None else None
+            except (TypeError, ValueError):
+                wanted = None
+            if wanted is not None and wanted != job["id"]:
+                return jsonify({"ok": False, "error": "job id mismatch", "job_id": job["id"]}), 409
+            _job_cancel.set()
+            job["cancel_requested"] = True
+            job_id = job["id"]
+        return jsonify({"ok": True, "job_id": job_id, "status": "cancelling"})
+
+    @app.get("/api/runs")
+    def runs():
+        """Recent conversion runs from ptm.sqlite, newest first (ADR-0053)."""
+        from converter.db.repos import recent_runs
+
+        try:
+            limit = int(request.args.get("limit", "20"))
+        except ValueError:
+            limit = 20
+        return jsonify({"runs": recent_runs(max(1, min(limit, 200)))})
+
     @sock.route("/ws")
     def job_ws(wsock):
-        while True:
-            msg = wsock.receive()
-            if msg is None:
-                return
-            try:
-                data = json.loads(msg)
-            except json.JSONDecodeError:
-                continue
-            if data.get("type") == "start":
-                _job_execute(
-                    wsock,
-                    data.get("paths", []),
-                    data.get("output_dir"),
-                    bool(data.get("duplicate", False)),
-                )
-            elif data.get("type") == "transcribe":
-                _transcribe_execute(
-                    wsock,
-                    data.get("paths", []),
-                    data.get("audio_options"),
-                )
+        try:
+            while True:
+                msg = wsock.receive()
+                if msg is None:
+                    return
+                try:
+                    data = json.loads(msg)
+                except json.JSONDecodeError:
+                    continue
+                mtype = data.get("type")
+                if mtype == "watch":
+                    # Read-only subscription: the snapshot drives the initial
+                    # UI, then live job frames arrive without owning the job
+                    # (ADR-0053). A socket may watch and start jobs.
+                    with _watch_lock:
+                        _watchers.add(wsock)
+                    _send(wsock, json.dumps({"type": "status", "state": _status_snapshot()}))
+                elif mtype == "start":
+                    _job_execute(
+                        wsock,
+                        data.get("paths", []),
+                        data.get("output_dir"),
+                        bool(data.get("duplicate", False)),
+                    )
+                elif mtype == "transcribe":
+                    _transcribe_execute(
+                        wsock,
+                        data.get("paths", []),
+                        data.get("audio_options"),
+                    )
+        finally:
+            with _watch_lock:
+                _watchers.discard(wsock)
 
     return app
 

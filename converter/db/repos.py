@@ -278,6 +278,29 @@ def recent_paths(limit: int = 10) -> list[str]:
         session.close()
 
 
+def recent_runs(limit: int = 20) -> list[dict]:
+    """Recent conversion runs, newest first, for the TUI history pane (ADR-0053)."""
+    session = get_session()
+    try:
+        runs = session.execute(
+            select(ConversionRun).order_by(ConversionRun.id.desc()).limit(limit)
+        ).scalars()
+        return [
+            {
+                "id": run.id,
+                "source": run.source,
+                "name": run.name,
+                "status": run.status,
+                "started_at": run.ts,
+                "ended_at": run.ended_at,
+                "duration_ms": run.duration_ms,
+            }
+            for run in runs
+        ]
+    finally:
+        session.close()
+
+
 # --- RAG documents / chunks ---------------------------------------------------
 
 

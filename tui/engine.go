@@ -50,9 +50,20 @@ type Health struct {
 
 // GlobResult is the engine's /api/fs/glob payload.
 type GlobResult struct {
-	Path  string   `json:"path"`
-	Files []string `json:"files"`
-	Error string   `json:"error"`
+	Path    string      `json:"path"`
+	Files   []string    `json:"files"`
+	Entries []GlobEntry `json:"entries"`
+	Error   string      `json:"error"`
+}
+
+// GlobEntry is one discovery row with stat metadata (ADR-0053).
+type GlobEntry struct {
+	Path  string  `json:"path"`
+	Name  string  `json:"name"`
+	Kind  string  `json:"kind"` // convert | latex | latex-project | audio
+	Size  int64   `json:"size"`
+	MTime float64 `json:"mtime"`
+	IsDir bool    `json:"is_dir"`
 }
 
 // Config is the subset of config.snapshot() the TUI renders/edits.
@@ -107,22 +118,50 @@ type JobEvent struct {
 
 // Job is the engine's structured current_job (ADR-0045/0053).
 type Job struct {
-	ID        int      `json:"id"`
-	Kind      string   `json:"kind"`
-	Status    string   `json:"status"`
-	Paths     []string `json:"paths"`
-	Idx       int      `json:"idx"`
-	Total     int      `json:"total"`
-	Page      int      `json:"page"`
-	PageTotal int      `json:"page_total"`
-	Phase     string   `json:"phase"`
-	LogTail   []string `json:"log_tail"`
+	ID              int         `json:"id"`
+	Kind            string      `json:"kind"`
+	Status          string      `json:"status"`
+	Paths           []string    `json:"paths"`
+	Idx             int         `json:"idx"`
+	Total           int         `json:"total"`
+	Page            int         `json:"page"`
+	PageTotal       int         `json:"page_total"`
+	Phase           string      `json:"phase"`
+	StartedAt       float64     `json:"started_at"`
+	FinishedAt      *float64    `json:"finished_at"`
+	CancelRequested bool        `json:"cancel_requested"`
+	Results         []JobResult `json:"results"`
+	LogTail         []string    `json:"log_tail"`
+}
+
+// JobResult is one per-file outcome of a finished job (ADR-0053).
+type JobResult struct {
+	Source          string   `json:"source"`
+	MDPath          string   `json:"md_path"`
+	MovedTo         string   `json:"moved_to"`
+	Error           string   `json:"error"`
+	Warnings        []string `json:"warnings"`
+	InferencePasses []string `json:"inference_passes"`
+	DurationMS      int      `json:"duration_ms"`
 }
 
 // Status is the engine's /api/status payload.
 type Status struct {
 	Status     string `json:"status"`
+	JobSeq     int    `json:"job_seq"`
 	CurrentJob *Job   `json:"current_job"`
+	Jobs       []Job  `json:"jobs"`
+}
+
+// Run is one conversion run from ptm.sqlite (ADR-0053).
+type Run struct {
+	ID         int    `json:"id"`
+	Source     string `json:"source"`
+	Name       string `json:"name"`
+	Status     string `json:"status"`
+	StartedAt  string `json:"started_at"`
+	EndedAt    string `json:"ended_at"`
+	DurationMS int    `json:"duration_ms"`
 }
 
 // Health returns the engine's health.
@@ -192,19 +231,42 @@ func (c *Client) SetConfig(ctx context.Context, u ConfigUpdate) (Config, error) 
 	return cfg, nil
 }
 
-// Open opens a path in the OS default app (Finder).
-func (c *Client) Open(ctx context.Context, path string) error {
+// Open opens a path in the OS default app (Finder); reveal selects it in
+// Finder instead (open -R, ADR-0053).
+func (c *Client) Open(ctx context.Context, path string, reveal bool) error {
 	var r struct {
 		OK    bool   `json:"ok"`
 		Error string `json:"error"`
 	}
-	if err := c.postJSON(ctx, "/api/fs/open", map[string]string{"path": path}, &r); err != nil {
+	body := map[string]any{"path": path}
+	if reveal {
+		body["reveal"] = true
+	}
+	if err := c.postJSON(ctx, "/api/fs/open", body, &r); err != nil {
 		return err
 	}
 	if r.Error != "" {
 		return fmt.Errorf("%s", r.Error)
 	}
 	return nil
+}
+
+// CancelJob asks the engine to stop the running job (ADR-0053). The job stops
+// at the next page/file boundary; a 409 means nothing was running.
+func (c *Client) CancelJob(ctx context.Context, id int) error {
+	return c.postJSON(ctx, "/api/jobs/cancel", map[string]any{"id": id}, nil)
+}
+
+// Runs returns recent conversion runs from the engine's store (ADR-0053).
+func (c *Client) Runs(ctx context.Context, limit int) ([]Run, error) {
+	var r struct {
+		Runs []Run `json:"runs"`
+	}
+	path := fmt.Sprintf("/api/runs?limit=%d", limit)
+	if err := c.getJSON(ctx, path, &r); err != nil {
+		return nil, err
+	}
+	return r.Runs, nil
 }
 
 // Shutdown asks a TUI-spawned engine to stop.

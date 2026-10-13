@@ -769,6 +769,8 @@ def engine_state(monkeypatch):
             job_seq=0,
         )
         engine._job_running.clear()
+        engine._job_cancel.clear()
+        engine._watchers.clear()
 
     reset()
     monkeypatch.setattr("converter.settings.record_recent", lambda path: None)
@@ -856,6 +858,146 @@ def test_job_history_is_capped(engine_state, monkeypatch, tmp_path):
     state = engine_state._engine_state
     assert len(state["jobs"]) == engine_state._JOBS_HISTORY_MAX
     assert state["jobs"][0]["id"] == engine_state._JOBS_HISTORY_MAX + 3
+
+
+# --- ADR-0053: watch fan-out, cancel, runs, fs metadata ----------------------
+
+
+class _BoomWS:
+    """A watcher whose socket is gone."""
+
+    def send(self, msg):
+        raise RuntimeError("dead socket")
+
+
+def test_emit_fans_out_once_and_drops_dead_watchers(engine_state):
+    a, b = _RecordingWS(), _RecordingWS()
+    engine_state._watchers.update({a, b, _BoomWS()})
+
+    # ``a`` is both watcher and origin: it must receive exactly one frame.
+    engine_state._emit({"type": "file", "idx": 1}, origin=a)
+    assert len(a.sent) == 1
+    assert len(b.sent) == 1
+    assert len(engine_state._watchers) == 2
+
+    # A non-watching origin still receives its own frames.
+    c = _RecordingWS()
+    engine_state._emit({"type": "done"}, origin=c)
+    assert len(c.sent) == 1
+
+
+def test_status_snapshot_shape(engine_state):
+    engine_state._set_job(reset=True, kind="convert", paths=["/a/x.pdf"])
+    snap = engine_state._status_snapshot()
+    assert set(snap) == {"status", "job_seq", "current_job", "jobs"}
+    assert snap["current_job"]["id"] == engine_state._engine_state["job_seq"]
+    assert snap["current_job"]["status"] == "running"
+    assert snap["jobs"] == []
+
+
+def test_jobs_cancel_requires_running_job(client, engine_state):
+    r = client.post("/api/jobs/cancel", json={})
+    assert r.status_code == 409
+
+
+def test_jobs_cancel_sets_flag(client, engine_state):
+    engine_state._job_running.set()
+    engine_state._set_job(reset=True, kind="convert", paths=["/a/deck.pdf"])
+    job_id = engine_state._engine_state["current_job"]["id"]
+
+    r = client.post("/api/jobs/cancel", json={"id": job_id}).get_json()
+    assert r["ok"] is True
+    assert r["job_id"] == job_id
+    assert engine_state._job_cancel.is_set()
+    assert engine_state._engine_state["current_job"]["cancel_requested"] is True
+
+    # A mismatching id is refused.
+    engine_state._job_cancel.clear()
+    r = client.post("/api/jobs/cancel", json={"id": job_id + 99})
+    assert r.status_code == 409
+
+
+def test_job_cancel_stops_between_pages(engine_state, monkeypatch, tmp_path):
+    from pathlib import Path
+
+    from converter.base import ConvertResult
+
+    def cancel_midway(paths, output_dir, progress_callback=None, page_progress_callback=None, **kw):
+        page_progress_callback(1, 10, "deck.pdf")
+        engine_state._job_cancel.set()
+        page_progress_callback(2, 10, "deck.pdf")  # raises _JobCancelled
+        return [ConvertResult(source_path=Path(paths[0]))]
+
+    monkeypatch.setattr("engine._import_converter", _fake_converter(cancel_midway))
+    ws = _RecordingWS()
+    engine_state._job_execute(ws, [str(tmp_path / "deck.pdf")], str(tmp_path), False)
+
+    state = engine_state._engine_state
+    assert state["current_job"] is None
+    assert state["status"] == "cancelled"
+    assert state["jobs"][0]["status"] == "cancelled"
+    assert [m["type"] for m in ws.sent].count("cancelled") == 1
+    assert ws.sent[-1]["job_id"] == state["jobs"][0]["id"]
+
+
+def test_fs_glob_entries_carry_metadata(client, tmp_path):
+    d = tmp_path / "root"
+    (d / "nested").mkdir(parents=True)
+    (d / "deck.pptx").write_bytes(b"12345")
+    (d / "nested" / "two.pdf").write_bytes(b"x")
+    r = client.get(f"/api/fs/glob?path={d}").get_json()
+    by_name = {e["name"]: e for e in r["entries"]}
+    assert by_name["deck.pptx"]["kind"] == "convert"
+    assert by_name["deck.pptx"]["size"] == 5
+    assert by_name["deck.pptx"]["is_dir"] is False
+    assert by_name["two.pdf"]["mtime"] > 0
+    assert sorted(by_name) == ["deck.pptx", "two.pdf"]
+
+
+def test_fs_glob_marks_latex_project_folder(client, tmp_path):
+    proj = tmp_path / "paper"
+    proj.mkdir()
+    (proj / "main.tex").write_text("\\documentclass{article}")
+    r = client.get(f"/api/fs/glob?path={tmp_path}").get_json()
+    by_name = {e["name"]: e for e in r["entries"]}
+    assert by_name["paper"]["kind"] == "latex-project"
+    assert by_name["paper"]["is_dir"] is True
+
+
+def test_fs_glob_audio_entries(client, tmp_path):
+    d = tmp_path / "root"
+    d.mkdir()
+    (d / "talk.m4a").write_bytes(b"abc")
+    r = client.get(f"/api/fs/glob?path={d}&kinds=audio").get_json()
+    assert [e["kind"] for e in r["entries"]] == ["audio"]
+    assert r["entries"][0]["size"] == 3
+
+
+def test_fs_open_reveal(monkeypatch, tmp_path):
+    import engine
+
+    f = tmp_path / "out.md"
+    f.write_text("x")
+    calls = []
+    monkeypatch.setattr("engine.subprocess.Popen", lambda cmd: calls.append(cmd))
+
+    r = engine._fs_open(str(f), reveal=True)
+    assert r["ok"] is True
+    assert calls == [["open", "-R", str(f)]]
+
+    r = engine._fs_open(str(f))
+    assert calls[-1] == ["open", str(f)]
+
+
+def test_runs_endpoint_lists_recent_runs(client, isolated_db):
+    from converter.db import repos
+
+    run_id = repos.start_run("/a/deck.pdf")
+    repos.finish_run(run_id, "ok")
+    r = client.get("/api/runs?limit=5").get_json()
+    assert r["runs"][0]["source"] == "/a/deck.pdf"
+    assert r["runs"][0]["status"] == "ok"
+    assert r["runs"][0]["id"] == run_id
 
 
 def test_map_phase():
