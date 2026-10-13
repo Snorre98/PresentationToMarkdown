@@ -2,15 +2,15 @@
 
 This module is the single source of truth for the *on/off* state of every AI
 feature and for the local model servers those features talk to. Unlike the rest
-of the converter, the enabled flags are **mutable at runtime**: the CLI flags
+of the converter, the enabled flags are **mutable at runtime**: launch flags
 still set environment variables (``cli_common.apply_ai_env``), which seed the
-state at import time, but the GUI can now flip the same state with checkboxes —
-no restart required.
+state at import time, but the engine can flip the same state at runtime (the
+TUI settings screen) — no restart required.
 
 It also owns non-AI *output* preferences that share the same runtime-toggle
 contract (``IMAGE_LINKS``, ADR-0047; ``PDF_COMPRESS``, ADR-0049;
 ``INFERENCE_OVERWRITE``, ADR-0050): those are read lazily at conversion time so
-a GUI/engine flip takes effect on the next conversion, mirroring the lazy
+an engine flip takes effect on the next conversion, mirroring the lazy
 ``PDF_MODE`` read.
 
 The AI modules consult :func:`is_enabled` at call time instead of reading a
@@ -79,7 +79,7 @@ class Server:
 
 @dataclass(frozen=True)
 class Feature:
-    """One togglable AI feature: its identity, GUI label, env var, and deps."""
+    """One togglable AI feature: its identity, display label, env var, and deps."""
 
     key: str
     label: str
@@ -227,7 +227,7 @@ def image_links_enabled() -> bool:
     """Whether asset image/page links are emitted into the Markdown.
 
     A non-AI output preference (ADR-0047), read lazily at conversion time like
-    ``PDF_MODE``/``NEED_GATE`` so the GUI and engine can flip it per conversion
+    ``PDF_MODE``/``NEED_GATE`` so the engine can flip it per conversion
     without a restart. Default **off**: images are not extracted and no
     ``![...](...)``/``[Page N](...)`` links are written; AI descriptions are
     emitted in their place. ``IMAGE_LINKS=on`` restores the legacy behaviour.
@@ -239,7 +239,7 @@ def pdf_compress_enabled() -> bool:
     """Whether archived PDFs are compressed after the archive move (ADR-0049).
 
     A non-AI output preference read lazily at archive time like ``IMAGE_LINKS``
-    so the GUI and engine can flip it per conversion without a restart. Default
+    so the engine can flip it per conversion without a restart. Default
     **on**; ``PDF_COMPRESS=off`` disables compression. Compression itself is
     best-effort (see ``converter.compress``).
     """
@@ -344,8 +344,8 @@ def feature_endpoints(key: str) -> list[tuple[str, str]]:
 def probe(base_url: str, timeout: float = 1.5) -> bool:
     """Check whether an OpenAI-compatible server answers ``GET /models``.
 
-    Never raises; ``False`` means "not reachable". Used only by the GUI's health
-    check (and available to the CLI), never as part of a conversion.
+    Never raises; ``False`` means "not reachable". Used only by the engine's
+    model-health endpoint, never as part of a conversion.
     """
     url = base_url.rstrip("/") + "/models"
     req = urllib.request.Request(url, method="GET")
@@ -429,7 +429,7 @@ def _embed_model() -> str | None:
 
 
 def _duplicate_if_exists() -> bool:
-    """Read the persisted ``duplicate_if_exists`` preference (ADR-0028/GUI parity).
+    """Read the persisted ``duplicate_if_exists`` preference (ADR-0015).
 
     Deferred import keeps ``config`` free of the settings/db layer at import
     time (the same idiom as ``_pass_model``/``_embed_model``).
@@ -461,9 +461,10 @@ def _audio_setting(key: str, default: str) -> str:
     """Read a persisted transcription setting (ADR-0043).
 
     Transcription preferences (model, language, diarization) live in the
-    settings KV store; the TUI reads them from ``snapshot()`` and injects them
-    into the spawned ``ptm-transcribe`` argv at spawn time (they are import-time
-    env vars in ``converter``, so the engine only stores, never applies them).
+    settings KV store; ``snapshot()`` exposes them to the TUI, and the engine
+    applies them to each engine-hosted transcription job (ADR-0045) — they are
+    import-time constants in ``converter``, so the engine sets the module state
+    per job.
     """
     try:
         from converter.settings import get_setting

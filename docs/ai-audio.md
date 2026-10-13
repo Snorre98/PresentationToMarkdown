@@ -2,12 +2,13 @@
 
 A local **audio-to-text transcription** that turns a lecture recording into a
 timestamped, speaker-labelled transcript and attaches it to a Markdown file (or
-writes a standalone `<stem>.transcript.md` when none exists yet). It runs as its
-own `ptm-transcribe` command, decoupled from conversion (ADR-0009). It is
-strictly a *companion*: the deterministic text extraction always runs first, and
-the transcript is appended as a `# Transcript` section (plus a `.srt` sidecar).
-Along the way the audio is **cleaned** (denoise + dereverb) and the
-cleaned audio is **persisted** as a `.clean.flac`.
+writes a standalone `<stem>.transcript.md` when none exists yet). It runs as an
+**engine-hosted job** (ADR-0045), decoupled from conversion (ADR-0009) and
+driven from the TUI. It is strictly a *companion*: the deterministic text
+extraction always runs first, and the transcript is appended as a
+`# Transcript` section (plus a `.srt` sidecar). Along the way the audio is
+**cleaned** (denoise + dereverb) and the cleaned audio is **persisted** as a
+`.clean.flac`.
 
 > Transcription runs **locally** — no audio leaves the machine. This document
 > covers how to serve the models and enable the pass. See the
@@ -18,7 +19,7 @@ cleaned audio is **persisted** as a `.clean.flac`.
 | Role | Model | Runtime | Notes |
 | --- | --- | --- | --- |
 | ASR (Norwegian, TUI default) | `NbAiLab/nb-whisper-large` (via `/v1/asr`) | audio server (PyTorch) | ~2× fewer Norwegian errors than stock Whisper (6.6%/2.2% vs 10.4%/6.8% WER); Apache-2.0 (ADR-0044) |
-| ASR (default, CLI) | `mlx-community/whisper-large-v3-mlx` | `mlx-whisper` (MLX) | 1.55B params, ~1× realtime on Apple Silicon — the generic quality ceiling (ADR-0043) |
+| ASR (mlx-whisper default) | `mlx-community/whisper-large-v3-mlx` | `mlx-whisper` (MLX) | 1.55B params, ~1× realtime on Apple Silicon — the generic quality ceiling (ADR-0043) |
 | ASR (speed override) | `mlx-community/whisper-large-v3-turbo` | `mlx-whisper` (MLX) | 809M params, ~4–5× realtime, near-equal quality |
 | Enhancement | DeepFilterNet (denoise + dereverb) | PyTorch server (`:8089`, manifest `audio` daemon) | optional, ~8 MB, no gating |
 | Diarization | `pyannote/speaker-diarization-3.1` | PyTorch server (`:8089`, manifest `audio` daemon) | optional, gated HF model |
@@ -61,7 +62,7 @@ operational runbook.
 > For the exact Hugging Face steps — accept the licenses on
 > `pyannote/speaker-diarization-3.1` **and** `pyannote/segmentation-3.0`, then
 > create a **Read** token — see
-> [the runbook's "Hugging Face setup" section](runbook.md#21-hugging-face-setup-only-for---diarize--speaker-labels).
+> [the runbook's "Hugging Face setup" section](runbook.md#21-hugging-face-setup-only-for-speaker-labels).
 
 The service exposes four endpoints:
 
@@ -82,53 +83,49 @@ If the server is down, transcription still succeeds — dereverberation/enhancem
 degrades to the deterministic ffmpeg chain, isolation is skipped, and speaker
 labels are dropped.
 
-`ptm-transcribe` streams live progress to stderr (ffmpeg/mlx-whisper output plus
-short phase lines), with a `still working … (elapsed …)` heartbeat during quiet
-phases such as the first-run model download. Only one `ptm-transcribe` runs at a
-time: it holds an exclusive `flock` on
-`<PTM_STATE_DIR or ~/.local/state/ptm>/transcribe.lock`, and a second invocation
-exits fast with code `3`. Output files are written atomically, and Ctrl-C
-terminates the child, cleans temp files, and releases the lock.
+The engine streams live progress over its WebSocket (ffmpeg/mlx-whisper output
+plus short phase frames), with a heartbeat during quiet phases such as the
+first-run model download. Only one transcription runs at a time: the engine
+holds an exclusive `flock` on
+`<PTM_STATE_DIR or ~/.local/state/ptm>/transcribe.lock`, and a second job is
+rejected while it runs. Output files are written atomically.
 
 ### 3. Enable the pass
 
-Transcription is decoupled from conversion (ADR-0009) and runs as its own
-`ptm-transcribe` command — with or without an existing Markdown file:
+Transcription is decoupled from conversion (ADR-0009) and runs as an engine
+job, driven from the TUI (ADR-0045). Audio files appear in the launch view with
+a `♫` marker; select them and press Enter. The engine pairs the recording with
+a same-stem Markdown file or writes a standalone transcript.
+
+The options are persisted **settings** (edited on the TUI's settings screen) with
+environment overrides applied at engine launch:
 
 ```bash
-# attach to existing Markdown (discover same-stem audio beside it)
-ptm-transcribe deck.md
-ptm-transcribe --diarize deck.md
-ptm-transcribe --isolate deck.md                 # + isolate the dominant voice
+# diarization + a pinned speaker count (e.g. a two-person interview)
+AUDIO_DIARIZE_ENABLED=1 AUDIO_DIARIZE_SPEAKERS=2 scripts/ptm-tui.sh
 
-# multi-speaker: pin the speaker count for a two-person interview
-ptm-transcribe --diarize --speakers 2 deck.md
-ptm-transcribe --speakers 2 week-2.mp3           # implies --diarize
-ptm-transcribe --min-speakers 1 --max-speakers 4 deck.md   # let pyannote search a range
-
-# no Markdown yet — transcribe straight to a transcript file
-ptm-transcribe week-2.mp3
-ptm-transcribe --audio-file lecture.mp3 deck.md   # explicit audio for deck.md
-ptm-transcribe lecture.mp3 --to deck.md           # attach lecture.mp3 to deck.md
+# voice isolation / language hint / ASR model override
+AUDIO_ISOLATE_ENABLED=1 AUDIO_LANGUAGE=en scripts/ptm-tui.sh
+AUDIO_MODEL=mlx-community/whisper-large-v3-turbo scripts/ptm-tui.sh
 ```
 
 The audio pipeline is `ffmpeg clean → WPE dereverb → DeepFilterNet enhance →
 [SepFormer isolate] → mlx-whisper`. WPE dereverberation and enhancement both run
-whenever the server is up (default on); voice isolation is opt-in (`--isolate`)
-and, when enabled, writes a `<stem>.isolated.<N>.flac` that Whisper transcribes
-instead of the cleaned file.
+whenever the server is up (default on); voice isolation is opt-in
+(`AUDIO_ISOLATE_ENABLED`) and, when enabled, writes a `<stem>.isolated.<N>.flac`
+that Whisper transcribes instead of the cleaned file.
 
 ### Speaker count
 
-Speaker diarization is opt-in (`--diarize`) and the **number of speakers can be
-injected**:
+Speaker diarization is opt-in and the **number of speakers can be
+injected** (TUI settings row or env):
 
-- `--speakers N` pins an **exact** count (`AUDIO_DIARIZE_SPEAKERS`) — pyannote is
-  told `num_speakers = N`. Use `--speakers 2` for a two-person interview.
-- `--min-speakers` / `--max-speakers` give pyannote a range to search
-  (`AUDIO_DIARIZE_MIN_SPEAKERS` / `AUDIO_DIARIZE_MAX_SPEAKERS`).
-- All three imply `--diarize` (no separate flag needed) and are mutually
-  exclusive with each other (`--speakers` vs. the min/max pair).
+- `AUDIO_DIARIZE_SPEAKERS=N` pins an **exact** count — pyannote is told
+  `num_speakers = N`. Use `2` for a two-person interview.
+- `AUDIO_DIARIZE_MIN_SPEAKERS` / `AUDIO_DIARIZE_MAX_SPEAKERS` give pyannote a
+  range to search.
+- All three imply diarization (no separate switch needed); the exact count
+  overrides the min/max range.
 
 Consecutive same-speaker ASR segments are merged into continuous utterances in
 the Markdown and `.srt` output, so an interview reads as alternating
@@ -139,29 +136,24 @@ diarized turn, so heavy crosstalk/overlapping speech can still be mislabelled.
 
 ### Defaults and TUI control
 
-The **CLI** default is the max-quality `whisper-large-v3-mlx` with a `no`
-language hint, so a bare `ptm-transcribe file.m4a` is a Norwegian, quality-first
-transcript (ADR-0043). The **TUI/engine default** is `nb-whisper-large` — a
-Norwegian fine-tuned Whisper served by the audio server (`/v1/asr`, ADR-0044)
-that roughly halves Norwegian ASR errors; if that route is down it falls back to
-`mlx-whisper` with a warning. Both — plus diarization and the speaker count —
-are persisted **settings** the TUI controls:
+The default is `nb-whisper-large` — a Norwegian fine-tuned Whisper served by the
+audio server (`/v1/asr`, ADR-0044) that roughly halves Norwegian ASR errors; if
+that route is down it falls back to `mlx-whisper`
+(`mlx-community/whisper-large-v3-mlx`, the max-quality generic model) with a
+warning. Model, language, diarization, and the speaker count are persisted
+**settings** the TUI controls:
 
 - In `ptm-tui`, the settings screen (`s`) shows `model`, `language`, `diarize`
   and `speakers` rows. Model cycles `nb-whisper (no)` → `large-v3 (max)` →
   `turbo (fast)`; language is a freeform edit where `auto` means auto-detect.
   Changes round-trip through the engine's `/api/config` (stored in
-  `converter.settings`, the same SQLite store as the GUI preferences) and are
-  injected into the spawned `ptm-transcribe` argv at run time — no restart
-  needed (ADR-0043).
+  `converter.settings`) and are applied to the next transcription job — no
+  restart needed (ADR-0043/0045).
 - Defaults: model `nb-whisper-large`, language `no`, diarize **on**, speakers
-  `2` (interview-first). The CLI is unaffected by the TUI's stored values; it
-  honours `AUDIO_MODEL`/`AUDIO_LANGUAGE` env vars and `--language` / `--env`
-  flags instead.
-- Override per run: `ptm-transcribe --language en file.m4a` (mlx-whisper stays
-  the engine unless `AUDIO_MODEL=nb-whisper-large`), or set the TUI's model/language
-  rows. NB-Whisper is Norwegian/English focused — keep an mlx-whisper model for
-  other languages.
+  `2` (interview-first). The `AUDIO_*` environment variables override them at
+  engine launch.
+- NB-Whisper is Norwegian/English focused — pick an mlx-whisper model for other
+  languages.
 
 ## Configuration
 
@@ -180,7 +172,7 @@ are persisted **settings** the TUI controls:
 | `AUDIO_ISOLATE_ENABLED` | *(unset = off)* | Voice isolation (SepFormer) via the audio server |
 | `AUDIO_ENHANCE_BASE_URL` | `AUDIO_DIARIZE_BASE_URL` | Enhancement endpoint |
 | `AUDIO_DIARIZE_ENABLED` | *(unset = off)* | Enable speaker labelling via the diarization server |
-| `AUDIO_DIARIZE_SPEAKERS` | *(unset = auto)* | Exact speaker count for pyannote (`--speakers N`); implies diarization, overrides min/max |
+| `AUDIO_DIARIZE_SPEAKERS` | *(unset = auto)* | Exact speaker count for pyannote; implies diarization, overrides min/max |
 | `AUDIO_DIARIZE_MIN_SPEAKERS` | *(unset = auto)* | Lower bound of the speaker-count range; implies diarization |
 | `AUDIO_DIARIZE_MAX_SPEAKERS` | *(unset = auto)* | Upper bound of the speaker-count range; implies diarization |
 | `AUDIO_DIARIZE_BASE_URL` | `http://127.0.0.1:8089/v1` | Audio server base URL |
@@ -188,21 +180,18 @@ are persisted **settings** the TUI controls:
 
 ## How the audio is found
 
-1. An **explicit** `--to MARKDOWN.md` pairs an audio file to a specific lecture.
-2. An **explicit** `--audio-file PATH` wins (paired by stem, or the sole target).
-3. Otherwise, by **convention**: a file in the same folder as the Markdown with the
-   same stem and a known audio extension — `deck.md` pairs with `deck.mp3`
+1. By **convention**: a file in the same folder as the Markdown with the same
+   stem and a known audio extension — `deck.md` pairs with `deck.mp3`
    (`.m4a`, `.wav`, `.flac`, `.ogg`, `.aac`, `.m4b`, `.mp4`, `.mov`, `.webm`,
-   `.aiff`).
-4. If the pairing is still ambiguous, `ptm-transcribe` prompts to pick the
-   lecture (`[0]` = standalone).
-5. No audio found for a `.md` → `[WARN]`; an audio file with no Markdown →
-   standalone `<stem>.transcript.md`.
+   `.aiff`). Selecting the `.md` attaches its same-stem audio.
+2. No audio found for a `.md` → `[WARN]`.
+3. An audio file with no Markdown → standalone `<stem>.transcript.md`.
 
 Standalone transcripts are **append-only**: re-running the same audio writes
 `<stem>.transcript.1.md`, `.2.md`, … (with a matching `.srt` **and**
-`.clean.<N>.flac`) so past transcripts are preserved for A/B comparison. Use
-`--overwrite` to replace the base file.
+`.clean.<N>.flac`) so past transcripts are preserved for A/B comparison.
+Attaching to a `.md` is idempotent — the `# Transcript` section is replaced,
+not duplicated.
 
 ## Output
 
@@ -212,7 +201,7 @@ Given `deck.md` + `deck.mp3`:
 deck.md                    # slides + appended "# Transcript" section
 deck.transcript.srt        # SubRip sidecar (timestamps + speaker cues)
 deck.clean.flac            # persisted cleaned audio (dereverbed + denoised, 16 kHz)
-deck.isolated.flac         # voice-isolated stream (only with --isolate)
+deck.isolated.flac         # voice-isolated stream (only with voice isolation enabled)
 ```
 
 Transcript Markdown (speaker omitted when diarization is off):
@@ -230,8 +219,8 @@ Transcript Markdown (speaker omitted when diarization is off):
 ```
 
 The cleaned `.clean.flac` is the exact audio Whisper transcribed, so its
-timestamps match the transcript (with `--isolate`, that is `.isolated.flac`
-instead). The source recording is never modified.
+timestamps match the transcript (with isolation enabled, that is
+`.isolated.flac` instead). The source recording is never modified.
 
 Every segment is also recorded to `ptm.sqlite` (`transcript_segments` table) so
 the transcript is searchable and inspectable:
@@ -244,12 +233,10 @@ FROM transcript_segments WHERE source = ? ORDER BY start;
 ## A/B checking enhancement
 
 Enhancement is on by default but can occasionally hurt already-clean audio. To
-compare, run the same file twice and diff the transcripts:
-
-```bash
-ptm-transcribe deck.md                                         # enhancement on
-AUDIO_PREPROCESS=0 AUDIO_ENHANCE_ENABLED=0 ptm-transcribe deck.md   # raw audio
-```
+compare, toggle *Enhancement* / *Dereverberation* in the TUI settings (or set
+`AUDIO_PREPROCESS=0 AUDIO_ENHANCE_ENABLED=0` at engine launch) and transcribe
+the audio again — standalone transcripts are append-only, so both outputs exist
+side by side and can be diffed.
 
 ## Limitations
 
@@ -269,7 +256,7 @@ AUDIO_PREPROCESS=0 AUDIO_ENHANCE_ENABLED=0 ptm-transcribe deck.md   # raw audio
   quality loss vs. transcribing at 48 kHz, traded for a smaller artifact.
 - WPE dereverberation is single-channel, so its effect on very reverberant mono
   recordings is real but bounded; the multi-channel case improves much more.
-- Voice isolation (`--isolate`) is **best-effort**: SepFormer splits into two
+- Voice isolation (`AUDIO_ISOLATE_ENABLED`) is **best-effort**: SepFormer splits into two
   unordered streams and we keep the higher-energy one, so a dominant second
   speaker or very similar voices may be picked incorrectly — it degrades to the
   unisolated audio rather than failing.

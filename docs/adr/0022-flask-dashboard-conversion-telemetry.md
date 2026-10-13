@@ -1,6 +1,6 @@
 # 0022. Flask dashboard and conversion-level run telemetry
 
-- Status: Accepted
+- Status: Superseded by [0051](0051-tui-sole-surface.md)
 - Date: 2026-09-04
 
 ## Context

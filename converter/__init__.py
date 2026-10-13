@@ -169,7 +169,8 @@ def convert_file(
     organizing for that file. Used by the engine (ADR-0028).
 
     Conversion is deterministic: it never invokes audio transcription
-    (see ``ptm-transcribe`` / ``converter.transcribe`` for that, ADR-0009).
+    (see ``converter.transcribe`` for the engine-hosted transcription path,
+    ADR-0009/ADR-0045).
 
     When any AI pass contributed model output to the Markdown, the file is
     named ``<stem>-inference-used.md`` rather than ``<stem>.md`` (ADR-0050),

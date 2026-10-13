@@ -1,25 +1,24 @@
-"""Native engine process for the web GUI (ADR-0025).
+"""Native engine process for the PTM TUI (ADR-0025/0040).
 
-The web UI (the Flask ``dashboard`` app) is a read-only observer and a thin
-control-plane now. This process owns everything a browser cannot do alone:
+The native Go TUI is a thin presentation client; this process owns everything
+a native client cannot do alone:
 
 - running conversions (``convert_files`` on a worker thread),
+- engine-hosted audio transcription (ADR-0045),
 - filesystem access (directory listing, path resolution, recursive glob, and a
   native "open in Finder"),
 - the AI server preflight (``config.probe`` / ``config.missing_servers``), and
 - app settings persistence (``converter.settings``).
 
-It is the **sole writer** to ``ptm.sqlite`` (WAL), so the web UI process can keep
-its read-only guarantee (ADR-0014) while this process writes run telemetry via
-``converter.logstore``.
+It is the **sole writer** to ``ptm.sqlite`` (WAL): the TUI stays a pure client
+while run telemetry is written here via ``converter.logstore``.
 
-Like ``start.py``, it applies environment variables *before* importing
-``converter`` so the import-time configuration (ADR-0002/ADR-0012) is correct.
+It applies environment variables *before* importing ``converter`` so the
+import-time configuration (ADR-0002/ADR-0012) is correct.
 
 Concurrency model: **one conversion at a time**. ``converter.config``'s mutable
 feature state and ``converter.logstore``'s connection are process-global, so a
-second job is rejected while one is running (the desktop GUI has the same
-single-threaded constraint).
+second job is rejected while one is running.
 """
 from __future__ import annotations
 
@@ -39,7 +38,7 @@ from flask_sock import Sock
 
 DEFAULT_HOST = "127.0.0.1"
 # 9091: the manifest reserves 808x/809x for model daemons (nomic-embed owns 8090),
-# so the engine binds in the 909x range next to the dashboard (9090) — ADR-0035.
+# so the engine binds in the 909x range — ADR-0035.
 DEFAULT_PORT = 9091
 
 _SUPPORTED_EXTENSIONS = {".pptx", ".pdf", ".tex"}
@@ -911,7 +910,7 @@ def _main(argv: list[str] | None = None) -> int:
 
     parser = argparse.ArgumentParser(
         prog="ptm-engine",
-        description="Native engine process for the PTM web GUI (ADR-0025).",
+        description="Native engine process for the PTM TUI (ADR-0025/0040).",
     )
     add_ai_flags(parser)
     parser.add_argument("--host", default=DEFAULT_HOST, help="host to bind (default: 127.0.0.1)")
@@ -941,11 +940,11 @@ def _main(argv: list[str] | None = None) -> int:
 
 
 def main(argv: list[str] | None = None) -> None:
-    """Console-script entry point; applies env-before-import is the caller's job.
+    """Console-script entry point; applying env-before-import is the caller's job.
 
-    When launched by the web UI, the environment is inherited from the UI process
-    (which already applied ``apply_ai_env`` or ``--env``). When launched by hand,
-    ``ptm-engine`` inherits the current shell environment.
+    When spawned by the TUI (or its launcher), the environment is inherited from
+    that process; when launched by hand, ``ptm-engine`` inherits the current
+    shell environment.
     """
     raise SystemExit(_main(argv))
 

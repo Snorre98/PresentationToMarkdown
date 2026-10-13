@@ -66,8 +66,8 @@ type Config struct {
 	VaultRoot          string          `json:"vault_root"`
 	Features           map[string]bool `json:"features"`
 
-	// Transcription settings (ADR-0043): persisted by the engine, injected
-	// into the spawned ptm-transcribe argv by the TUI.
+	// Transcription settings (ADR-0043): persisted by the engine; the TUI
+	// sends them with each engine-hosted transcription job (ADR-0045).
 	AudioModel    string `json:"audio_model"`
 	AudioLanguage string `json:"audio_language"`
 	AudioDiarize  bool   `json:"audio_diarize"`

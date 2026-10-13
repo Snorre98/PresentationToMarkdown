@@ -14,7 +14,7 @@ overwrite a file that cost model time to produce.
 
 State lives in a :class:`contextvars.ContextVar`, like ``logstore``'s run tag:
 one conversion per context, so a batch in one thread cannot leak into the next
-file and the GUI's per-batch worker thread stays isolated. Nothing here raises
+file and the engine's per-batch worker thread stays isolated. Nothing here raises
 or changes conversion behaviour; a pass called outside :func:`tracking` (unit
 tests calling a pass directly) simply records nothing.
 """

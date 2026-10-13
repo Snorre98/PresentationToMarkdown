@@ -1,6 +1,6 @@
 # 0001. Add `ptm` and `ptm-start` console-script entry points
 
-- Status: Accepted
+- Status: Superseded by [0051](0051-tui-sole-surface.md)
 - Date: 2026-08-26
 
 ## Context

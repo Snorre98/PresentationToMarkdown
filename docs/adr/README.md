@@ -5,15 +5,15 @@ Index of architectural decisions for PresentationToMarkdown, in
 
 | # | Title | Status |
 | --- | --- | --- |
-| [0001](0001-cli-entry-points.md) | Add `ptm` and `ptm-start` console-script entry points | Accepted |
+| [0001](0001-cli-entry-points.md) | Add `ptm` and `ptm-start` console-script entry points | Superseded by [0051](0051-tui-sole-surface.md) |
 | [0002](0002-ai-flags-to-env.md) | Expose AI capabilities as flags mapped onto env vars | Accepted |
-| [0003](0003-convert-cli-gui-parity.md) | `ptm` mirrors the GUI conversion semantics | Amended by [0048](0048-markdown-beside-source-archive.md) |
+| [0003](0003-convert-cli-gui-parity.md) | `ptm` mirrors the GUI conversion semantics | Superseded by [0051](0051-tui-sole-surface.md) |
 | [0004](0004-audio-transcription-pass.md) | Add an opt-in local audio-transcription post-pass | Accepted |
 | [0005](0005-asr-engine-and-model.md) | Use mlx-whisper (large-v3-turbo / large-v3) as the ASR engine | Accepted |
 | [0006](0006-diarization-isolated-server.md) | Run speaker diarization in a dedicated PyTorch server | Accepted |
 | [0007](0007-transcript-to-markdown-relation.md) | Relate the transcript to the Markdown as a companion section | Accepted |
 | [0008](0008-audio-enhancement.md) | Enhance lecture-hall audio before ASR and persist a cleaned FLAC | Accepted |
-| [0009](0009-decouple-transcription-from-conversion.md) | Decouple transcription from conversion into a `ptm-transcribe` command | Accepted |
+| [0009](0009-decouple-transcription-from-conversion.md) | Decouple transcription from conversion into a `ptm-transcribe` command | Amended by [0051](0051-tui-sole-surface.md) |
 | [0010](0010-dereverb-voice-isolation.md) | Dereverberation (WPE) and voice isolation (SepFormer) in the audio server | Accepted |
 | [0011](0011-paper-structure-llm-pass.md) | Paper-mode document-structure LLM pass with image reword | Accepted |
 | [0012](0012-runtime-ai-features.md) | Runtime-togglable AI features with server health checks | Accepted |
@@ -26,27 +26,28 @@ Index of architectural decisions for PresentationToMarkdown, in
 | [0019](0019-image-ink-projection-column-detection.md) | Image ink-projection column detection | Accepted |
 | [0020](0020-single-content-source-per-page.md) | Single content source per page (no duplicate text/vision emission) | Accepted |
 | [0021](0021-fast-summary-rag.md) | Dedicated summary model and lean RAG retrieval | Accepted |
-| [0022](0022-flask-dashboard-conversion-telemetry.md) | Flask dashboard and conversion-level run telemetry | Accepted |
+| [0022](0022-flask-dashboard-conversion-telemetry.md) | Flask dashboard and conversion-level run telemetry | Superseded by [0051](0051-tui-sole-surface.md) |
 | [0023](0023-pre-call-garbage-self-check.md) | Pre-call OCR-garbage self-check in the structure pass | Accepted |
 | [0024](0024-pipeline-router-and-text-downgrade.md) | Centralized pre-execution pipeline router and structure text-model downgrade | Accepted |
-| [0025](0025-web-gui-native-engine.md) | Web GUI with a native engine process | Accepted |
+| [0025](0025-web-gui-native-engine.md) | Web GUI with a native engine process | Amended by [0051](0051-tui-sole-surface.md) |
 | [0026](0026-sqlalchemy-orm.md) | SQLAlchemy 2.0 ORM for the ptm.sqlite log/settings/RAG store | Accepted |
-| [0027](0027-browser-file-upload.md) | Browser file upload to the native engine | Accepted |
-| [0028](0028-upload-output-location.md) | Upload output location | Amended by [0048](0048-markdown-beside-source-archive.md) |
+| [0027](0027-browser-file-upload.md) | Browser file upload to the native engine | Deprecated by [0051](0051-tui-sole-surface.md) |
+| [0028](0028-upload-output-location.md) | Upload output location | Amended by [0048](0048-markdown-beside-source-archive.md); deprecated by [0051](0051-tui-sole-surface.md) |
 | [0029](0029-serving-via-control-daemon.md) | Serving control via the macos-dev-config control daemon | Accepted |
 | [0035](0035-audio-on-fleet-manifest.md) | Audio server on the fleet manifest | Accepted |
 | [0036](0036-terminal-tui.md) | Terminal UI (ptm-tui) — one native terminal surface for the whole app | Superseded by [0040](0040-native-go-tui.md) |
 | [0037](0037-pandoc-evaluated-deferred.md) | Pandoc evaluated; adoption deferred as documented future work | Accepted |
 | [0038](0038-latex-pandoc-backend.md) | LaTeX project → Markdown converter via pandoc | Accepted |
-| [0039](0039-preflight-inference-gate.md) | Pre-flight inference gate before expensive rewrite passes | Accepted |
+| [0039](0039-preflight-inference-gate.md) | Pre-flight inference gate before expensive rewrite passes | Amended by [0051](0051-tui-sole-surface.md) |
 | [0040](0040-native-go-tui.md) | Native Go TUI (`ptm-tui`) over the Python engine | Accepted |
-| [0041](0041-tui-transcription.md) | Audio transcription in the native Go TUI | Accepted |
+| [0041](0041-tui-transcription.md) | Audio transcription in the native Go TUI | Amended by [0051](0051-tui-sole-surface.md) |
 | [0042](0042-multi-speaker-diarization.md) | Multi-speaker diarization with injectable speaker count | Accepted |
 | [0043](0043-quality-first-asr-defaults.md) | Quality-first ASR defaults, engine-backed transcription settings | Accepted |
 | [0044](0044-nb-whisper-server-asr.md) | NB-Whisper Norwegian ASR in the audio server | Accepted |
-| [0045](0045-engine-hosted-transcription.md) | Engine-hosted audio transcription and unified job progress | Proposed |
+| [0045](0045-engine-hosted-transcription.md) | Engine-hosted audio transcription and unified job progress | Proposed; amended by [0051](0051-tui-sole-surface.md) |
 | [0046](0046-pdf-latex-backend.md) | PDF LaTeX backend (PDF → LaTeX → Markdown) | Deprecated |
 | [0047](0047-text-only-output-image-links-opt-in.md) | Text-only Markdown by default; image links behind `IMAGE_LINKS` | Accepted |
 | [0048](0048-markdown-beside-source-archive.md) | Markdown beside the source; sources archived to `source/` under kebab-case names | Accepted |
 | [0049](0049-pdf-compression-on-archive.md) | Best-effort PDF compression when sources are archived | Accepted |
 | [0050](0050-inference-marked-markdown.md) | Markdown containing model output is named `-inference-used` | Accepted |
+| [0051](0051-tui-sole-surface.md) | Native TUI is the sole user interface; desktop GUI, dashboard, and CLIs retired | Accepted |

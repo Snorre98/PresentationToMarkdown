@@ -6,7 +6,14 @@ run down to the simplest one. This is the *testing* companion to
 lifecycle, Hugging Face auth, troubleshooting). Use this when you want to isolate
 which stage (dereverb, enhance, isolate, diarize, ASR) changes the transcript.
 
-**Pipeline:** `ffmpeg clean → WPE dereverb → DeepFilterNet enhance → [SepFormer isolate] → mlx-whisper` (+ optional `--diarize`).
+Transcription is an engine-hosted job (ADR-0045): each level below launches the
+TUI with the stage switches set in the environment (the engine inherits them),
+then you select `week-2.mp3` in the picker and press Enter. Diarization and the
+speaker count are *per-job* settings — the TUI settings screen sends them with
+each request — so toggle those there rather than via the environment. Standalone
+transcripts are append-only, so the levels stack up as diffable versions.
+
+**Pipeline:** `ffmpeg clean → WPE dereverb → DeepFilterNet enhance → [SepFormer isolate] → mlx-whisper` (+ optional diarization).
 
 ---
 
@@ -25,34 +32,26 @@ which stage (dereverb, enhance, isolate, diarize, ASR) changes the transcript.
   > ⚠️ **Unverified pin:** `requirements-audio.txt` now pins `speechbrain==1.0.2`
   > and `nara_wpe==0.0.11`. The isolated `~/tools/audio-env` was not built against
   > `torch==2.5.1`/`huggingface-hub==0.36.2` yet — run `install` **before** relying
-  > on `--isolate`. If `speechbrain 1.0.2` conflicts, try another `1.x` pin.
+  > on isolation. If `speechbrain 1.0.2` conflicts, try another `1.x` pin.
 
-- The `ptm-transcribe` entry point. Every command below uses its **full path**, so
-  they copy-paste cleanly into any terminal (no shell variable to set first):
-
-  ```bash
-  /Users/snorresaether/Documents/Liv/Projects/PresentationToMarkdown/scripts/ptm-transcribe.sh
-  ```
-
-  This wrapper resolves `.venv/bin/ptm-transcribe` (and bootstraps it with
-  `pip install -e .` if missing), so it works from any folder with no venv
-  activation. All commands use `week-2.mp3` as the example and assume you run
-  them from the folder that contains it.
+- The TUI + engine: `scripts/ptm-tui.sh` builds/launches both. Every level below
+  runs from the folder that contains `week-2.mp3`; after the TUI opens, type `@`,
+  filter to the file, and press Enter.
 
 ---
 
 ## 2. Pipeline map
 
-| # | Stage | Where | Switch | Default | CLI |
+| # | Stage | Where | Switch | Default | Set via |
 | --- | --- | --- | --- | --- | --- |
-| 1 | ffmpeg clean (transcode + filter chain) | local `ffmpeg` | `AUDIO_PREPROCESS` | `1` | — |
-| 2 | WPE dereverb | server `/v1/dereverb` | `AUDIO_DEREVERB_ENABLED` | `1` | — |
-| 3 | DeepFilterNet enhance | server `/v1/enhance` | `AUDIO_ENHANCE_ENABLED` | `1` | — |
-| 4 | SepFormer voice isolate | server `/v1/isolate` | `AUDIO_ISOLATE_ENABLED` | off | `--isolate` |
-| 5 | ASR (mlx-whisper) | local subprocess | (always) | — | `--language` |
-| 6 | pyannote diarize | server `/v1/diarize` | `AUDIO_DIARIZE_ENABLED` | off | `--diarize` |
+| 1 | ffmpeg clean (transcode + filter chain) | local `ffmpeg` | `AUDIO_PREPROCESS` | `1` | env at launch |
+| 2 | WPE dereverb | server `/v1/dereverb` | `AUDIO_DEREVERB_ENABLED` | `1` | env at launch |
+| 3 | DeepFilterNet enhance | server `/v1/enhance` | `AUDIO_ENHANCE_ENABLED` | `1` | env at launch |
+| 4 | SepFormer voice isolate | server `/v1/isolate` | `AUDIO_ISOLATE_ENABLED` | off | env at launch |
+| 5 | ASR (mlx-whisper / nb-whisper) | local subprocess / server | `AUDIO_MODEL`, `AUDIO_LANGUAGE` | nb-whisper, `no` | env or TUI settings |
+| 6 | pyannote diarize | server `/v1/diarize` | `AUDIO_DIARIZE_ENABLED`, `AUDIO_DIARIZE_SPEAKERS` | off (TUI default: on) | TUI settings |
 
-Every server stage degrades to a `[WARN]` (never fails the run) when the server is
+Every server stage degrades to a warning (never fails the run) when the server is
 down or the model is missing.
 
 **Artifacts** are append-only and share one version number `N` per run:
@@ -60,52 +59,55 @@ down or the model is missing.
 ```
 week-2.transcript.<N>.md  +  week-2.transcript.<N>.srt   ← what Whisper produced
 week-2.clean.<N>.flac                                      ← after stages 1–3 (always written)
-week-2.isolated.<N>.flac                                   ← after stage 4 (only with --isolate; then this is what Whisper transcribes)
+week-2.isolated.<N>.flac                                   ← after stage 4 (only with isolation; then this is what Whisper transcribes)
 ```
 
 The base run uses no suffix (`week-2.transcript.md`); subsequent runs get `.1`, `.2`, ….
-`--overwrite` forces the base (un-numbered) name.
 
 ---
 
 ## 3. The ladder (server running)
 
-Each level is one command. Run them in order and you'll get a stack of versioned
-transcripts you can diff (see §6).
+Each level is one launch + one Enter. Run them in order and you'll get a stack of
+versioned transcripts you can diff (see §6).
 
 ### L0 — fully fledged (all six stages)
 
 ```bash
-/Users/snorresaether/Documents/Liv/Projects/PresentationToMarkdown/scripts/ptm-transcribe.sh --diarize --isolate week-2.mp3
+AUDIO_ISOLATE_ENABLED=1 scripts/ptm-tui.sh
 ```
+
+with **diarize on** (and e.g. speakers `2`) in the TUI settings screen.
 
 - Active: ffmpeg → dereverb → enhance → isolate → ASR → diarize.
 - Expect: `week-2.transcript.md` with `**SPEAKER_XX:**` labels; **both**
   `week-2.clean.flac` and `week-2.isolated.flac` (Whisper transcribes the isolated one).
-- Add `--language no` if auto-detection misbehaves.
 
 ### L1 — everything except speaker labels
 
 ```bash
-/Users/snorresaether/Documents/Liv/Projects/PresentationToMarkdown/scripts/ptm-transcribe.sh --isolate week-2.mp3
+AUDIO_ISOLATE_ENABLED=1 scripts/ptm-tui.sh
 ```
 
-- Same as L0 minus diarize. Verifies isolation doesn't depend on diarization.
+with **diarize off** in the TUI settings.
+
+- Same as L0 minus diarization. Verifies isolation doesn't depend on diarization.
 
 ### L2 — default (dereverb + enhance)
 
 ```bash
-/Users/snorresaether/Documents/Liv/Projects/PresentationToMarkdown/scripts/ptm-transcribe.sh week-2.mp3
+scripts/ptm-tui.sh
 ```
 
-- Active: ffmpeg → dereverb → enhance → ASR. This is the normal run.
+- Active: ffmpeg → dereverb → enhance → ASR (plus diarization if it is on in the
+  settings screen — the TUI default is on).
 - Expect: `week-2.transcript.md` + `week-2.clean.flac`; **no** `week-2.isolated.*`.
 - Verify: `ffprobe` `clean.flac` duration ≈ source (~40 min), not 3× (see §6).
 
 ### L3 — no dereverberation (enhance only)
 
 ```bash
-/Users/snorresaether/Documents/Liv/Projects/PresentationToMarkdown/scripts/ptm-transcribe.sh --env AUDIO_DEREVERB_ENABLED=0 week-2.mp3
+AUDIO_DEREVERB_ENABLED=0 scripts/ptm-tui.sh
 ```
 
 - Skips WPE; DeepFilterNet still runs. Useful on already-dry audio.
@@ -113,7 +115,7 @@ transcripts you can diff (see §6).
 ### L4 — no enhancement (dereverb only)
 
 ```bash
-/Users/snorresaether/Documents/Liv/Projects/PresentationToMarkdown/scripts/ptm-transcribe.sh --env AUDIO_ENHANCE_ENABLED=0 week-2.mp3
+AUDIO_ENHANCE_ENABLED=0 scripts/ptm-tui.sh
 ```
 
 - Skips DeepFilterNet; WPE still runs. Isolates the dereverb contribution.
@@ -121,16 +123,16 @@ transcripts you can diff (see §6).
 ### L5 — no server processing (ffmpeg filter chain only)
 
 ```bash
-/Users/snorresaether/Documents/Liv/Projects/PresentationToMarkdown/scripts/ptm-transcribe.sh --env AUDIO_DEREVERB_ENABLED=0 AUDIO_ENHANCE_ENABLED=0 week-2.mp3
+AUDIO_DEREVERB_ENABLED=0 AUDIO_ENHANCE_ENABLED=0 scripts/ptm-tui.sh
 ```
 
-- Only the deterministic ffmpeg chain + ASR. No server calls at all (no `[WARN]`
+- Only the deterministic ffmpeg chain + ASR. No server calls at all (no warning
   from dereverb/enhance even though the server is up).
 
 ### L6 — raw transcode (no filters at all)
 
 ```bash
-/Users/snorresaether/Documents/Liv/Projects/PresentationToMarkdown/scripts/ptm-transcribe.sh --env AUDIO_PREPROCESS=0 AUDIO_DEREVERB_ENABLED=0 AUDIO_ENHANCE_ENABLED=0 week-2.mp3
+AUDIO_PREPROCESS=0 AUDIO_DEREVERB_ENABLED=0 AUDIO_ENHANCE_ENABLED=0 scripts/ptm-tui.sh
 ```
 
 - ffmpeg only transcodes to 16 kHz mono, then ASR. The closest you get to "raw
@@ -140,24 +142,22 @@ transcripts you can diff (see §6).
 
 ## 4. Server stopped (the degradation floor)
 
-The simplest way to run the pipeline is with **no server and no flags** — every
-server stage degrades to a warning and you still get a transcript:
+The simplest way to run the pipeline is with **no server** — every server stage
+degrades to a warning and you still get a transcript:
 
 ```bash
 scripts/audio_serve.sh stop
-/Users/snorresaether/Documents/Liv/Projects/PresentationToMarkdown/scripts/ptm-transcribe.sh week-2.mp3
+scripts/ptm-tui.sh                 # then select week-2.mp3
 ```
 
-Expected output:
+Expected run-pane output (warnings are per file; the run ends `1 of 1`):
 
 ```
-[WARN] week-2.mp3: Audio dereverberation failed: …; using reverberant audio
-[WARN] week-2.mp3: Audio enhancement failed: …; using preprocessed audio
-[OK]  week-2.mp3 -> week-2.transcript.md
-Done: 1 of 1 transcribed.
+week-2.mp3: Audio dereverberation failed: …; using reverberant audio
+week-2.mp3: Audio enhancement failed: …; using preprocessed audio
 ```
 
-(If the server is *down*, `--diarize`/`--isolate` also warn and are skipped.)
+(If the server is *down*, diarization/isolation also warn and are skipped.)
 
 > L5 produces the *same* clean audio deliberately, but keeps the server up so you
 > don't have to stop it. L6 goes one step further and drops the ffmpeg filter chain.
@@ -166,8 +166,8 @@ Done: 1 of 1 transcribed.
 
 ## 5. Server endpoint smoke tests (curl)
 
-Exercise each endpoint directly, without going through `ptm-transcribe`. This is
-the fastest way to pin down *which* server stage is broken.
+Exercise each endpoint directly, without going through the engine. This is the
+fastest way to pin down *which* server stage is broken.
 
 ```bash
 # 1. a 2-second probe tone
@@ -219,7 +219,7 @@ sqlite3 ptm.sqlite \
 
 ## 7. Gotchas
 
-- **`AUDIO_DEREVERB_ENABLED` is on by default.** Every `ptm-transcribe` run now
+- **`AUDIO_DEREVERB_ENABLED` is on by default.** Every transcription run now
   calls `/v1/dereverb` when the server is up — and warns when it isn't. To test
   "no server" cleanly you must *explicitly* disable it (L5/L6), unlike earlier
   versions where dereverb didn't exist.
@@ -229,8 +229,8 @@ sqlite3 ptm.sqlite \
 - **Isolation is best-effort.** The "voice" is picked as the higher-RMS SepFormer
   stream — a dominant second speaker or loud music can win. Treat `.isolated.flac`
   as a candidate, not ground truth.
-- **First use downloads weights.** `--isolate` (SepFormer, ~100–200 MB, ungated) and
-  `--diarize` (pyannote, gated — see runbook §2.1) both download on their first
+- **First use downloads weights.** Isolation (SepFormer, ~100–200 MB, ungated) and
+  diarization (pyannote, gated — see runbook §2.1) both download on their first
   request; the run is slow once, fast afterwards.
-- **One instance at a time.** A second `ptm-transcribe` while one is running exits
-  `3` with `another instance is already running (PID …)`.
+- **One instance at a time.** A second transcription job while one is running is
+  rejected with “Another transcription is already running.” in the run pane.

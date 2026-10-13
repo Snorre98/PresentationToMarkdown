@@ -9,8 +9,8 @@ as a subprocess, so ``converter`` stays free of MLX. Speaker labelling (optional
 comes from a separate diarization service (see ``converter.audio``, ADR-0006/0008).
 
 This module is **not** part of the conversion pipeline: ``convert_file``/``convert_files``
-never call into it (ADR-0009). It is driven by the dedicated ``ptm-transcribe``
-command (``cli_transcribe``), which operates on Markdown and/or audio directly.
+never call into it (ADR-0009). It operates on Markdown and/or audio directly and
+is driven by the engine's transcription job (ADR-0045).
 
 Configuration (environment variables):
 

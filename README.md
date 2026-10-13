@@ -1,18 +1,18 @@
 # Presentation to Markdown
 
-Web app, desktop app and reusable Python library that converts PowerPoint presentations (`.pptx`) and PDF documents (`.pdf`) into Markdown. Personal-use tool built for feeding lecture slides into an Obsidian vault.
+Native terminal app and reusable Python library that converts PowerPoint presentations (`.pptx`) and PDF documents (`.pdf`) into Markdown. Personal-use tool built for feeding lecture slides into an Obsidian vault.
 
-- **Web GUI** — a full in-browser converter (drag-and-drop, batch convert, live progress, history) driven by a local native **engine** process
-- **Desktop GUI** — PySide6 interface (file list, output folder, progress, log), kept as a fallback
+- **TUI (`ptm-tui`)** — compiled Go terminal app: file discovery, batch conversion, live progress, history, and settings (ADR-0040). It is the only user interface (ADR-0051).
+- **Engine (`ptm-engine`)** — the local backend the TUI drives: filesystem access, conversion, engine-hosted transcription, settings (ADR-0025)
 - **Library** — importable `converter` package, no UI dependencies
 
 ## What it does
 
 One Markdown file per source document. Image links are **off by default** — a
 figure's local-AI description is kept where one exists, and nothing is extracted
-to disk; pass `--image-links` (or tick *Image links*) to restore the legacy
-`assets/<name>/` sidecar with `![…]`/`[Page N]` links (ADR-0047). Both formats
-preserve **bold** and *italic* formatting.
+to disk; turn on *Image links* in the TUI settings (env `IMAGE_LINKS=on`) to
+restore the legacy `assets/<name>/` sidecar with `![…]`/`[Page N]` links
+(ADR-0047). Both formats preserve **bold** and *italic* formatting.
 
 ### PowerPoint (`.pptx`)
 
@@ -24,7 +24,7 @@ preserve **bold** and *italic* formatting.
 | Numbered lists | `1. ` list items |
 | Nested levels | Indented with two spaces per level |
 | Tables | Pipe tables (`\|` and newlines escaped) |
-| Images | No link by default — an AI description replaces it where available; `--image-links` extracts to `assets/<name>/` and references them |
+| Images | No link by default — an AI description replaces it where available; `IMAGE_LINKS=on` extracts to `assets/<name>/` and references them |
 | Speaker notes | `> **Notes:**` blockquote after each slide |
 
 Also: slide-number and date placeholders are skipped, headers/footers are italicized, groups are walked recursively, and charts are skipped with a warning.
@@ -34,7 +34,7 @@ Also: slide-number and date placeholders are skipped, headers/footers are italic
 | Source element | Markdown output |
 | --- | --- |
 | Each page | `# {slide title} — Page N` heading (falls back to `# Page N`) |
-| Page render | Rendered in memory for the vision passes; linked as `[Page N](…)` only with `--image-links` |
+| Page render | Rendered in memory for the vision passes; linked as `[Page N](…)` only with `IMAGE_LINKS=on` |
 | Text | Reconstructed into reading order, preserving bold/italic |
 | Bullets | `- ` / nested `  - ` lists (bullet glyphs + indentation) |
 | Tables | Pipe tables via `page.find_tables()` |
@@ -46,16 +46,12 @@ Pages whose text can't be linearized (diagrams, multi-column flowcharts) fall
 back to a collapsed raw-text block — and can optionally be transcribed by a local
 vision model. See [docs/ai-vision.md](docs/ai-vision.md).
 
-#### Whitepapers / multi-column documents (`--paper`)
+#### Whitepapers / multi-column documents (paper mode)
 
 Academic papers, whitepapers and brochures are **two-column (or more)** layouts,
 which default conversion treats as "complex" pages and dumps as raw text. Enable
-**paper mode** to convert them as continuous documents instead:
-
-```bash
-ptm --paper paper.pdf            # CLI
-PDF_MODE=paper ptm paper.pdf     # same, via env var
-```
+**paper mode** in the TUI settings (*Paper layout*) or with `PDF_MODE=paper` to
+convert them as continuous documents instead:
 
 In paper mode each PDF is rendered column-by-column (full left column, then
 right column) in reading order, and structured like a document rather than a
@@ -69,12 +65,12 @@ slide deck:
 | Running headers | Dropped (repeats at the top of every page) |
 | Page separators | None — pages flow continuously (no `---` / page-break divs) |
 
-Slide decks keep the default per-page behaviour; pass `--slide` (or
-`PDF_MODE=slide`) to restore it explicitly. `--paper` and `--slide` are mutually
-exclusive. The GUI offers the same toggle as a *Paper layout* checkbox
-(remembered across sessions).
+Slide decks keep the default per-page behaviour; `PDF_MODE=slide` restores it
+explicitly. The two modes are mutually exclusive. The TUI settings screen offers
+the same choice as *Paper layout* (remembered across sessions).
 
-With `--structure` (or `STRUCTURE_ENABLED=1`) an optional LLM pass then improves
+With the structure pass enabled (TUI setting or `STRUCTURE_ENABLED=1`) an
+optional LLM pass then improves
 the structure: it fixes the page-1 title/authors block, blockquotes the
 abstract, adds `##` headings and a `## References` section, wraps footnotes, and
 repairs interleaved multi-column linearization — keeping every word verbatim.
@@ -84,7 +80,7 @@ deterministic form with a warning. See
 [Paper structure pass](#paper-structure-pass).
 
 Shared slide-master background images are detected and skipped. With
-`--image-links` (legacy), all extracted images are deduplicated by content hash,
+`IMAGE_LINKS=on` (legacy), all extracted images are deduplicated by content hash,
 and images that recur on ≥80% of slides/pages (logos, watermarks) are embedded
 inline only on their first occurrence; later occurrences become a text hyperlink
 to the same asset instead of a repeated image. By default no images are extracted
@@ -92,74 +88,25 @@ or linked at all — only their AI descriptions appear.
 
 ## How to use
 
-The **web GUI** (below, *Web GUI*) is the primary interface: it converts, browses
-files, and watches history through a native engine process. The **desktop GUI**
-(`main.py` / `ptm-start`) remains a supported fallback, and the **CLI**
-(`ptm`) is the headless equivalent.
-
-### Desktop GUI
-
-```bash
-./.venv/bin/python main.py
-```
-
-1. **Add files** — click *Add Files...* to pick `.pptx`/`.pdf` files, *Add Folder...* to scan a folder (and subfolders) for supported files, or drag-and-drop either onto the list.
-2. **Adjust the list** — *Remove* selected entries or *Clear* everything.
-3. **Pick an output folder (optional)** — by default each file's Markdown is written beside the source under a kebab-case name, and the source is moved into a sibling `source/` folder (archived PDFs are compressed); enter a path to override and send everything to one folder, leaving sources untouched.
-4. **Convert** — click *Convert*. Conversion runs on a background thread, so the UI stays responsive while a progress bar advances and the log reports one line per file:
-   - `[OK]  deck.pptx -> /path/deck.md`
-   - `[ERR] broken.pdf: ...` on failure
-   - `[WARN] ...` for non-fatal issues (e.g. skipped charts)
-
-The AI passes (vision, classifier gate, diagram interpretation, LLM restructure,
-RAG summary, paper structure) each have a checkbox in the GUI, toggled at
-runtime and remembered across sessions — no restart or `ptm-start --vision`
-needed. A *Check servers* status line probes the local model servers and shows
-which are up/down; if you enable a pass whose server is not running, **Convert**
-blocks and tells you the exact terminal command to start it (e.g.
-`tools/serve.sh start transcriber`). The server catalog defaults to a built-in
-table and optionally refreshes from the sibling `macos-dev-config/servers.conf`.
-
-### CLI
-
-Three console commands (`pip install -e .` puts them on `PATH`):
-
-```bash
-# convert files/folders headlessly — same behavior as the GUI's Convert button
-ptm deck.pptx handout.pdf
-ptm --output out/ --vision --format .
-ptm --all --quiet folder_of_slides/
-ptm --paper whitepaper.pdf       # two-column paper -> continuous document
-ptm --slide handout.pdf          # force per-page slide layout (the default)
-ptm --image-links deck.pptx      # legacy: extract assets, emit image/page links
-ptm --no-compress deck.pdf       # skip Ghostscript compression of the archived PDF
-ptm --overwrite-inference deck.pdf   # replace deck-inference-used.md instead of writing -2
-
-# launch the GUI, enabling AI passes via flags
-ptm-start --vision
-ptm-start --all
-
-# transcribe lecture audio to Markdown (decoupled from conversion)
-ptm-transcribe deck.md          # attach to existing Markdown
-ptm-transcribe week-2.mp3       # write week-2.transcript.md (no Markdown needed)
-ptm-transcribe --speakers 2 deck.md   # two-person interview (speaker labels)
-
-# run the full web UI (convert + watch history); spawns its native engine
-ptm-dashboard --port 9090       # see "Web GUI" below
-```
+The app is `ptm-tui` (ADR-0040/0051): a compiled, opencode-style Go terminal UI
+that discovers files in the current directory and drives the local `ptm-engine`
+for conversion and transcription. The importable `converter` library remains
+available for scripting (see [Library](#library)).
 
 ### TUI (native)
 
 A compiled, opencode-style terminal app (`ptm-tui`) that discovers the
-`.pptx`/`.pdf`/`.tex` files **and audio files** in the current directory,
-selects them with `@` fuzzy search, and converts/transcribes with live progress.
-Audio rows are marked `♫`; pressing Enter dispatches by type — convertibles go
-through the `ptm-engine` job, then the selected audio runs through
-`ptm-transcribe` (ADR-0041), streaming its progress into the same run screen.
-The settings screen (`s`) toggles speaker diarization and pins a speaker count
-(e.g. `2` for an interview), passed to the spawned `ptm-transcribe`.
-It drives the same `ptm-engine` the web UI uses (ADR-0040), so conversion stays
-in Python while the surface is a native Go binary.
+`.pptx`/`.pdf`/`.tex` files, LaTeX project folders, **and audio files** in the
+current directory, selects them with `@` fuzzy search, and converts/transcribes
+with live progress. `Space` multi-selects, `Enter` runs the selection, and the
+run pane streams per-file/per-page progress and `[OK]`/`[ERR]`/`[WARN]` lines.
+Audio rows are marked `♫`: transcription is an engine-hosted job (ADR-0045),
+which pairs a recording with its same-stem Markdown or writes a standalone
+`<stem>.transcript.md`. The settings screen (`s`) toggles the AI passes, paper
+layout, image links, PDF compression, inference overwrite, duplicate handling,
+output folder, and transcription options (diarization, speaker count, model,
+language) — persisted through the engine and applied to the next run without a
+restart.
 
 ```bash
 scripts/install-global.sh        # install ~/.local/bin/ptm-tui (once)
@@ -172,29 +119,11 @@ Build/run without the global install:
 scripts/ptm-tui.sh               # builds bin/ptm-tui, spawns the engine, opens the TUI
 ```
 
-These are the five entry points: `ptm`, `ptm-start`, `ptm-transcribe`,
-`ptm-dashboard`, and `ptm-engine` (the engine is usually started from the web UI
-rather than by hand).
-
-**`ptm`** — headless batch conversion, mirroring the GUI: folders are scanned
-recursively for `.pptx`/`.pdf`, the Markdown is written beside each source under
-a kebab-case name and the source is archived into `source/` unless `--output`
-is given, progress and per-file results are logged as `[N/M]` / `[OK]` /
-`[ERR]` / `[WARN]` lines, and converted files are recorded in the recent list.
-
-```
-ptm [AI flags] [--image-links] [--no-compress] [-o DIR] [--no-recursive] [--no-recent] [-q] PATH...
-```
-
-**`ptm-start`** — the same GUI as `./python main.py`, with AI capabilities toggled
-by flags instead of env vars.
-
-**`ptm-transcribe`** — local audio→text, decoupled from conversion. Give it a
-`.md` to attach a transcript to, an audio file to produce a standalone
-`<stem>.transcript.md`, or a folder to scan both. See
-[Audio transcription](#audio-transcription-pass-optional).
-
-Both accept the same AI flags (default: all off):
+`ptm-engine` is a plain local HTTP/WS service that the TUI spawns and stops
+itself (attach to an already-running one and it is left alone). Started by hand
+it is `ptm-engine --port 9091`; it accepts the same AI-capability flags
+(default: all off), which map onto the environment variables documented per
+pass below:
 
 | Flag | Enables |
 | --- | --- |
@@ -212,11 +141,11 @@ Both accept the same AI flags (default: all off):
 | `--overwrite-inference` | Replace an existing `<name>-inference-used.md` instead of writing `-2` (default: never overwrite inference output, ADR-0050) |
 | `--env KEY=VALUE` | Set any other env var (repeatable) — model ids, URLs, log DB |
 
-Audio transcription is **not** an AI flag on `ptm`/`ptm-start` — it is its own
-command, `ptm-transcribe` (see [Audio transcription](#audio-transcription-pass-optional)).
+Audio transcription is **not** among these flags — it is a separate engine job
+the TUI dispatches (see [Audio transcription](#audio-transcription-optional)).
 
 `--env` is the escape hatch for anything the flags don't cover, e.g.
-`ptm --vision --env VISION_MODEL=... --env VISION_LOG_DB=/tmp/ptm.sqlite deck.pptx`.
+`ptm-engine --vision --env VISION_MODEL=... --env VISION_LOG_DB=/tmp/ptm.sqlite`.
 See the [ADR index](docs/adr/README.md) for the rationale.
 
 ### Library
@@ -249,72 +178,6 @@ for r in results:
 - `SUPPORTED_EXTENSIONS` — e.g. `{".pptx", ".pdf"}`
 - `output_dir` is optional; when omitted, each file's Markdown is written beside the source under a kebab-case name and the source is moved into a sibling `source/` folder (ADR-0048); an explicit `output_dir` disables that organizing. `ConvertResult.moved_to` points at the archived copy, and `ConvertResult.inference_passes` lists the AI passes whose model output landed in the file — non-empty means the Markdown carries the `-inference-used` marker (ADR-0050).
 
-### Web GUI (dashboard + native engine)
-
-The web frontend is now a **full converter**, not just a log viewer. A separate
-native **engine** process (ADR-0025) owns what a browser cannot do alone —
-running `convert_files`, browsing the filesystem, opening folders in Finder, and
-persisting settings — while the browser UI drives it over localhost with a
-WebSocket progress stream:
-
-```bash
-./.venv/bin/python -m dashboard --port 9090      # web UI (opens the browser)
-ptm-dashboard --port 9090                         # same, after pip install -e .
-```
-
-Open the printed URL, then click **Start engine** in the header (or run
-`./.venv/bin/python -m engine --port 9091` / `ptm-engine` yourself). The
-**Convert** tab reproduces the desktop GUI's workflow:
-
-- **Files** — drag-and-drop `.pptx`/`.pdf`, *Add Files* (browser picker),
-  *Add Folder* (server-side directory browser with recursive scan), or *Recent*.
-- **Output** — type a path, *Browse* a server-side folder, or *Open in Finder*
-  (the engine invokes the OS `open`).
-- **Options** — Paper layout, Image links (legacy), Compress archived PDFs, and Duplicate-if-exists checkboxes.
-- **AI features** — the same six toggles as the GUI (with `implies`), plus
-  *Check servers* for the up/down probe.
-- **Convert** — runs on the engine; per-file and per-page progress bars and the
-  `[OK]/[ERR]/[WARN]` log stream in live over WebSocket.
-
-The history tabs (Runs / Timeline / Errors / Models / RAG) come from the same
-`ptm.sqlite` the engine writes, so a conversion you start in the browser shows up
-in the history immediately. The desktop GUI (`main.py` / `ptm-start`) remains
-available as a fallback.
-
-### Dashboard (read-only log view)
-
-Beyond conversion, the web app keeps the ADR-0022 read-only log surface:
-
-| Flag | Default | Purpose |
-| --- | --- | --- |
-| `--db PATH` | `<repo root>/ptm.sqlite` | Log database to read |
-| `--host HOST` | `127.0.0.1` | Bind address (loopback only, a local surface) |
-| `--port N` | `8080` | UI port to bind |
-| `--engine-port N` | `9091` | Engine port (also `PTM_ENGINE_PORT`) |
-
-The UI opens the database **read-only** (`mode=ro` + `query_only=ON`) and never
-imports `converter`; the engine is the sole writer. History tabs auto-refresh
-every ~2s:
-
-- **Runs** — one row per conversion run (`conversion_runs`): status, duration,
-  event and error counts; click a run to drill in.
-- **Timeline** — the run's phase swimlane (`convert → structure → format →
-  summary`, plus derived `classify`/`transcribe`/`interpret` spans from their
-  events) and the per-page events beneath it. This is where the old
-  "progress bar goes idle during structure/summary" gap (ADR-0013) is fixed.
-- **Errors** — all `vision_events` with an error, with structure/format
-  rejections pinned on top as the main cost driver.
-- **Models** — per-stage/per-model latency aggregates (count, min/avg/p50/p95/
-  max/total) with a histogram, so slow passes and outliers are easy to spot.
-- **RAG** — the per-presentation summary index (`deck_documents` slide counts,
-  `deck_chunks`, embedding dimension), populated when the summary pass runs
-  (ADR-0021).
-
-A per-run **Config** panel (inside the Timeline tab) shows the snapshot captured
-when the conversion started: which feature toggles were on, the resolved base
-URLs and model ids each pass used, `PDF_MODE`, and which servers were down at run
-start (ADR-0022).
-
 ### Ports
 
 The local ML services are registered on the `macos-dev-config` fleet manifest
@@ -323,7 +186,6 @@ the projection PtM uses:
 
 | Port | Used by |
 | --- | --- |
-| `:8080` | **Web UI default** |
 | `:8081` | Transcriber (mlx-vlm, Qwen2.5-VL-7B) |
 | `:8082` | Classifier gate (mlx-vlm, Qwen2.5-VL-3B) |
 | `:8083` | `text` daemon (mlx-lm, Llama-3.2-3B) — serves the summary + structure passes |
@@ -331,22 +193,7 @@ the projection PtM uses:
 | `:8085` | `mistral-24b` daemon |
 | `:8089` | Audio server (dereverb / enhance / isolate / diarize; manifest `audio`) |
 | `:8090` | `nomic-embed` embeddings daemon (llama.cpp) |
-| `:9090` | **Web UI (recommended)** |
-| `:9091` | **Native engine default** |
-
-The web UI's default `:8080` sits directly below the transcriber, and its
-automatic port-fallback walks up to `+100` (`:8080` → `:8180`) — straight through
-the manifest's ML block. So if `:8080` is already taken and any ML daemon is
-running, the fallback will collide. When ML daemons are up, start the web app
-(and, if you launch it by hand, the engine) on ports clear of the whole block:
-
-```bash
-ptm-dashboard --port 9090                 # web UI
-./.venv/bin/python -m engine --port 9091  # engine (only if started by hand)
-```
-
-If the port you ask for is free it simply binds there; the fallback only kicks
-in when that exact port is already occupied.
+| `:9091` | **Native engine default** (`PTM_ENGINE_PORT` overrides; the TUI spawns it here) |
 
 ## Output layout
 
@@ -354,8 +201,9 @@ By default the Markdown is written **beside the source** under a kebab-case
 name (normalized from the source: accents folded, spaces and punctuation
 become `-`), and the converted source is moved into a sibling `source/` folder
 with the same normalized name. Archived PDFs are compressed best-effort
-(Ghostscript, moderate 300 dpi; `--no-compress` / `PDF_COMPRESS=off` disables,
-see [ADR-0049](docs/adr/0049-pdf-compression-on-archive.md)):
+(Ghostscript, moderate 300 dpi; `PDF_COMPRESS=off` — or the TUI's *Compress
+archived PDFs* setting — disables; see
+[ADR-0049](docs/adr/0049-pdf-compression-on-archive.md)):
 
 ```text
 lectures/
@@ -383,15 +231,15 @@ descriptions stand in for figures where the vision passes run).
   `<name>-inference-used.md` instead of `<name>.md`, so a free deterministic
   re-run can never overwrite a file that cost model time. An existing marked
   file is never overwritten — the next run writes `-inference-used-2` with a
-  warning, unless `--overwrite-inference` / `INFERENCE_OVERWRITE=on` (GUI/Web
-  checkbox, TUI setting) explicitly replaces it. The `source/` archive and
+  warning, unless the TUI's *Inference overwrite* setting (env
+  `INFERENCE_OVERWRITE=on`) explicitly replaces it. The `source/` archive and
   `assets/<name>/` keep their plain names.
-- **An explicit output folder disables the organizing** (`ptm -o DIR`, the
-  GUI/Web output field): Markdown keeps its original name, sources are left
-  untouched, and PDFs are neither moved nor compressed. The `-inference-used`
-  marker still applies, since it describes the *content*, not the folder.
+- **An explicit output folder disables the organizing** (TUI settings output
+  folder): Markdown keeps its original name, sources are left untouched, and
+  PDFs are neither moved nor compressed. The `-inference-used` marker still
+  applies, since it describes the *content*, not the folder.
 
-With `--image-links` the legacy sidecar is written next to the Markdown;
+With `IMAGE_LINKS=on` the legacy sidecar is written next to the Markdown;
 images are deduplicated by content hash and named `<name>_<NN>_<hash>.<ext>`:
 
 ```text
@@ -429,7 +277,7 @@ Slides are separated by an HTML page break (`<div style="page-break-after: alway
 
 ## Install
 
-Requires **Python 3.10+**. Dependencies: `python-pptx`, `PyMuPDF` (PDF), `PySide6` (desktop GUI), `flask`/`flask-sock` + `simple-websocket` (web GUI), `SQLAlchemy` + `sqlite-vec` (log/settings/RAG store), and `numpy`. External binaries, all optional except where noted: `pandoc` (required for `.tex`), `soffice` (PPTX chart transcription), and `gs`/`qpdf` (PDF compression on archive; Ghostscript preferred, qpdf the lossless fallback — `brew install ghostscript qpdf`).
+Requires **Python 3.10+** and **Go 1.26+** (to build the TUI). Dependencies: `python-pptx`, `PyMuPDF` (PDF), `flask`/`flask-sock` + `simple-websocket` (engine), `SQLAlchemy` + `sqlite-vec` (log/settings/RAG store), and `numpy`. External binaries, all optional except where noted: `pandoc` (required for `.tex`), `soffice` (PPTX chart transcription), and `gs`/`qpdf` (PDF compression on archive; Ghostscript preferred, qpdf the lossless fallback — `brew install ghostscript qpdf`).
 
 ### 1. Clone and set up a virtual environment
 
@@ -445,29 +293,27 @@ python3 -m venv .venv
 ./.venv/bin/pip install -r requirements.txt
 ```
 
-### 3. (Optional) Install the CLI commands
+### 3. (Optional) Install the engine command
 
 ```bash
 ./.venv/bin/pip install -e .
 ```
 
-This puts `ptm` (headless convert), `ptm-start` (GUI launcher),
-`ptm-transcribe` (audio→Markdown transcription), `ptm-dashboard` (web UI), and
-`ptm-engine` (native engine) on the venv's `PATH`. Skip it if you only want the
-GUI/library. If you'd rather not activate
-the venv, `scripts/ptm-start.sh` and `scripts/ptm-transcribe.sh` resolve
-`.venv/bin/ptm-start` / `.venv/bin/ptm-transcribe` for you (each bootstraps with
-`pip install -e .` if the binary is missing).
+This puts `ptm-engine` — the TUI's backend — on the venv's `PATH`.
+`scripts/ptm-tui.sh` bootstraps it automatically (`pip install -r` +
+`pip install -e .`) when the binary is missing, so this step is only needed if
+you want to launch the engine directly.
 
 ### 4. Run it
 
 ```bash
-./.venv/bin/python main.py      # desktop GUI (or: ptm-start)
-ptm deck.pptx                   # headless conversion (if step 3 was run)
-ptm-dashboard --port 9090       # web UI (if step 3 was run)
+scripts/ptm-tui.sh               # build the TUI, spawn the engine, open the TUI
 ```
 
-All other commands in this document use the venv interpreter (`.venv/bin/python`);
+Install the global launcher once (`scripts/install-global.sh`) and `ptm-tui`
+runs from any directory.
+
+Library examples use the venv interpreter (`.venv/bin/python`);
 substitute your system `python3` if you install the dependencies globally instead.
 
 ### Optional: AI vision pass
@@ -487,17 +333,16 @@ process**, so each model is its own server on its own port.
    ```bash
    mlx_vlm.server --model mlx-community/Qwen2.5-VL-7B-Instruct-4bit --port 8081
    ```
-   Convert with just this one model running:
-   ```bash
-   VISION_ENABLED=1 ./.venv/bin/python main.py
-   ```
+   Enable the vision pass in the TUI settings (or launch with
+   `VISION_ENABLED=1 scripts/ptm-tui.sh`).
 
 3. *(Optional)* Start the **classifier** — a second, small model that gates what
    gets transcribed (skips photos/logos) and enables image-level transcription:
    ```bash
    mlx_vlm.server --model mlx-community/Qwen2.5-VL-3B-Instruct-4bit --port 8082
-   VISION_ENABLED=1 VISION_CLASSIFY_ENABLED=1 ./.venv/bin/python main.py
    ```
+   …then enable the classifier gate in the TUI settings (or launch with
+   `VISION_ENABLED=1 VISION_CLASSIFY_ENABLED=1 scripts/ptm-tui.sh`).
 
 | Model | Port | Needed for |
 | --- | --- | --- |
@@ -525,6 +370,9 @@ The model weights live on the external SSD under `HF_HOME` (see
   - `classify.py` — cheap classifier gate for the vision pass (tiny VLM)
   - `interpret.py` — grounded diagram-interpretation pass (typed relationships + prose)
   - `structure.py` — paper-mode document-structure LLM pass (verbatim text regime + image reword)
+  - `organize.py` — default output layout: kebab-case naming, the `source/` archive, the `-inference-used` marker (ADR-0048/0050)
+  - `compress.py` — best-effort PDF compression for archived sources (ADR-0049)
+  - `inference.py` — per-conversion ledger of model-produced Markdown content (ADR-0050)
   - `config.py` — runtime registry of AI feature toggles + local server catalog (ADR-0012)
   - `render.py` — LibreOffice + PyMuPDF rendering for PPTX charts
   - `logstore.py` — conversion/vision telemetry façade over the SQLAlchemy ORM (`ptm.sqlite`)
@@ -538,14 +386,10 @@ The model weights live on the external SSD under `HF_HOME` (see
 - `docs/garbled-handling-vision.md` — the forward-looking vision: principles, layered signal stack, classifier ladder, and synthetic-data strategy
 - `docs/ai-laya.md` — proposed typed classifier (Laya) for the classify stage, with rationale, schema, serving and fine-tuning
 - `docs/adr/` — architecture decision records (MADR index)
-- `dashboard/` — Flask web app for conversion + the read-only log view (`app.py`, `db.py`, `templates/`, `static/`, `__main__.py`; ADR-0022, ADR-0025, ADR-0026)
-- `engine.py` — native engine process the web app drives (filesystem, conversion, settings; ADR-0025)
-- `gui.py` — PySide6 interface (file list, output folder, progress, log) — fallback desktop UI
-- `main.py` — entry point
-- `cli.py` — `ptm` headless batch converter (GUI parity)
-- `cli_transcribe.py` — `ptm-transcribe` standalone audio→Markdown transcription
-- `start.py` — `ptm-start` GUI launcher with AI flags
-- `cli_common.py` — shared AI flag parser + env mapping
+- `engine.py` — native engine process the TUI drives (filesystem, conversion, engine-hosted transcription, settings; ADR-0025/0040)
+- `cli_common.py` — AI flag parser + env mapping shared with the engine
+- `tui/` — native Go TUI (`ptm-tui`), a separate Go module (ADR-0040)
+- `scripts/` — TUI launcher/installer, audio-model server, transcript QA harness
 - `tests/make_test_deck.py` — generates a synthetic deck covering all features
 - `tests/make_test_pdf.py` — generates a synthetic PDF for testing
 - `tests/test_converters.py` — pytest smoke tests for both converters
@@ -566,7 +410,7 @@ The model weights live on the external SSD under `HF_HOME` (see
    ```python
    registry.register(DocxConverter)
    ```
-3. Add the extension to the GUI file filter and placeholder text if you want it listed.
+3. Add the extension to `_SUPPORTED_EXTENSIONS` in `engine.py` so the TUI discovers it.
 
 ## AI vision pass
 
@@ -599,11 +443,9 @@ Every conversion finishes with a formatting post-pass (`converter/format.py`):
   heading-like bullets into `##`/`###` headings, while a word cross-check keeps
   the content verbatim.
 
-Enable it by reusing the vision endpoint (see [AI vision pass](#ai-vision-pass)):
-
-```bash
-FORMAT_ENABLED=1 ./.venv/bin/python main.py
-```
+Enable it by reusing the vision endpoint (see [AI vision pass](#ai-vision-pass)) —
+toggle *Markdown restructure* in the TUI settings, or set `FORMAT_ENABLED=1` for
+the engine.
 
 `FORMAT_BASE_URL`/`FORMAT_MODEL`/`FORMAT_API_KEY` default to their `WRITE_*`
 equivalents; override them to point the restructure pass at a different text
@@ -612,7 +454,7 @@ model.
 ## Paper structure pass (optional)
 
 Paper-mode output (see
-[Whitepapers / multi-column documents](#whitepapers--multi-column-documents-paper))
+[Whitepapers / multi-column documents](#whitepapers--multi-column-documents-paper-mode))
 is produced by deterministic geometry heuristics. The optional **structure pass**
 (`converter/structure.py`) improves it with a local chat model, per page:
 
@@ -632,12 +474,8 @@ is produced by deterministic geometry heuristics. The optional **structure pass*
   junk, detected pre-call — ADR-0023) is skipped without a model call, since a
   layer that is not really prose can only fail the verbatim word gate.
 
-Enable it together with paper mode:
-
-```bash
-ptm --paper --structure paper.pdf
-STRUCTURE_ENABLED=1 PDF_MODE=paper ptm paper.pdf
-```
+Enable it together with paper mode: toggle *Structure pass* + *Paper layout* in
+the TUI, or set `STRUCTURE_ENABLED=1` and `PDF_MODE=paper` for the engine.
 
 | Var | Default | Purpose |
 | --- | --- | --- |
@@ -649,8 +487,8 @@ STRUCTURE_ENABLED=1 PDF_MODE=paper ptm paper.pdf
 | `STRUCTURE_TEXT_MODEL` | `mlx-community/Llama-3.2-3B-Instruct-4bit` | Text-regime model id — no image is sent, so a VLM is unnecessary |
 | `STRUCTURE_TEXT_API_KEY` | `STRUCTURE_API_KEY` | Optional bearer token for the text-regime model |
 
-The pass is PDF-only and therefore **not** part of `--all`; enable it
-explicitly with `--structure`. The **text regime** (check-and-amend, no image)
+The pass is PDF-only and therefore **not** part of the core slide passes; enable
+it explicitly. The **text regime** (check-and-amend, no image)
 runs on a small text model by default, while the **image regime** (reword from
 the rendered page) stays on the writer VLM.
 
@@ -679,11 +517,8 @@ How it works:
    titles) is used. Any failure degrades gracefully — conversion never fails
    because of summaries.
 
-Enable it with `SUMMARY_ENABLED=1`:
-
-```bash
-SUMMARY_ENABLED=1 ./.venv/bin/python main.py
-```
+Enable it by setting `SUMMARY_ENABLED=1` for the engine, or by toggling the
+summary pass in the TUI settings.
 
 | Var | Default | Purpose |
 | --- | --- | --- |
@@ -704,39 +539,27 @@ the writer VLM, so no 7B VLM is loaded for a short header. Embeddings come from
 `servers.conf`). Override `SUMMARY_*`/`EMBED_*` to point at different models if
 you prefer.
 
-## Audio transcription pass (optional)
+## Audio transcription (optional)
 
 A lecture recording can be transcribed **locally** into a timestamped,
 speaker-labelled transcript. Transcription is **decoupled from conversion**
-(ADR-0009): it runs as its own `ptm-transcribe` command, which works *with or
-without* an existing Markdown file. It runs via **mlx-whisper**
+(ADR-0009) and runs as an **engine-hosted job** (ADR-0045), driven from the TUI:
+select an audio row (`♫`) and press Enter. It runs via **mlx-whisper**
 (`mlx-community/whisper-large-v3-mlx` by default, the max-quality model;
 `…-large-v3-turbo` for speed), invoked as a subprocess so
 `converter` stays MLX-free. Speaker diarization (optional) is served by a
 separate PyTorch server. See **[docs/ai-audio.md](docs/ai-audio.md)** for setup.
 
-```bash
-# with existing Markdown: discover same-stem audio beside it and attach
-ptm-transcribe deck.md                    # deck.md + deck.mp3 -> "# Transcript" section
+How the engine pairs audio with Markdown:
 
-# without Markdown: transcribe straight to a transcript file
-ptm-transcribe week-2.mp3                 # -> week-2.transcript.md (+ .srt, .clean.flac)
+- **Audio with a same-stem `.md`** — the transcript is attached to that file as
+  a `# Transcript` section (idempotent: re-running replaces the section).
+- **Audio without a same-stem `.md`** — a standalone transcript is written to
+  `<stem>.transcript.md` (plus `.srt` and `.clean.flac`). Standalone transcripts
+  are **append-only**: re-running writes `<stem>.transcript.1.md`, `.2.md`, …
+  with matching sidecars instead of overwriting the base file.
+- **A `.md` selected directly** — its same-stem audio beside it is attached.
 
-# explicit pairing / speaker labels
-ptm-transcribe week-2.mp3 --to deck.md    # attach week-2's audio to deck.md
-ptm-transcribe --diarize deck.md          # + speaker labels
-ptm-transcribe --isolate deck.md          # + isolate the dominant voice
-ptm-transcribe --language no week-2.mp3   # language hint
-```
-
-The audio file is paired to a Markdown file by **convention** (same stem, same
-folder) or explicitly (`--audio-file`, `--to MARKDOWN.md`); when neither settles
-it, `ptm-transcribe` prompts to pick the lecture (`[0]` = standalone). For a
-standalone audio file the transcript is **append-only**: re-running writes
-`week-2.transcript.1.md`, `.2.md`, … (with matching `.srt` and `.clean.<N>.flac`)
-instead of
-overwriting — pass `--overwrite` to replace the base file instead. Attaching to a
-`.md` is idempotent: the `# Transcript` section is replaced, not duplicated.
 If transcription fails (missing `ffmpeg`/`mlx_whisper`, server down), it degrades
 to a warning. Every segment is recorded to `ptm.sqlite` (`transcript_segments`
 table, keyed by the Markdown path).
@@ -744,17 +567,14 @@ table, keyed by the Markdown path).
 The audio pipeline is `ffmpeg clean → WPE dereverb → DeepFilterNet enhance →
 [SepFormer isolate] → mlx-whisper`. Reverb removal (WPE) and denoising
 (DeepFilterNet) run automatically whenever the audio server is up; voice
-isolation is opt-in via `--isolate` and writes a `<stem>.isolated.flac` that
-Whisper transcribes instead of the cleaned file.
+isolation is opt-in (`AUDIO_ISOLATE_ENABLED=1`) and writes a
+`<stem>.isolated.flac` that Whisper transcribes instead of the cleaned file.
 
-Transcription streams live progress to stderr (ffmpeg + mlx-whisper output and
-phase lines), with a `still working … (elapsed …)` heartbeat when a phase goes
-quiet (e.g. the first-run model download). Only one `ptm-transcribe` may run at a
-time — it holds an exclusive `flock` on
-`<PTM_STATE_DIR or ~/.local/state/ptm>/transcribe.lock` and a second invocation
-fails fast with exit `3` (`another instance is already running (PID …)`). Output
-files are written atomically, and Ctrl-C kills the child, cleans temp files, and
-releases the lock. See [docs/runbook.md](docs/runbook.md).
+Progress streams as engine WS frames (per phase and per file), with a heartbeat
+when a phase goes quiet (e.g. the first-run model download). Only one
+transcription may run at a time — the engine holds an exclusive `flock` on
+`<PTM_STATE_DIR or ~/.local/state/ptm>/transcribe.lock` and a second job is
+rejected while it runs. See [docs/runbook.md](docs/runbook.md).
 
 | Var | Default | Purpose |
 | --- | --- | --- |
@@ -774,30 +594,23 @@ releases the lock. See [docs/runbook.md](docs/runbook.md).
 ### Running all AI passes at once
 
 Each AI pass is independently opt-in (off by default), so you can mix and match.
-In the GUI the same toggles are checkboxes (persisted across sessions); the
-`ptm-start` flags below are the headless equivalent. To enable every pass —
-vision transcription + classifier gate, diagram interpretation, markdown
-restructure, and the RAG summary — in one command:
+The TUI settings screen toggles them (persisted through the engine and applied
+without a restart). To enable every pass — vision transcription + classifier
+gate, diagram interpretation, markdown restructure, and the RAG summary — at
+engine launch:
 
 ```bash
-# GUI
-ptm-start --all
-
-# headless
-ptm --all deck.pptx
-
-# or, the underlying env vars directly:
 VISION_ENABLED=1 VISION_CLASSIFY_ENABLED=1 INTERPRET_ENABLED=1 FORMAT_ENABLED=1 SUMMARY_ENABLED=1 \
-  ./.venv/bin/python main.py
+  scripts/ptm-tui.sh
 ```
 
 This uses only what's already running: the vision transcriber (`:8081`), the
-classifier (`:8082`), the summary chat model (`:8084`), and Ollama for embeddings
-(`nomic-embed-text`).
+classifier (`:8082`), the summary chat model (`:8084`), and the embeddings
+server (`nomic-embed-text`).
 
-Audio transcription is deliberately **not part of `--all`** (it needs an audio
-file and the mlx-whisper/ffmpeg toolchain, and is a separate step anyway). Run
-it before or after conversion with `ptm-transcribe`:
+Audio transcription is deliberately **not part of the slide-pass set** (it needs
+an audio file and the mlx-whisper/ffmpeg toolchain, and is a separate job
+anyway). Select audio rows in the TUI to run it.
 
 The RAG index lives in the same `ptm.sqlite` as the vision log (`deck_documents`,
 `deck_chunks`, and a `deck_chunk_vec` sqlite-vec table). `sqlite-vec` is an added
@@ -812,13 +625,9 @@ cached (no separate probe), and unchanged chunks are not re-embedded.
   deterministically — they fall back to the rendered PNG plus a collapsed
   raw-text block (embedded images are still transcribed via the vision pass).
   Multi-column text pages *are* linearized: column-by-column automatically, and
-  with full document structure under `--paper`.
+  with full document structure in paper mode.
 - PyMuPDF is AGPL-3.0 (or commercial) licensed — fine for personal use, review if you distribute
 - Audio transcription uses segment-level timestamps (word-level needs wav2vec2 alignment) and does not yet auto-align the transcript to slides (see ADR-0007)
-- Markdown flavor toggle (Obsidian `![[wiki-links]]`), note style, and heading level options could go in a settings pane
+- **Markdown flavor toggle** (Obsidian `![[wiki-links]]`), note style, and heading level options could go in a settings pane
+- There is **no standalone CLI** (ADR-0051): scripting goes through the `converter` library or the engine's local HTTP/WS API
 - Packaging into a standalone executable with PyInstaller
-
-
----
-
-curl -X POST http:/127.0.0.1:9300/start/transcriber

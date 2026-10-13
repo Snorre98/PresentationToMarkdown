@@ -1,10 +1,9 @@
 package main
 
 // Audio transcription support (ADR-0041 → ADR-0045). The TUI does not
-// transcribe itself and no longer spawns `ptm-transcribe`: transcription is an
-// engine-hosted job (ADR-0045), so this file only keeps the small helpers that
-// split a selection into conversion vs audio inputs and pair an audio file with
-// its sibling Markdown.
+// transcribe itself: transcription is an engine-hosted job (ADR-0045), so this
+// file only keeps the small helpers that split a selection into conversion vs
+// audio inputs and pair an audio file with its sibling Markdown.
 
 import (
 	"os"

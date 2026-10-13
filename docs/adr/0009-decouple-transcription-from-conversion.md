@@ -1,6 +1,6 @@
 # 0009. Decouple transcription from conversion
 
-- Status: Accepted
+- Status: Amended by [0051](0051-tui-sole-surface.md)
 - Date: 2026-08-26
 
 ## Context

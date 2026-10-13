@@ -1,4 +1,4 @@
-"""Single-instance guard for the ``ptm-transcribe`` command.
+"""Single-instance guard for engine-hosted audio transcription (ADR-0045).
 
 Ensures only one transcription runs at a time: concurrent ``mlx_whisper``
 processes would thrash MLX unified memory and clobber each other's
@@ -13,9 +13,8 @@ exclusive lock on ``<PTM_STATE_DIR or ~/.local/state/ptm>/transcribe.lock``:
   "another instance is already running (PID …)" message.
 
 The state directory is read at *call* time (not import time) so callers can set
-``PTM_STATE_DIR`` (e.g. via ``--env``) before acquiring. A missing or
-un-writable state directory degrades gracefully: the command proceeds *without*
-a lock rather than crashing.
+``PTM_STATE_DIR`` before acquiring. A missing or un-writable state directory
+degrades gracefully: the caller proceeds *without* a lock rather than crashing.
 """
 from __future__ import annotations
 

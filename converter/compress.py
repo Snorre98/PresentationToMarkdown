@@ -16,7 +16,7 @@ gain — keeps the original bytes untouched and appends a warning.
 
 The on/off toggle is the lazy ``PDF_COMPRESS`` preference
 (:func:`converter.config.pdf_compress_enabled`), read at archive time like
-``IMAGE_LINKS`` so the GUI/engine can flip it per conversion. ``GS_PATH``,
+``IMAGE_LINKS`` so the engine can flip it per conversion. ``GS_PATH``,
 ``QPDF_PATH`` and ``PDF_COMPRESS_PRESET`` override the binaries/preset.
 """
 from __future__ import annotations

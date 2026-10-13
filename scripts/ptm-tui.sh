@@ -15,7 +15,6 @@
 #   PTM_ENGINE_PORT  engine port (default: 9091)
 #   PTM_STATE_DIR    state dir (default: ~/.local/state/ptm)
 #   VISION_LOG_DB    settings/log sqlite (default: $PTM_STATE_DIR/ptm.sqlite)
-#   PTM_TRANSCRIBE_CMD  ptm-transcribe binary (default: $VENV/bin/ptm-transcribe)
 #
 # No `set -e`/`set -u`: stock macOS bash 3.2 footguns (see audio_serve.sh).
 set -o pipefail
@@ -82,6 +81,5 @@ fi
 export PTM_STATE_DIR="${PTM_STATE_DIR:-$HOME/.local/state/ptm}"
 export VISION_LOG_DB="${VISION_LOG_DB:-$PTM_STATE_DIR/ptm.sqlite}"
 export PTM_ENGINE_CMD="$VENV/bin/ptm-engine"
-export PTM_TRANSCRIBE_CMD="$VENV/bin/ptm-transcribe"
 
 exec "$ROOT/bin/ptm-tui" "$@"

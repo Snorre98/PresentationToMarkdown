@@ -20,7 +20,7 @@ The open question: are **OCR-specialist** models — smaller, faster, trained fo
 ## 2. What "A/B" means here
 
 - **Baseline** = Qwen2.5-VL-7B on every pass. **Candidate** = GLM-OCR (or another) as the vision model.
-- Same source file, same AI flags (vision + classify + structure + summary ON), only the model differs.
+- Same source file, same AI passes enabled (vision + classify + structure + summary ON), only the model differs.
 - The candidate writes to `stem (2).md` via **"Duplicate if conversion exists"** (ADR-0015), so the baseline `.md` is never clobbered.
 - Compare the two `.md` files *and* the `ptm.sqlite` `vision_events` rows grouped by `model`.
 
@@ -101,10 +101,12 @@ An 8-page scanned paper takes roughly **20–30 minutes** end-to-end with all pa
 # candidate (GLM-OCR as the READER only; writer stays Qwen)
 VISION_ENABLED=1 VISION_CLASSIFY_ENABLED=1 \
 VISION_BASE_URL=http://localhost:11434/v1 VISION_MODEL=glm-ocr \
-./.venv/bin/python main.py
+scripts/ptm-tui.sh
 ```
 
-Then add the same file and tick **"Duplicate if conversion exists"** so the candidate writes `stem (2).md`. (Precondition: Ollama is running and has `glm-ocr`; the Ollama env is applied — `launchctl getenv OLLAMA_MAX_LOADED_MODELS` → `1`.)
+Then select the file in the TUI with **Duplicate** enabled in the settings
+screen so the candidate writes `stem (2).md`. (Precondition: Ollama is running
+and has `glm-ocr`; the Ollama env is applied — `launchctl getenv OLLAMA_MAX_LOADED_MODELS` → `1`.)
 
 **Caveat:** as of this writing this is *not yet* a clean A/B — structure/format/interpret still cascade to GLM-OCR (see §7).
 
@@ -116,7 +118,7 @@ Then add the same file and tick **"Duplicate if conversion exists"** so the cand
 ## 8. Reference
 
 - Models/passes: `converter/vision.py`, `classify.py`, `format.py`, `structure.py`, `interpret.py`, `summary.py`, `config.py`, `pdf.py`, `__init__.py`.
-- Log: `ptm.sqlite` → `vision_events` (transcribe/classify/structure with `latency_ms`, `model`, `error`), `deck_documents`/`deck_chunks` (summary index), `recent_files` (`_on_finished` marker).
+- Log: `ptm.sqlite` → `vision_events` (transcribe/classify/structure with `latency_ms`, `model`, `error`), `deck_documents`/`deck_chunks` (summary index), `recent_files`.
 - ADRs: `docs/adr/` (0013 progress, 0014 dashboard, 0015 duplicate-if-exists, 0016+ roles/residency pending).
 - Ollama config: `../macos-dev-config/ollama/ollama.env`.
 - Useful queries:

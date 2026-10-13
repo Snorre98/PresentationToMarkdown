@@ -1,6 +1,6 @@
 # 0041. Audio transcription in the native Go TUI
 
-- Status: Accepted
+- Status: Amended by [0051](0051-tui-sole-surface.md)
 - Date: 2026-09-22
 - Relates to: [0009](0009-decouple-transcription-from-conversion.md), [0036](0036-terminal-tui.md), [0040](0040-native-go-tui.md)
 

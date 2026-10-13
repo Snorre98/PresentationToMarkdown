@@ -1,6 +1,6 @@
 # 0039. Pre-flight inference gate before expensive rewrite passes
 
-- Status: Accepted
+- Status: Amended by [0051](0051-tui-sole-surface.md)
 - Date: 2026-09-19
 
 ## Context

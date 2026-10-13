@@ -1,10 +1,11 @@
 # Audio Transcription Runbook
 
-Local audio→text via the standalone **`ptm-transcribe`** command. Transcribes a
-lecture recording, attaches a timestamped, speaker-labelled `# Transcript` to an
+Local audio→text via **engine-hosted transcription** (ADR-0045), driven from the
+TUI (`ptm-tui`): select an audio row and press Enter. It transcribes a lecture
+recording, attaches a timestamped, speaker-labelled `# Transcript` to an
 existing Markdown file (or writes a standalone `<stem>.transcript.md`), and saves
 a **cleaned** copy of the audio (`.clean.flac`). Transcription is decoupled from
-conversion (ADR-0009): `ptm`/`ptm-start` never transcribe.
+conversion (ADR-0009): `convert_files` never transcribes.
 
 **Hardware:** Apple M4, 32 GB · **ASR:** `mlx-whisper` · **Enhancement:** DeepFilterNet · **Diarization:** pyannote
 
@@ -106,7 +107,7 @@ the always-on authority for every manifest daemon, the audio server included
 (ADR-0035). There is no separate audio LaunchAgent anymore; `launchd-install`
 was removed.
 
-### 2.1 Hugging Face setup (only for `--diarize` / speaker labels)
+### 2.1 Hugging Face setup (only for speaker labels)
 
 The `pyannote/speaker-diarization-3.1` model is **gated**: Hugging Face will
 refuse to serve it unless you (a) have an account, (b) accepted its license
@@ -170,63 +171,41 @@ The token is only used to download the weights on the first run (cached in
 download the model and return speaker turns. If you instead see a 401/403
 "gated repo" error, you're missing Step 2 (accept the license) or Step 3 (token).
 
-> If no server is running, `--diarize` logs `[WARN] Diarization failed: …` and
-> still produces an **unlabelled** transcript; enhancement degrades to the
+> If no server is running, enabling diarization logs `[WARN] Diarization failed: …`
+> and still produces an **unlabelled** transcript; enhancement degrades to the
 > built-in ffmpeg chain. Never fatal.
 
 ## 3. Running transcription
 
-```bash
-# with existing Markdown: discover same-stem audio beside the .md and attach
-ptm-transcribe deck.md                          # deck.mp3/m4a/wav beside deck.md
-
-# without Markdown: transcribe straight to a transcript file
-ptm-transcribe week-2.mp3                       # -> week-2.transcript.md
-
-# re-running a standalone file is append-only (never overwrites):
-ptm-transcribe week-2.mp3                       # -> week-2.transcript.1.md, .2.md, …
-ptm-transcribe week-2.mp3 --overwrite           # force-replace the base transcript.md
-
-# explicit pairing / picking a lecture
-ptm-transcribe week-2.mp3 --to deck.md          # attach week-2's audio to deck.md
-ptm-transcribe --audio-file lecture.m4a deck.md # explicit audio for deck.md
-ptm-transcribe --diarize deck.md                # + speaker labels
-ptm-transcribe --isolate deck.md                # attempt to isolate the dominant voice
-ptm-transcribe --language no week-2.mp3         # language hint
-
-# folders are scanned recursively for .md and audio files
-ptm-transcribe lectures/                        # pair by stem; prompt on ambiguity
-```
-
-`ptm-transcribe` sets `AUDIO_ENABLED=1` (and `--diarize`/`--isolate`/`--language`
-as given) itself, so no `--audio` flag is needed — and `ptm`/`ptm-start` no
-longer accept one. The raw-env equivalent:
+In the TUI, audio files in the current directory are marked `♫`: select one (or
+several) and press Enter. The engine runs the transcription and streams progress
+into the run pane. The settings screen (`s`) covers diarization, speaker count,
+model, and language; the same options apply to the engine from the environment:
 
 ```bash
-AUDIO_ENABLED=1 ./.venv/bin/python -m cli_transcribe deck.md
-```
+# enable transcription (the engine sets AUDIO_ENABLED itself per job)
+AUDIO_ENABLED=1 scripts/ptm-tui.sh
 
-No venv activated? Run the wrapper from the repo root — it bootstraps the venv
-(`pip install -e .`) on first use:
+# diarization + pinned speaker count (e.g. a two-person interview)
+AUDIO_DIARIZE_ENABLED=1 AUDIO_DIARIZE_SPEAKERS=2 scripts/ptm-tui.sh
 
-```bash
-scripts/ptm-transcribe.sh /path/to/week-2.mp3
+# isolate the dominant voice / language hint
+AUDIO_ISOLATE_ENABLED=1 AUDIO_LANGUAGE=no scripts/ptm-tui.sh
 ```
 
 **Audio pairing rules (in order):**
 
-1. Explicit `--to MARKDOWN.md` — attach to that file.
-2. Explicit `--audio-file PATH` — paired by stem to a `.md`, or the sole target.
-3. Convention: same folder, same stem — `deck.md` + `deck.mp3`
-   (priority `.wav > .m4a > .mp3 > …`).
-4. Interactive prompt — when an audio file matches no `.md` and candidates exist,
-   `ptm-transcribe` asks which lecture it belongs to (`[0]` = standalone).
-5. Nothing found → a `[WARN]`, or a standalone `<stem>.transcript.md`.
+1. Convention: same folder, same stem — `deck.md` + `deck.mp3`
+   (priority `.wav > .m4a > .mp3 > …`) — the transcript is attached to the
+   Markdown as a `# Transcript` section.
+2. Selecting the `.md` directly attaches its same-stem audio.
+3. Nothing found → a standalone `<stem>.transcript.md` (plus `.srt` and
+   `.clean.flac`).
 
 Standalone transcripts are **append-only**: re-running the same audio writes
 `<stem>.transcript.1.md`, `.2.md`, … (with a matching `.srt` **and** `.clean.<N>.flac`)
-so past transcripts
-are kept for A/B comparison. Use `--overwrite` to replace the base file instead.
+so past transcripts are kept for A/B comparison. Attaching to a `.md` is
+idempotent — the `# Transcript` section is replaced, not duplicated.
 
 The audio pipeline is `ffmpeg clean → WPE dereverb → DeepFilterNet enhance →
 [SepFormer isolate] → mlx-whisper`. WPE dereverberation and enhancement run
@@ -236,25 +215,21 @@ down); voice isolation runs only with `--isolate` and writes a
 
 ### Progress output & the single-instance guard
 
-While a file is transcribing, `ptm-transcribe` streams live progress to stderr —
-ffmpeg and mlx-whisper output (including the first-run ~1.6 GB model download)
-appears in real time, with short phase lines (`ffmpeg` / `dereverberating` /
-`enhancing` / `isolating` / `transcribing` / `diarizing`). If a phase goes quiet
-(e.g. the model download), a `still working … (elapsed …)` heartbeat is printed
-every `AUDIO_HEARTBEAT_SECONDS` seconds (default `20`). When stderr is piped
-(CI/scripts), carriage-return progress bars are suppressed and only the start /
-heartbeat / phase / result lines are emitted.
+While a file is transcribing, the engine streams live progress over its
+WebSocket: the underlying ffmpeg and mlx-whisper output (including the first-run
+~1.6 GB model download) appears in real time, with short phase frames (`ffmpeg`
+/ `dereverberating` / `enhancing` / `isolating` / `transcribing` / `diarizing`).
+If a phase goes quiet (e.g. the model download), a heartbeat line appears every
+`AUDIO_HEARTBEAT_SECONDS` seconds (default `20`).
 
-Only one `ptm-transcribe` may run at a time. It holds an exclusive `flock` on
-`<PTM_STATE_DIR or ~/.local/state/ptm>/transcribe.lock` (writing its PID into
-it); a second invocation fails fast with exit code `3` and
-`ptm-transcribe: another instance is already running (PID …)`, so two runs never
-clobber each other's `.clean.flac` / `.md` / `.srt`. The lock is released on
-normal exit and on `SIGINT`/`SIGTERM`, and the OS drops it automatically if the
-process is killed. Ctrl-C mid-transcription terminates the child subprocess,
-cleans up the per-run temp dir, removes partial temp output, and releases the
-lock (exit `130`). Output files are written atomically (temp file + `os.replace`),
-so an interrupt never leaves a truncated `.md` / `.srt` / `.clean.flac`.
+Only one transcription may run at a time. The engine holds an exclusive `flock`
+on `<PTM_STATE_DIR or ~/.local/state/ptm>/transcribe.lock` (writing its PID
+into it) for the job's duration; a second job is rejected with “Another
+transcription is already running.” in the run pane, so two runs never clobber
+each other's `.clean.flac` / `.md` / `.srt`. The lock is released when the job
+ends, and the OS drops it automatically if the process is killed. Output files
+are written atomically (temp file + `os.replace`), so an interrupt never leaves
+a truncated `.md` / `.srt` / `.clean.flac`.
 
 ## 4. Verify the output
 
@@ -292,9 +267,6 @@ Expected Markdown:
 # fast unit tests (no model/binary needed)
 ./.venv/bin/python -m pytest tests/test_transcribe.py -v
 
-# the ptm-transcribe CLI (parser, pairing, end-to-end with faked subprocess)
-./.venv/bin/python -m pytest tests/test_cli_transcribe.py -v
-
 # client vs the stub server (no model/binary needed)
 ./.venv/bin/python -m pytest tests/test_transcribe_integration.py -v
 
@@ -309,12 +281,12 @@ PTM_RUN_AUDIO_INTEGRATION=1 ./.venv/bin/python -m pytest tests/test_transcribe_i
 
 | Goal | Setting |
 | --- | --- |
-| Max ASR quality | `AUDIO_MODEL=mlx-community/whisper-large-v3-mlx` (or `--env AUDIO_MODEL=…`) |
+| Max ASR quality | `AUDIO_MODEL=mlx-community/whisper-large-v3-mlx` |
 | Norwegian (avoid mis-detect on short clips) | `AUDIO_LANGUAGE=no` |
 | Skip enhancement (A/B check) | `AUDIO_PREPROCESS=0 AUDIO_ENHANCE_ENABLED=0` |
 | Skip dereverberation (very dry audio) | `AUDIO_DEREVERB_ENABLED=0` |
-| Isolate voice from music/chatter | `--isolate` (or `AUDIO_ISOLATE_ENABLED=1`) |
-| Enhancement only, no speaker labels | run the server, leave `--diarize` off |
+| Isolate voice from music/chatter | `AUDIO_ISOLATE_ENABLED=1` (TUI setting) |
+| Enhancement only, no speaker labels | run the server, leave diarization off |
 | Default | `mlx-community/whisper-large-v3-turbo` |
 
 ## 7. Troubleshooting
@@ -325,10 +297,10 @@ PTM_RUN_AUDIO_INTEGRATION=1 ./.venv/bin/python -m pytest tests/test_transcribe_i
 | `[WARN] … ffmpeg not found` | `brew install ffmpeg` |
 | `[WARN] Audio enhancement failed: …` | Server down → `scripts/audio_serve.sh start` (daemon-managed `audio`, :8089), or set `AUDIO_ENHANCE_ENABLED=0` |
 | `[WARN] Audio dereverberation failed: …` | Server down → start it, or set `AUDIO_DEREVERB_ENABLED=0` |
-| `[WARN] Voice isolation failed: …` | Server down or SepFormer not installed → start it / install `speechbrain`, or drop `--isolate` |
-| `[WARN] Diarization failed: …` | Server down → start it, or drop `--diarize` |
+| `[WARN] Voice isolation failed: …` | Server down or SepFormer not installed → start it / install `speechbrain`, or disable `AUDIO_ISOLATE_ENABLED` |
+| `[WARN] Diarization failed: …` | Server down → start it, or disable diarization |
 | Server logs a 401/403 "gated repo" on startup | Re-do §2.1: accept both model licenses + create a **Read** token |
-| No `# Transcript` appears | No same-stem audio found → pass `--audio-file` or `--to` |
+| No `# Transcript` appears | No same-stem audio found → select the Markdown whose audio you want attached |
 | Wrong language / gibberish | Set `AUDIO_LANGUAGE`, or upgrade to `large-v3-mlx` |
 | Long silence / music transcribed | Whisper hallucination → trim the recording, or try `AUDIO_CONDITION_ON_PREVIOUS_TEXT=1` |
-| `ptm-transcribe: another instance is already running (PID …)` (exit 3) | Another transcription is active — wait for it, or stop that PID (the `flock` releases on process death) |
+| “Another transcription is already running.” in the run pane | Another transcription is active — wait for it, or stop the engine (the `flock` releases on process death) |

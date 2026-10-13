@@ -1,6 +1,6 @@
 # 0003. `ptm` mirrors the GUI conversion semantics
 
-- Status: Amended by [0048](0048-markdown-beside-source-archive.md)
+- Status: Superseded by [0051](0051-tui-sole-surface.md)
 - Date: 2026-08-26
 
 ## Context

@@ -42,7 +42,7 @@ def need_gate() -> str:
     """The lazy-read ``NEED_GATE`` mode: ``off`` / ``on`` / ``shadow``.
 
     Read at call time (like ``PDF_MODE``) so a conversion can flip it without a
-    restart; the CLI/GUI and the A/B harness force it explicitly.
+    restart; the engine and tests force it explicitly.
     """
     return os.environ.get("NEED_GATE", "on").strip().lower() or "on"
 

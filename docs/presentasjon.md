@@ -4,10 +4,10 @@
 
 - Konverterer **PowerPoint (.pptx)**, **PDF (.pdf)** og **LaTeX-prosjekter** til Markdown
 - Bygget for å føre forelesningsslides inn i en Obsidian-vault
-- Ett Markdown-dokument per kilde; bildelenker er av som standard (ADR-0047) — AI-beskrivelser av bilder beholdes, `assets/`-uttrekk er opt-in (`--image-links` / `IMAGE_LINKS=on`)
+- Ett Markdown-dokument per kilde; bildelenker er av som standard (ADR-0047) — AI-beskrivelser av bilder beholdes, `assets/`-uttrekk er opt-in (`IMAGE_LINKS=on` / TUI-innstilling)
 - Bevarer **fet/kursiv**, tabeller og lister; per-slide/per-side-overskrifter
 - PPTX-notater som sitat; PDF renderer per-side PNG i minnet (lenke kun med `IMAGE_LINKS=on`)
-- Grensesnitt: web-GUI, desktop-GUI (PySide6), CLI (`ptm`), Go-TUI og et gjenbrukbart `converter`-bibliotek (ingen UI-avhengigheter)
+- Grensesnitt: den native Go-TUI-en (`ptm-tui`) med den lokale motoren (`ptm-engine`) og et gjenbrukbart `converter`-bibliotek (ingen UI-avhengigheter); de øvrige grensesnittene er fjernet (ADR-0051)
 
 ## Slide 2 — Deterministisk
 
@@ -30,7 +30,7 @@
 
 ## Slide 4 — Utviklingsmetode: ADR-er
 
-- Alle arkitekturbeslutninger dokumenteres som **ADR-er** i `docs/adr/` (41 stk, MADR-form)
+- Alle arkitekturbeslutninger dokumenteres som **ADR-er** i `docs/adr/` (46 stk, MADR-form)
 - Fast mal: **Kontekst / Beslutning / Konsekvenser / Alternativer** — beslutningstreet er synlig
 - **Uforanderlig når godkjent**: supersede, aldri rediger
 - Én beslutning per ADR; egen serie per repo, kryssreferert til delte kontrakter
@@ -41,7 +41,7 @@
 
 ### Slide 1 — Prosjektet
 
-PresentationToMarkdown konverterer PowerPoint, PDF og LaTeX til Markdown for å føre forelesningsslides inn i en Obsidian-vault. Ett dokument per kilde; ingen bildelenker som standard — AI-beskrivelser beholdes og `assets/`-uttrekk er opt-in med `--image-links`; fet/kursiv, tabeller, lister og per-slide-overskrifter bevares. Finnes som web-GUI, desktop-GUI, CLI (`ptm`), Go-TUI og et gjenbrukbart `converter`-bibliotek uten UI-avhengigheter.
+PresentationToMarkdown konverterer PowerPoint, PDF og LaTeX til Markdown for å føre forelesningsslides inn i en Obsidian-vault. Ett dokument per kilde; ingen bildelenker som standard — AI-beskrivelser beholdes og `assets/`-uttrekk er opt-in med `IMAGE_LINKS=on`; fet/kursiv, tabeller, lister og per-slide-overskrifter bevares. Grensesnittet er den native Go-TUI-en (`ptm-tui`) med den lokale motoren (`ptm-engine`), i tillegg til et gjenbrukbart `converter`-bibliotek uten UI-avhengigheter (ADR-0051).
 
 ### Slide 2 — Deterministisk
 
@@ -53,21 +53,18 @@ All AI kjører lokalt på Mac-en (M4, 32 GB), uten sky. `macos-dev-config` er ma
 
 ### Slide 4 — Utviklingsmetode: ADR-er
 
-Alle arkitekturbeslutninger dokumenteres som ADR-er i `docs/adr/` (41 stk) i MADR-form: Kontekst, Beslutning, Konsekvenser og Alternativer, med én beslutning per ADR. En godkjent ADR er uforanderlig og supersedes heller enn å redigeres, og hvert repo har sin egen serie kryssreferert til delte kontrakter. Koden testes med `pytest` og syntetiske fixtures.
+Alle arkitekturbeslutninger dokumenteres som ADR-er i `docs/adr/` (46 stk) i MADR-form: Kontekst, Beslutning, Konsekvenser og Alternativer, med én beslutning per ADR. En godkjent ADR er uforanderlig og supersedes heller enn å redigeres, og hvert repo har sin egen serie kryssreferert til delte kontrakter. Koden testes med `pytest` og syntetiske fixtures.
 
 ## Runtime — prosessdiagram
 
 ```mermaid
 flowchart TD
     U[Bruker / forelesning] --> E{Inngang}
-    E -->|web-GUI| ENG[engine.py]
-    E -->|CLI ptm| CLI[cli.py]
     E -->|Go-TUI| TUI[ptm-tui]
     E -->|bibliotek| API[convert_file]
 
+    TUI --> ENG[engine.py<br/>ptm-engine]
     ENG --> DISP
-    CLI --> DISP
-    TUI --> ENG
     API --> DISP
 
     DISP[Konverter-dispatch] --> PPTX[PPTX: python-pptx]
@@ -113,14 +110,14 @@ flowchart TD
 sequenceDiagram
     autonumber
     actor U as Bruker
-    participant IN as Inngang (GUI / CLI / TUI)
+    participant IN as Inngang (TUI / bibliotek)
     participant CO as Converter<br/>(convert_file)
     participant FL as fleet.py
     participant FD as fleetdaemon :9300
     participant MS as Modellserver<br/>(mlx-vlm / mlx-lm / llama.cpp)
     participant LG as ptm.sqlite<br/>(logstore)
 
-    U->>IN: velger fil(er) + AI-flagg
+    U->>IN: velger fil(er) + AI-innstillinger
     IN->>CO: convert_file(paths, output)
     CO->>CO: dispatch (PPTX / PDF / LaTeX)
 

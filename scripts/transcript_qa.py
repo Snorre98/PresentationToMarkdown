@@ -6,7 +6,7 @@ a run that silently dropped content can be compared and corrected without
 re-transcription.
 
 It is a read-only analysis tool, not part of the conversion pipeline: it never
-touches the audio model, the audio server, or the ``ptm-transcribe`` CLI. The
+touches the audio model, the audio server, or the transcription pipeline. The
 only output it writes is the reconstructed ``<stem>.N.md`` / ``<stem>.N.srt``
 pair requested on the command line.
 

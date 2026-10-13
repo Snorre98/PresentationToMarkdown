@@ -1,11 +1,11 @@
-"""Shared command-line helpers for the ``ptm`` and ``ptm-start`` entry points.
+"""Shared command-line helpers for AI-capability flags (``ptm-engine``).
 
-Both commands expose the AI capabilities (vision, classifier gate, markdown
+``ptm-engine`` exposes the AI capabilities (vision, classifier gate, markdown
 restructure, and the RAG summary) as simple flags, mapped onto the same
 environment variables the converter already reads. This module deliberately
-does **not** import ``converter`` (or ``gui``): the converter reads its
-configuration at import time, so callers must apply the environment variables
-*first*, then import the converter.
+does **not** import ``converter``: the converter reads its configuration at
+import time, so callers must apply the environment variables *first*, then
+import the converter.
 """
 from __future__ import annotations
 
@@ -25,8 +25,8 @@ AI_FLAGS: dict[str, tuple[str, str]] = {
 }
 
 # ``--all`` enables the core slide passes only — not audio transcription, which
-# is a separate command (``ptm-transcribe``) and needs an audio file to exist
-# plus the ffmpeg/mlx-whisper toolchain.
+# is an engine-hosted job (ADR-0045) that needs an audio file to exist plus the
+# ffmpeg/mlx-whisper toolchain.
 _ALL_FLAGS = ("vision", "classify", "interpret", "format", "summary")
 
 
@@ -165,7 +165,7 @@ def ai_env_vars(args: argparse.Namespace) -> dict[str, str]:
 def apply_ai_env(args: argparse.Namespace) -> dict[str, str]:
     """Set the mapped environment variables and return the applied mapping.
 
-    Must be called before importing ``converter`` or ``gui``.
+    Must be called before importing ``converter``.
     """
     env = ai_env_vars(args)
     os.environ.update(env)

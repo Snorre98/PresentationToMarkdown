@@ -4,9 +4,9 @@ package main
 // inference overwrite, duplicate, output dir, and transcription settings
 // (diarize/speakers/model/language). Feature/pdf/image-links/compress/
 // inference-overwrite/duplicate/transcription changes round-trip through the
-// engine's /api/config so they stay in sync with the GUI and web surfaces
-// (converter.settings). The transcription settings (ADR-0043) are injected into
-// the spawned ptm-transcribe argv by the TUI at run time.
+// engine's /api/config so they persist in the shared settings store
+// (converter.settings). The transcription settings (ADR-0043) are applied by
+// the engine when it runs a transcription job (ADR-0045).
 
 import (
 	"context"

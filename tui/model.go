@@ -329,8 +329,8 @@ func (m *model) runConvert(paths []string) tea.Cmd {
 	return waitEvent(ch)
 }
 
-// runTranscribe starts an engine-hosted transcription (ADR-0045) rather than
-// spawning ptm-transcribe; progress arrives as the same structured WS frames.
+// runTranscribe starts an engine-hosted transcription (ADR-0045); progress
+// arrives as the same structured WS frames.
 func (m *model) runTranscribe(paths []string) tea.Cmd {
 	ch := make(chan JobEvent, 32)
 	m.eventsCh = ch

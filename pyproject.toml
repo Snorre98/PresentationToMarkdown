@@ -10,7 +10,6 @@ readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     "python-pptx>=1.0.2",
-    "PySide6>=6.7",
     "PyMuPDF>=1.24",
     "pymupdf_layout>=1.28.2",
     "sqlite-vec>=0.1.9",
@@ -22,19 +21,11 @@ dependencies = [
 ]
 
 [project.scripts]
-ptm = "cli:main"
-ptm-start = "start:main"
-ptm-transcribe = "cli_transcribe:main"
-ptm-ab = "cli_ab:main"
-ptm-dashboard = "dashboard:main"
 ptm-engine = "engine:main"
 
 [tool.setuptools]
-packages = ["converter", "dashboard"]
-py-modules = ["cli", "cli_common", "cli_transcribe", "cli_ab", "lock", "start", "gui", "engine"]
-
-[tool.setuptools.package-data]
-dashboard = ["templates/*.html", "static/*"]
+packages = ["converter"]
+py-modules = ["engine", "cli_common", "lock"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

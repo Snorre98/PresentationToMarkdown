@@ -124,7 +124,7 @@ mlx_vlm.server --model mlx-community/Qwen2.5-VL-7B-Instruct-4bit --port 8081
 VISION_ENABLED=1 \
 VISION_BASE_URL=http://127.0.0.1:8081/v1 \
 VISION_MODEL=mlx-community/Qwen2.5-VL-7B-Instruct-4bit \
-./python main.py
+scripts/ptm-tui.sh
 ```
 
 Compare the complex pages against the rendered PNG, and treat the converter's
@@ -164,7 +164,7 @@ via environment variables:
 Example:
 
 ```sh
-VISION_ENABLED=1 ./python main.py
+VISION_ENABLED=1 scripts/ptm-tui.sh
 ```
 
 When `VISION_ENABLED` is off (the default), conversion is fully deterministic and
@@ -207,7 +207,7 @@ mlx_vlm.server --model mlx-community/Qwen2.5-VL-3B-Instruct-4bit --port 8082
 Enable the gate (and image-level transcription) with `VISION_CLASSIFY_ENABLED=1`:
 
 ```sh
-VISION_ENABLED=1 VISION_CLASSIFY_ENABLED=1 ./python main.py
+VISION_ENABLED=1 VISION_CLASSIFY_ENABLED=1 scripts/ptm-tui.sh
 ```
 
 What the gate changes:
@@ -397,12 +397,12 @@ salient chunks, and has a dedicated summary chat model write the header.
 The `sqlite-vec` extension is a Python dependency (`pip install sqlite-vec`) and
 loads on its own; no separate server is needed for the vector store.
 
-All three AI passes can be enabled together in one command (vision + classifier,
+All three AI passes can be enabled together in one launch (vision + classifier,
 markdown restructure, and the RAG summary):
 
 ```sh
 VISION_ENABLED=1 VISION_CLASSIFY_ENABLED=1 FORMAT_ENABLED=1 SUMMARY_ENABLED=1 \
-  ./.venv/bin/python main.py
+  scripts/ptm-tui.sh
 ```
 
 ## Logging

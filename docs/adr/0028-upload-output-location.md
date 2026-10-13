@@ -1,6 +1,6 @@
 # 0028. Upload output location
 
-- Status: Amended by [0048](0048-markdown-beside-source-archive.md)
+- Status: Amended by [0048](0048-markdown-beside-source-archive.md); deprecated by [0051](0051-tui-sole-surface.md)
 - Date: 2026-09-04
 
 ## Context
