@@ -15,7 +15,7 @@ import (
 	"strings"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 )
 
 var featureOrder = []string{"vision", "classify", "interpret", "format", "summary", "structure"}
@@ -33,7 +33,7 @@ var audioModels = []string{
 	"mlx-community/whisper-large-v3-turbo", // speed (mlx-whisper)
 }
 
-func (m *model) updateSettings(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m *model) updateSettings(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if m.editingOutput {
 		switch msg.String() {
 		case "esc", "enter":
@@ -43,8 +43,8 @@ func (m *model) updateSettings(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.outputDir = m.outputDir[:len(m.outputDir)-1]
 			}
 		default:
-			if msg.Type == tea.KeyRunes {
-				m.outputDir += string(msg.Runes)
+			if msg.Text != "" {
+				m.outputDir += msg.Text
 			}
 		}
 		return m, nil
@@ -58,8 +58,8 @@ func (m *model) updateSettings(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.languageInput = m.languageInput[:len(m.languageInput)-1]
 			}
 		default:
-			if msg.Type == tea.KeyRunes {
-				m.languageInput += string(msg.Runes)
+			if msg.Text != "" {
+				m.languageInput += msg.Text
 			}
 		}
 		return m, nil
@@ -73,11 +73,9 @@ func (m *model) updateSettings(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.speakersInput = m.speakersInput[:len(m.speakersInput)-1]
 			}
 		default:
-			if msg.Type == tea.KeyRunes {
-				for _, r := range msg.Runes {
-					if r >= '0' && r <= '9' {
-						m.speakersInput += string(r)
-					}
+			for _, r := range msg.Text {
+				if r >= '0' && r <= '9' {
+					m.speakersInput += string(r)
 				}
 			}
 		}

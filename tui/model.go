@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 )
 
 type screen int
@@ -210,7 +210,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case jobClosedMsg:
 		return m, nil
 
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		switch msg.String() {
 		case "ctrl+c":
 			return m, tea.Quit
@@ -229,7 +229,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m *model) updatePick(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m *model) updatePick(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if m.filtering {
 		switch msg.String() {
 		case "esc":
@@ -244,8 +244,8 @@ func (m *model) updatePick(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.refilter()
 			}
 		default:
-			if msg.Type == tea.KeyRunes {
-				m.filter += string(msg.Runes)
+			if msg.Text != "" {
+				m.filter += msg.Text
 				m.refilter()
 			}
 		}
@@ -446,13 +446,17 @@ func (m *model) refilter() {
 
 // --- view --------------------------------------------------------------------
 
-func (m *model) View() string {
+func (m *model) View() tea.View {
+	var content string
 	switch m.screen {
 	case screenSettings:
-		return settingsView(m)
+		content = settingsView(m)
 	default:
-		return pickView(m)
+		content = pickView(m)
 	}
+	v := tea.NewView(content)
+	v.AltScreen = true
+	return v
 }
 
 func jobsStrip(m *model) string {

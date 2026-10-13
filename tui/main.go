@@ -12,7 +12,7 @@ import (
 	"strconv"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 )
 
 func main() {
@@ -53,7 +53,7 @@ func run() error {
 		return err
 	}
 
-	p := tea.NewProgram(newModel(client, cwd, spawned), tea.WithAltScreen())
+	p := tea.NewProgram(newModel(client, cwd, spawned))
 	if _, err := p.Run(); err != nil {
 		return err
 	}
