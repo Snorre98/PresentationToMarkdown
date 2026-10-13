@@ -54,3 +54,4 @@ Index of architectural decisions for PresentationToMarkdown, in
 | [0052](0052-paper-continuous-document.md) | Paper mode is one continuous document (no per-page headings) | Accepted |
 | [0053](0053-tui-v2-charm-and-job-contract.md) | TUI v2: Charm v2 shell, fixed-frame layout, engine job contract | Accepted |
 | [0054](0054-borderless-pdf-tables.md) | Borderless PDF tables reconstructed from the text-layer stream | Accepted |
+| [0055](0055-pdf-paragraphs-and-headings.md) | Paper-mode paragraphs and headings from learned typography | Accepted |

@@ -61,8 +61,10 @@ slide deck:
 
 | Element | Markdown output |
 | --- | --- |
-| Title + subtitle + authors (page 1) | `# Title` + `*Authors · Affiliation*` metadata block |
-| Section headings | `## Heading` (bold / larger / centered standalone lines) |
+| Title (page 1) | `# Title` — centered metadata blocks and flush-left titles at the learned title size, with wrapped title lines joined; `*Authors · Affiliation*` when a centered block is found |
+| Section headings | `##`/`###`/`####` from the document's learned size tiers (24/18/14 pt in the sample above), including numbered headings and headings ending in `:`/`?`; uniform-size bold-only headings promote through a stricter evidence ladder |
+| Body paragraphs | Wrapped lines rejoined into one Markdown line per paragraph, including paragraphs that continue in the next column or page; `PDF_REFLOW=off` keeps the legacy line-per-line output |
+| Bullet lists | `- `/`  - ` items; a body paragraph after a list is not absorbed as a continuation |
 | Page boundaries | No per-page headings — later-page content flows under the paper's last real `##` section (ADR-0052) |
 | Running headers | Dropped (repeats at the top of every page) |
 | Page separators | None — pages flow continuously (no `---` / page-break divs) |
@@ -157,6 +159,9 @@ the TUI dispatches (see [Audio transcription](#audio-transcription-optional)).
 
 `--env` is the escape hatch for anything the flags don't cover, e.g.
 `ptm-engine --vision --env VISION_MODEL=... --env VISION_LOG_DB=/tmp/ptm.sqlite`.
+It also carries the lazy output preferences: `--env PDF_REFLOW=off` keeps the
+legacy line-per-line paper output, and `--env PDF_BORDERLESS_TABLES=off`
+disables borderless-table reconstruction.
 See the [ADR index](docs/adr/README.md) for the rationale.
 
 ### Library
@@ -645,6 +650,22 @@ cached (no separate probe), and unchanged chunks are not re-embedded.
   raw-text block (embedded images are still transcribed via the vision pass).
   Multi-column text pages *are* linearized: column-by-column automatically, and
   with full document structure in paper mode.
+- Paper-mode headings and paragraphs come from the document's own learned
+  typography (pitch, paragraph-gap, size tiers, ADR-0055). Unusual layouts can
+  still slip through: a heading at body size with no bold, or prose styled at a
+  heading tier (a pull-quote paragraph), may be missed or over-promoted. The
+  optional structure pass is the semantic backstop, and `PDF_REFLOW=off`
+  restores the previous line-per-line body output.
+- **Residual review findings** (documented, not fixed; the sweep's outputs and
+  report are kept in `artifacts/corpus-sweep/`). Across a 19-PDF corpus of
+  lecture decks, papers and a 500-page book: (a) when a recovered `#` title
+  also lives inside a detected table (some print-to-PDF web articles), those
+  title words appear both as the heading and inside the pipe table;
+  (b) diagram-heavy slides converted in *paper* mode can still have text
+  fragments reordered by the row-major linearizer; (c) Markdown escaping of
+  specials can shift where merged lines move run boundaries (same rendered
+  text). Multi-column fragment order is unchanged from the previous converter,
+  and no text was lost or garbled.
 - PyMuPDF is AGPL-3.0 (or commercial) licensed — fine for personal use, review if you distribute
 - Audio transcription uses segment-level timestamps (word-level needs wav2vec2 alignment) and does not yet auto-align the transcript to slides (see ADR-0007)
 - **Markdown flavor toggle** (Obsidian `![[wiki-links]]`), note style, and heading level options could go in a settings pane

@@ -9,7 +9,8 @@ TUI settings screen) — no restart required.
 
 It also owns non-AI *output* preferences that share the same runtime-toggle
 contract (``IMAGE_LINKS``, ADR-0047; ``PDF_COMPRESS``, ADR-0049;
-``INFERENCE_OVERWRITE``, ADR-0050; ``PDF_BORDERLESS_TABLES``, ADR-0054): those
+``INFERENCE_OVERWRITE``, ADR-0050; ``PDF_BORDERLESS_TABLES``, ADR-0054;
+``PDF_REFLOW``, ADR-0055): those
 are read lazily at conversion time so an engine flip takes effect on the next
 conversion, mirroring the lazy ``PDF_MODE`` read.
 
@@ -270,6 +271,20 @@ def borderless_tables_enabled() -> bool:
     return (os.environ.get("PDF_BORDERLESS_TABLES", "on").strip().lower() or "on") in _TRUE
 
 
+def pdf_reflow_enabled() -> bool:
+    """Whether paper mode rejoins wrapped lines into paragraph text (ADR-0055).
+
+    A non-AI output preference read lazily at conversion time like
+    ``IMAGE_LINKS``/``PDF_COMPRESS``/``PDF_BORDERLESS_TABLES``. Default **on**:
+    paper-mode PDFs emit one Markdown line per paragraph (and per section
+    heading) built from the deterministic paragraph model, and paragraphs that
+    span a column or page boundary are joined. ``PDF_REFLOW=off`` keeps the
+    previous line-per-visual-line output (headings are still reconstructed);
+    slide mode (``PDF_MODE=slide``) is never reflowed.
+    """
+    return (os.environ.get("PDF_REFLOW", "on").strip().lower() or "on") in _TRUE
+
+
 def enabled_keys() -> list[str]:
     """The keys of currently enabled features, in registration order."""
     return [key for key in FEATURES if is_enabled(key)]
@@ -504,9 +519,9 @@ def snapshot(probe: bool = True) -> dict:
     Captures ``PDF_MODE``, the on/off state of every feature, each enabled pass's
     resolved base URLs and model id, the embeddings model, the
     duplicate-if-exists preference, the image-link, PDF-compression,
-    borderless-table and inference-overwrite output preferences, and — when
-    ``probe`` is true — the ``missing_servers()`` result. Never raises; used to
-    persist a per-run record of "what models/toggles/servers were in effect".
+    borderless-table, reflow and inference-overwrite output preferences, and —
+    when ``probe`` is true — the ``missing_servers()`` result. Never raises; used
+    to persist a per-run record of "what models/toggles/servers were in effect".
     """
     passes: dict[str, dict] = {}
     for key in FEATURES:
@@ -530,6 +545,7 @@ def snapshot(probe: bool = True) -> dict:
         "image_links": image_links_enabled(),
         "pdf_compress": pdf_compress_enabled(),
         "borderless_tables": borderless_tables_enabled(),
+        "pdf_reflow": pdf_reflow_enabled(),
         "inference_overwrite": inference_overwrite(),
         "need_gate": os.environ.get("NEED_GATE", "on").strip().lower() or "on",
         "duplicate": _duplicate_if_exists(),

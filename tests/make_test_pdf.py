@@ -121,6 +121,255 @@ def _make_paper():
     print(f"wrote {out}")
 
 
+def _text(page, x, y, text, size, bold=False):
+    page.insert_text((x, y), text, fontsize=size, fontname="hebo" if bold else "helv")
+
+
+def _mixed(page, x, y, parts, size):
+    """Insert one line as ``(text, bold)`` parts sharing one baseline."""
+    cursor = x
+    for text, bold in parts:
+        font = "hebo" if bold else "helv"
+        page.insert_text((cursor, y), text, fontsize=size, fontname=font)
+        cursor += fitz.get_text_length(text, fontname=font, fontsize=size)
+
+
+def _make_paper_fauxbold():
+    """F1: a fixture-A-style brief (ADR-0055).
+
+    24/18/14/12 size tiers, faux-bold headings, wrapped bold tails that must
+    never become headings, a real heading longer than forty characters, a
+    bullet list followed by a body paragraph, and a paragraph that continues
+    across the page boundary.
+    """
+    out = Path(__file__).parent / "test_paper_fauxbold.pdf"
+    doc = fitz.open()
+
+    page = _paper_page(doc)
+    _text(page, 72, 100, "Assignment 2 - Problem D", 24, bold=True)
+    _text(page, 72, 155, "Prioritizing buses for preventive maintenance", 18, bold=True)
+    _text(page, 72, 195, "Scenario", 14, bold=True)
+    y = 230
+    for line in (
+        "The team reviewed the fleet records",
+        "and compared them with the workshop",
+        "logs from last year.",
+    ):
+        _text(page, 72, y, line, 12)
+        y += 17
+    y += 12
+    _mixed(page, 72, y, [("The estimates cover approximately ", False), ("10 available", True)], 12)
+    y += 17
+    _mixed(page, 72, y, [("additional preventive inspections", True), (".", False)], 12)
+    y += 29
+    _text(page, 72, y, "3. Effect on the maintenance decision", 18, bold=True)
+    y += 33
+    _mixed(page, 72, y, [("The numbers should be treated as ", False), ("estimates rather", True)], 12)
+    y += 17
+    _mixed(page, 72, y, [("than guaranteed savings", True), (".", False)], 12)
+    y += 29
+    _text(page, 72, y, "4. This heading is deliberately longer than forty characters", 18, bold=True)
+    y += 33
+    _mixed(page, 72, y, [("A sentence that ends with ", False), ("a bold run", True)], 12)
+    y += 17
+    _text(page, 72, y, "and continues in regular text.", 12)
+    y += 29
+    _text(page, 90, y, "\u2022 have fewer sensors;", 12)
+    y += 17
+    _text(page, 90, y, "\u2022 have experienced sensor replacements;", 12)
+    y += 29
+    _text(page, 72, y, "The model relies much more strongly on these data.", 12)
+    y += 29
+    _text(page, 72, y, "The report should connect the", 12)
+
+    page = _paper_page(doc)
+    _text(page, 72, 90, "evidence to the recommendation.", 12)
+    _text(page, 72, 135, "Evidence provided", 24, bold=True)
+    _text(page, 72, 190, "6. Important limitations and uncertainties", 18, bold=True)
+    _text(page, 72, 225, "Maintenance actions influence the historical data", 14, bold=True)
+    y = 265
+    _mixed(
+        page, 72, y,
+        [("If maintenance prevented a failure, the record may show ", False), ("no failure", True), (", even", False)],
+        12,
+    )
+    y += 17
+    _text(page, 72, y, "though the bus was at high risk.", 12)
+    y += 29
+    _text(page, 72, y, "Some buses were never inspected.", 12)
+
+    doc.save(out)
+    doc.close()
+    print(f"wrote {out}")
+
+
+def _make_paper_boldonly():
+    """F2: uniform-size document whose only headings are bold (no size signal)."""
+    out = Path(__file__).parent / "test_paper_boldonly.pdf"
+    doc = fitz.open()
+
+    page = _paper_page(doc)
+    y = 100
+    for line in (
+        "The document uses one size everywhere.",
+        "Its section headings are only bold.",
+    ):
+        _text(page, 72, y, line, 11)
+        y += 16
+    y += 12
+    _text(page, 72, y, "A Real Section Heading", 11, bold=True)
+    y += 28
+    for line in (
+        "A paragraph follows the heading and",
+        "wraps mid-sentence as usual.",
+    ):
+        _text(page, 72, y, line, 11)
+        y += 16
+    y += 12
+    _text(page, 72, y, "This key insight is emphasised.", 11, bold=True)
+    y += 28
+    _mixed(page, 72, y, [("The process begins with ", False), ("a very important step", True)], 11)
+    y += 16
+    _mixed(page, 72, y, [("and continues elsewhere", True), (".", False)], 11)
+    y += 28
+    _text(page, 72, y, "Another Point:", 11, bold=True)
+    y += 28
+    _mixed(page, 72, y, [("Lead-in term:", True), (" the rest of the sentence follows here.", False)], 11)
+    y += 28
+    _mixed(page, 72, y, [("The paragraph continues here and then ", False), ("No way this becomes", True)], 11)
+    y += 16
+    _mixed(page, 72, y, [("a heading at all", True), (" and the text moves on.", False)], 11)
+
+    doc.save(out)
+    doc.close()
+    print(f"wrote {out}")
+
+
+def _make_paper_sizeonly():
+    """F3: a size-only hierarchy with no bold anywhere."""
+    out = Path(__file__).parent / "test_paper_sizeonly.pdf"
+    doc = fitz.open()
+
+    page = _paper_page(doc)
+    _text(page, 72, 100, "Size Only Study", 15)
+    _text(page, 72, 160, "1. Introduction", 13)
+    y = 200
+    for line in ("The measurements were taken", "in a controlled setting."):
+        _text(page, 72, y, line, 11)
+        y += 16
+    y += 12
+    _text(page, 72, y, "Data collection", 12)
+    y += 28
+    for line in ("The recorder sampled every event", "for two full weeks."):
+        _text(page, 72, y, line, 11)
+        y += 16
+    y += 12
+    _text(page, 72, y, "Data processing", 12)
+    y += 28
+    for line in ("The raw log was normalised", "before the analysis."):
+        _text(page, 72, y, line, 11)
+        y += 16
+    y += 12
+    _text(page, 72, y, "2. Methods in detail", 13)
+    y += 28
+    for line in ("The procedure is described", "in the following section."):
+        _text(page, 72, y, line, 11)
+        y += 16
+
+    page = _paper_page(doc)
+    _text(page, 72, 100, "3. Results", 13)
+    y = 140
+    for line in ("The effects were consistent", "across the tested groups."):
+        _text(page, 72, y, line, 11)
+        y += 16
+    y += 12
+    _text(page, 72, y, "Measurements", 12)
+    y += 28
+    for line in ("Every metric was recorded twice", "and checked by a second reader."):
+        _text(page, 72, y, line, 11)
+        y += 16
+
+    doc.save(out)
+    doc.close()
+    print(f"wrote {out}")
+
+
+def _make_paper_punct_columns():
+    """F4: two columns, numbered headings ending ``:``/``?``, one paragraph that
+    continues from the left column into the right column."""
+    out = Path(__file__).parent / "test_paper_punct_columns.pdf"
+    doc = fitz.open()
+
+    page = _paper_page(doc)
+    _text(page, 190, 100, "Colon and Question Study", 20, bold=True)
+    _text(page, 50, 280, "1. What is measured:", 17, bold=True)
+    y = 320
+    for line in ("The recorder logs every", "event in the workshop."):
+        _text(page, 50, y, line, 11)
+        y += 16
+    y += 12
+    _text(page, 50, y, "The first column begins", 11)
+    y += 16
+    _text(page, 50, y, "the thought", 11)
+
+    _text(page, 330, 280, "and the second column", 11)
+    _text(page, 330, 296, "completes it.", 11)
+    _text(page, 330, 336, "2. Why does it matter?", 17, bold=True)
+    y = 376
+    for line in ("The question drives the", "design of the study."):
+        _text(page, 330, y, line, 11)
+        y += 16
+
+    page = _paper_page(doc)
+    _text(page, 72, 100, "3. How is it decided?", 17, bold=True)
+    y = 140
+    for line in ("The decision follows from", "the measured evidence."):
+        _text(page, 72, y, line, 11)
+        y += 16
+
+    doc.save(out)
+    doc.close()
+    print(f"wrote {out}")
+
+
+def _make_paper_negatives():
+    """F5: paragraph-model negatives — nothing here is a heading."""
+    out = Path(__file__).parent / "test_paper_negatives.pdf"
+    doc = fitz.open()
+
+    page = _paper_page(doc)
+    y = 100
+    for line in ("The following lines should not", "become headings at all."):
+        _text(page, 72, y, line, 11)
+        y += 16
+    y += 12
+    _text(page, 72, y, "Stay awhile.", 11)
+    y += 28
+    _text(page, 72, y, "The river runs.", 11)
+    y += 28
+    _mixed(page, 72, y, [("A note about ", False), ("the most important", True)], 11)
+    y += 16
+    _mixed(page, 72, y, [("consideration of all", True), (".", False)], 11)
+    y += 28
+    _text(page, 90, y, "\u2022 first bullet;", 11)
+    y += 16
+    _text(page, 90, y, "\u2022 second bullet;", 11)
+    y += 28
+    _text(page, 72, y, "The following paragraph stands alone.", 11)
+    y += 28
+    _text(page, 100, y, "This line is indented like a quotation.", 11)
+    y += 28
+    _text(page, 72, y, "This bold sentence is not a heading.", 11, bold=True)
+    y += 28
+    _mixed(page, 72, y, [("The paragraph continues here and then ", False), ("No way this becomes", True)], 11)
+    y += 16
+    _mixed(page, 72, y, [("a heading at all", True), (" and the text moves on.", False)], 11)
+
+    doc.save(out)
+    doc.close()
+    print(f"wrote {out}")
+
+
 def _make_borderless():
     """A synthetic PDF exercising borderless (whitespace-only) table detection (ADR-0054).
 
@@ -224,6 +473,11 @@ def main():
     print(f"wrote {out}")
     _make_paper()
     _make_borderless()
+    _make_paper_fauxbold()
+    _make_paper_boldonly()
+    _make_paper_sizeonly()
+    _make_paper_punct_columns()
+    _make_paper_negatives()
 
 
 if __name__ == "__main__":

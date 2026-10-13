@@ -72,7 +72,7 @@ _PAPER_PROMPT = (
     "Only these structural changes are allowed:\n"
     "- Rejoin lines that were wrapped mid-sentence into single paragraphs.\n"
     "- Fix list nesting and blank-line spacing.\n\n"
-    "Keep all `# ` and `## ` headings, any image or page links, tables, "
+    "Keep all headings (`# ` through `###### `), any image or page links, tables, "
     "blockquotes, `<details>` blocks, fenced code, and horizontal rules exactly "
     "as they are. Never add or promote headings.\n\n"
     "Output only the Markdown, with no commentary or code fences."
