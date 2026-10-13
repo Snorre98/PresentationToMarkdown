@@ -9,13 +9,15 @@ post-normalizes the output into the pipeline's conventions:
   the directory name),
 - pandoc ``--shift-heading-level-by=1`` so ``\\section`` becomes ``##`` (keeping
   the top-level ``#`` chunking contract for ``format``/``summary``),
-- image references rewritten into ``assets/<stem>/`` with content-hash
-  deduplication (``base.write_image``),
-- display math rendered to a PNG via ``standalone`` + pdflatex + PyMuPDF;
-  inline ``$...$`` math is left as passthrough for Obsidian.
+- with ``IMAGE_LINKS=on`` (legacy): image references rewritten into
+  ``assets/<stem>/`` with content-hash deduplication (``base.write_image``) and
+  display math rendered to a PNG via ``standalone`` + pdflatex + PyMuPDF. By
+  default (ADR-0047) figures are dropped and display math stays as the
+  ``$$...$$`` passthrough; inline ``$...$`` math is always left as passthrough
+  for Obsidian.
 
 pandoc is a *required* external binary for ``.tex`` input; pdflatex is required
-only for display-math rendering (inline passthrough otherwise).
+only for legacy display-math rendering.
 """
 from __future__ import annotations
 
@@ -28,6 +30,7 @@ from pathlib import Path
 
 import pymupdf as fitz
 
+from converter import config
 from converter.base import (
     ConvertResult,
     Converter,
@@ -326,6 +329,18 @@ def _rewrite_images(
     return _IMAGE_RE.sub(repl, md)
 
 
+def _strip_images(md: str) -> str:
+    """Remove pandoc's figure references from the Markdown (ADR-0047).
+
+    With ``IMAGE_LINKS`` off LaTeX figures are dropped rather than rewritten
+    into ``assets/``: LaTeX runs no vision pass (ADR-0038), so there is no AI
+    description to keep in their place. Display math is untouched here (it stays
+    the ``$$...$$`` passthrough pandoc emitted).
+    """
+    md = _IMAGE_RE.sub("", md)
+    return re.sub(r"\n{3,}", "\n\n", md)
+
+
 def _resolve_image(project_dir: Path, url: str) -> Path | None:
     """Resolve an image reference against the project dir, tolerating ``../``.
 
@@ -499,12 +514,15 @@ class LatexConverter(Converter):
             md = _strip_attrs(md)
             md = _cleanup_bibliography(md)
 
-            assets_dir = output_dir / "assets" / stem
-            assets_dir.mkdir(parents=True, exist_ok=True)
-            counter = [1]
-            dedup: dict[str, str] = {}
-            md = _rewrite_images(md, project_dir, assets_dir, stem, counter, dedup, result.warnings)
-            md = _render_display_math(md, assets_dir, stem, counter, dedup, result.warnings)
+            if config.image_links_enabled():
+                assets_dir = output_dir / "assets" / stem
+                assets_dir.mkdir(parents=True, exist_ok=True)
+                counter = [1]
+                dedup: dict[str, str] = {}
+                md = _rewrite_images(md, project_dir, assets_dir, stem, counter, dedup, result.warnings)
+                md = _render_display_math(md, assets_dir, stem, counter, dedup, result.warnings)
+            else:
+                md = _strip_images(md)
 
             lines = [f"# {title}", ""]
             if authors:

@@ -2,8 +2,8 @@
 
 The converter reconstructs a page's visual layout from per-span coordinates:
 
-- every page is rendered to a PNG (the visual ground truth, kept even where the
-  text layer can't be linearized),
+- every page is rendered to a PNG in memory (the page-level vision input; the
+  file is only saved, with a ``[Page N](...)`` link, when ``IMAGE_LINKS`` is on),
 - the shared slide-master background image is detected and skipped,
 - text lines are reordered by ``(row, x)`` and formatted into bullets, paragraphs
   and pipe tables,
@@ -342,14 +342,26 @@ def _line_in_tables(line: Line, tables) -> bool:
     return False
 
 
-def _page_images(page, doc, assets_dir, stem, counter, warnings, skip_xrefs, dedup, pno, repeated, seen, source) -> tuple[list[str], bytes, int, int]:
+def _page_images(
+    page, doc, assets_dir, stem, counter, warnings, skip_xrefs, dedup, pno,
+    repeated, seen, source, image_links,
+) -> tuple[list[str], bytes, int, int]:
+    """Return ``(refs, png_bytes, width, height)`` for one page.
+
+    ``refs`` carries the legacy links (``[Page N](...)`` for the rendered page,
+    ``![image](...)`` per embedded image) plus any vision descriptions. With
+    ``image_links`` off (ADR-0047) no assets are written and no links are
+    emitted; the descriptions still are. ``png_bytes`` is always rendered in
+    memory — it is the page-level vision / interpretation input (ADR-0020).
+    """
     refs: list[str] = []
-    assets_dir.mkdir(parents=True, exist_ok=True)
     pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
-    png_name = f"{stem}_page_{pno:02d}.png"
-    pix.save(str(assets_dir / png_name))
     png_bytes = pix.tobytes("png")
-    refs.append(f"[Page {pno}]({_link_dest(f'assets/{stem}/{png_name}')})")
+    if image_links:
+        assets_dir.mkdir(parents=True, exist_ok=True)
+        png_name = f"{stem}_page_{pno:02d}.png"
+        pix.save(str(assets_dir / png_name))
+        refs.append(f"[Page {pno}]({_link_dest(f'assets/{stem}/{png_name}')})")
     for img in page.get_images(full=True):
         xref = img[0]
         if xref in skip_xrefs:
@@ -360,16 +372,19 @@ def _page_images(page, doc, assets_dir, stem, counter, warnings, skip_xrefs, ded
             warnings.append(f"Could not extract image: {exc}")
             continue
         digest = image_digest(extracted["image"])
-        filename = write_image(
-            extracted["image"],
-            extracted.get("ext", "bin"),
-            assets_dir,
-            stem,
-            counter,
-            warnings,
-            dedup,
-        )
-        if filename:
+        filename = None
+        if image_links:
+            filename = write_image(
+                extracted["image"],
+                extracted.get("ext", "bin"),
+                assets_dir,
+                stem,
+                counter,
+                warnings,
+                dedup,
+            )
+            if not filename:
+                continue
             rel = _link_dest(f'assets/{stem}/{filename}')
             if digest in repeated:
                 if digest in seen:
@@ -377,24 +392,24 @@ def _page_images(page, doc, assets_dir, stem, counter, warnings, skip_xrefs, ded
                     continue
                 seen.add(digest)
             refs.append(f"![image]({rel})")
-            if any(_is_fullpage_image(r, page.rect) for r in page.get_image_rects(xref)):
-                continue
-            transcription = maybe_transcribe_image(
-                extracted["image"],
-                extracted.get("ext", "bin"),
-                warnings,
-                log_ctx={
-                    "source": source,
-                    "page": pno,
-                    "image_ref": filename,
-                    "image_digest": digest,
-                },
-                width=extracted.get("width"),
-                height=extracted.get("height"),
-            )
-            if transcription:
-                refs.extend(transcription.splitlines())
-                refs.append("")
+        if any(_is_fullpage_image(r, page.rect) for r in page.get_image_rects(xref)):
+            continue
+        transcription = maybe_transcribe_image(
+            extracted["image"],
+            extracted.get("ext", "bin"),
+            warnings,
+            log_ctx={
+                "source": source,
+                "page": pno,
+                "image_ref": filename or f"page {pno} image ({digest})",
+                "image_digest": digest,
+            },
+            width=extracted.get("width"),
+            height=extracted.get("height"),
+        )
+        if transcription:
+            refs.extend(transcription.splitlines())
+            refs.append("")
     return refs, png_bytes, pix.width, pix.height
 
 
@@ -641,12 +656,17 @@ class PDFConverter(Converter):
             doc = fitz.open(path)
             stem = output_stem or path.stem
             paper = _pdf_mode()
+            image_links = config.image_links_enabled()
             page_count = doc.page_count
             assets_dir = output_dir / "assets" / stem
             skip_xrefs = _background_xrefs(doc)
             footer_keys = _collect_footer_keys(doc)
             top_keys = _collect_top_keys(doc) if paper else set()
-            repeated = repeated_image_hashes(_collect_page_image_digests(doc, skip_xrefs))
+            repeated = (
+                repeated_image_hashes(_collect_page_image_digests(doc, skip_xrefs))
+                if image_links
+                else set()
+            )
             seen: set[str] = set()
             counter = [1]
             dedup: dict[str, str] = {}
@@ -657,7 +677,7 @@ class PDFConverter(Converter):
                 page_out, page_content, page_png = self._page_to_md(
                     page, doc, pno, assets_dir, stem, counter, skip_xrefs,
                     footer_keys, top_keys, dedup, result.warnings, repeated,
-                    seen, source, paper,
+                    seen, source, paper, image_links,
                 )
                 lines.extend(page_out)
                 if paper:
@@ -706,7 +726,7 @@ class PDFConverter(Converter):
 
     def _page_to_md(
         self, page, doc, pno, assets_dir, stem, counter, skip_xrefs, footer_keys,
-        top_keys, dedup, warnings, repeated, seen, source, paper,
+        top_keys, dedup, warnings, repeated, seen, source, paper, image_links,
     ) -> tuple[list[str], list[Line], bytes | None]:
         """Return ``(md_lines, content_lines, page_png)`` for one page.
 
@@ -763,10 +783,11 @@ class PDFConverter(Converter):
         )
 
         image_refs, page_png, png_w, png_h = _page_images(
-            page, doc, assets_dir, stem, counter, warnings, skip_xrefs, dedup, pno, repeated, seen, source,
+            page, doc, assets_dir, stem, counter, warnings, skip_xrefs, dedup, pno, repeated, seen, source, image_links,
         )
-        out.extend(image_refs)
-        out.append("")
+        if image_refs:
+            out.extend(image_refs)
+            out.append("")
 
         if page_via_vision:
             labels = _raw_text(content).splitlines()

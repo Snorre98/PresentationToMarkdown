@@ -42,8 +42,6 @@ Bullets removed explicitly
 
 # Image slide — Slide 4
 
-![Picture 2](assets/test_deck/test_deck_01_19b314cf.png)
-
 
 <div style="page-break-after: always; break-after: page;"></div>
 

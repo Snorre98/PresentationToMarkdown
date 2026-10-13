@@ -123,7 +123,8 @@ def convert_file(
     progress_callback: PageProgressCallback | None = None,
     duplicate_if_exists: bool = False,
 ) -> ConvertResult:
-    """Convert one supported file to a .md file plus an assets folder.
+    """Convert one supported file to a .md file (plus an assets folder only when
+    ``IMAGE_LINKS`` is on; ADR-0047).
 
     ``output_dir`` defaults to ``<source-folder>/markdown`` when omitted. It may
     also be a per-file resolver ``Callable[[Path], Path | None]`` returning the

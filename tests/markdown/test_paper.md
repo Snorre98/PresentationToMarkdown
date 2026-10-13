@@ -22,8 +22,6 @@ The lecture presentation discusses heuristics for designing fun learning experie
 
 *T. Malone · Xerox PARC*
 
-[Page 1](assets/test_paper/test_paper_page_01.png)
-
 
 > The first challenge is keeping players engaged through uncertain goals.
 
@@ -48,14 +46,10 @@ Players identify with avatars.
 
 # Page 2
 
-[Page 2](assets/test_paper/test_paper_page_02.png)
-
 ## Curiosity
 
 Curiosity is sparked by surprise and by constructive feedback. Rewards can even backfire. References and notes go here in the final column. Continuing the reference list.
 
 # Page 3
-
-[Page 3](assets/test_paper/test_paper_page_03.png)
 
 A conclusion wraps up the paper and points at future work. References and notes go here in the final column. Continuing the reference list.

@@ -112,8 +112,8 @@ class PageData:
     """One paper-mode page: the deterministic Markdown lines plus raw metadata.
 
     ``md_lines`` are exactly the lines ``PDFConverter.convert`` would write for
-    the page (including the ``# `` heading, the ``[Page N](...)`` link and any
-    trailing blank line). ``line_meta`` carries the raw per-line text +
+    the page (including the ``# `` heading, any legacy ``[Page N](...)`` link
+    and any trailing blank line). ``line_meta`` carries the raw per-line text +
     coordinates/size/bold in reading order (text regime input and coverage).
     ``png`` is the rendered page image (image regime), ``pno`` the 1-based page
     number.
@@ -180,8 +180,8 @@ def _match_meta(line: str, line_meta: list[dict]) -> tuple[float, bool, float]:
 def _numbered_lines(page: PageData) -> str:
     """Build the numbered line list (with layout metadata) shown to the model.
 
-    The ``# `` page heading and ``[Page N](...)`` link are excluded: they are
-    anchors the model must reproduce byte-exact, not annotate.
+    The ``# `` page heading and any legacy ``[Page N](...)`` link are excluded:
+    they are anchors the model must reproduce byte-exact, not annotate.
     """
     out: list[str] = []
     for line in page.md_lines:
@@ -214,7 +214,7 @@ _AMEND_PROMPT = (
     "- Rejoin wrapped lines into paragraphs and, where multi-column linearization "
     "interleaved two columns' lines, reorder lines into the correct reading "
     "order.\n"
-    "- Keep the `# ` page heading, the `[Page N](...)` image link, all pipe "
+    "- Keep the `# ` page heading, any `[Page N](...)` image link, all pipe "
     "tables, blockquotes, `<details>` blocks and fenced code exactly as they are.\n\n"
     "Numbered lines with metadata:\n{numbered}\n\n"
     "Current Markdown:\n{md}\n\n"
@@ -229,7 +229,7 @@ _IMAGE_PROMPT = (
     "Rules:\n"
     "- Transcribe text verbatim from the image; do not invent text you cannot "
     "read; do not add commentary.\n"
-    "- Keep the `[Page N](...)` image link line exactly as it is.\n"
+    "- Keep any `[Page N](...)` image link line, if present, exactly as it is.\n"
     "- Include exactly one `# ` page heading line (on pages after the first you "
     "may replace `# Page N` with the real page title).\n"
     "- Render tables as pipe tables and preserve bold/italic where present.\n\n"

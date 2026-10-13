@@ -1,11 +1,11 @@
 package main
 
-// Settings screen: AI feature toggles, pdf mode, duplicate, output dir, and
-// transcription settings (diarize/speakers/model/language). Feature/pdf/
-// duplicate/transcription changes round-trip through the engine's /api/config
-// so they stay in sync with the GUI and web surfaces (converter.settings). The
-// transcription settings (ADR-0043) are injected into the spawned
-// ptm-transcribe argv by the TUI at run time.
+// Settings screen: AI feature toggles, pdf mode, image links, duplicate, output
+// dir, and transcription settings (diarize/speakers/model/language). Feature/
+// pdf/image-links/duplicate/transcription changes round-trip through the
+// engine's /api/config so they stay in sync with the GUI and web surfaces
+// (converter.settings). The transcription settings (ADR-0043) are injected into
+// the spawned ptm-transcribe argv by the TUI at run time.
 
 import (
 	"context"
@@ -19,8 +19,9 @@ import (
 
 var featureOrder = []string{"vision", "classify", "interpret", "format", "summary", "structure"}
 
-// pdf_mode, duplicate, diarize, speakers, model, language, output_dir.
-const settingsExtraRows = 7
+// pdf_mode, image_links, duplicate, diarize, speakers, model, language,
+// output_dir.
+const settingsExtraRows = 8
 
 // audioModels is the cycle of ASR models the TUI offers (ADR-0043/0044). The
 // first is the machine default: NB-Whisper (Norwegian, routed through the audio
@@ -121,26 +122,30 @@ func (m *model) activateSetting() (tea.Model, tea.Cmd) {
 		}
 		m.cfg.PDFMode = next
 		return m, m.saveConfig(ConfigUpdate{PDFMode: next})
-	case 1: // duplicate
+	case 1: // image_links
+		next := !m.cfg.ImageLinks
+		m.cfg.ImageLinks = next
+		return m, m.saveConfig(ConfigUpdate{ImageLinks: &next})
+	case 2: // duplicate
 		next := !m.duplicate
 		m.duplicate = next
 		return m, m.saveConfig(ConfigUpdate{Duplicate: &next})
-	case 2: // diarize
+	case 3: // diarize
 		next := !m.cfg.AudioDiarize
 		m.cfg.AudioDiarize = next
 		return m, m.saveConfig(ConfigUpdate{AudioDiarize: &next})
-	case 3: // speakers
+	case 4: // speakers
 		m.editingSpeakers = true
 		m.speakersInput = strconv.Itoa(m.cfg.AudioSpeakers)
 		return m, nil
-	case 4: // model — cycle between the bundled ASR models
+	case 5: // model — cycle between the bundled ASR models
 		next := audioModels[0]
 		if m.cfg.AudioModel == audioModels[0] {
 			next = audioModels[1]
 		}
 		m.cfg.AudioModel = next
 		return m, m.saveConfig(ConfigUpdate{AudioModel: &next})
-	case 5: // language
+	case 6: // language
 		m.editingLanguage = true
 		m.languageInput = m.cfg.AudioLanguage
 		if m.languageInput == "" {
@@ -198,14 +203,16 @@ func (m *model) settingsLabel(i int) string {
 	case 0:
 		return "pdf mode"
 	case 1:
-		return "duplicate"
+		return "image links"
 	case 2:
-		return "diarize"
+		return "duplicate"
 	case 3:
-		return "speakers"
+		return "diarize"
 	case 4:
-		return "model"
+		return "speakers"
 	case 5:
+		return "model"
+	case 6:
 		return "language"
 	default:
 		return "output dir"
@@ -231,10 +238,12 @@ func (m *model) settingsValue(i int) string {
 	case 0:
 		return m.cfg.PDFMode
 	case 1:
-		return boolLabel(m.duplicate)
+		return boolLabel(m.cfg.ImageLinks)
 	case 2:
-		return boolLabel(m.cfg.AudioDiarize)
+		return boolLabel(m.duplicate)
 	case 3:
+		return boolLabel(m.cfg.AudioDiarize)
+	case 4:
 		if m.editingSpeakers {
 			return m.speakersInput + "▌"
 		}
@@ -242,9 +251,9 @@ func (m *model) settingsValue(i int) string {
 			return "auto"
 		}
 		return strconv.Itoa(m.cfg.AudioSpeakers)
-	case 4:
-		return modelShort(m.cfg.AudioModel)
 	case 5:
+		return modelShort(m.cfg.AudioModel)
+	case 6:
 		if m.editingLanguage {
 			return m.languageInput + "▌"
 		}

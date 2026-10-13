@@ -67,6 +67,17 @@ def test_convert_latex_project(tmp_path):
     assert "**bold**" in text
     assert "*emphasis*" in text
     assert "Inline math $x^2 + y^2 = z^2$." in text  # inline math passthrough
+    assert "![A plot.](" not in text  # figures dropped by default (ADR-0047)
+    assert not (tmp_path / "assets").exists()
+
+
+@needs_pandoc
+def test_convert_latex_image_links_legacy(tmp_path, monkeypatch):
+    monkeypatch.setenv("IMAGE_LINKS", "on")
+    project = build_project(tmp_path)
+    result = convert_file(project, tmp_path)
+    assert result.error is None
+    text = result.md_path.read_text(encoding="utf-8")
     assert "![A plot.](assets/paper/" in text
     assert (tmp_path / "assets" / "paper").exists()
     assert list((tmp_path / "assets" / "paper").glob("*.png"))  # extracted image
@@ -83,8 +94,20 @@ def test_convert_latex_single_tex_file(tmp_path):
 
 
 @needs_pandoc
+def test_convert_latex_display_math_passthrough(tmp_path):
+    project = build_project(tmp_path)
+    result = convert_file(project, tmp_path)
+    assert result.error is None
+    text = result.md_path.read_text(encoding="utf-8")
+    assert "E = mc^2" in text  # display math stays as text by default
+    assert "$$" in text  # $$...$$ passthrough, not rendered to a PNG
+    assert not (tmp_path / "assets").exists()
+
+
+@needs_pandoc
 @needs_latex
-def test_convert_latex_display_math_to_image(tmp_path):
+def test_convert_latex_display_math_to_image(tmp_path, monkeypatch):
+    monkeypatch.setenv("IMAGE_LINKS", "on")
     project = build_project(tmp_path)
     result = convert_file(project, tmp_path)
     assert result.error is None

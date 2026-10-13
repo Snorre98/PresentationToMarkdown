@@ -5,7 +5,7 @@ let state = {
   source: null, runId: null, tab: "convert", lastOk: Date.now(),
   engine: { running: false, base_url: "" },
   engineConfig: null, servers: null,
-  files: [], outputDir: "", duplicate: false, paperMode: false, vaultRoot: "",
+  files: [], outputDir: "", duplicate: false, paperMode: false, imageLinks: false, vaultRoot: "",
   ws: null, converting: false, logLines: [],
 };
 const $ = (id) => document.getElementById(id);
@@ -54,6 +54,7 @@ async function load() {
         state.engineConfig = cfg.body;
         state.paperMode = cfg.body.pdf_mode === "paper";
         state.vaultRoot = cfg.body.vault_root || "";
+        if (typeof cfg.body.image_links === "boolean") state.imageLinks = cfg.body.image_links;
         if (typeof cfg.body.duplicate === "boolean") state.duplicate = cfg.body.duplicate;
       }
       if (srv.status === 200) state.servers = srv.body;
@@ -130,6 +131,7 @@ function renderConvert() {
   html += '<div class="section-head">Options</div>';
   html += '<div class="checklist">';
   html += '<label><input type="checkbox" id="paper-check"' + (state.paperMode ? ' checked' : '') + '> Paper layout (multi-column whitepapers)</label>';
+  html += '<label><input type="checkbox" id="imagelinks-check"' + (state.imageLinks ? ' checked' : '') + '> Image links (legacy — extract assets and link images/pages)</label>';
   html += '<label><input type="checkbox" id="duplicate-check"' + (state.duplicate ? ' checked' : '') + '> Duplicate if exists (keep prior output)</label>';
   html += '</div>';
 
@@ -211,6 +213,7 @@ function bindConvertEvents() {
   $("browse-vault-btn").onclick = () => openBrowser("", "vault");
   $("vault-root-edit").onchange = e => { state.vaultRoot = e.target.value; persistVaultRoot(e.target.value); };
   $("paper-check").onchange = e => { state.paperMode = e.target.checked; setPdfMode(e.target.checked ? "paper" : "slide"); };
+  $("imagelinks-check").onchange = e => { state.imageLinks = e.target.checked; persistImageLinks(e.target.checked); };
   $("duplicate-check").onchange = e => { state.duplicate = e.target.checked; persistDuplicate(e.target.checked); };
   $("check-servers-btn").onclick = async () => {
     const r = await api("/api/engine/health/servers");
@@ -343,6 +346,10 @@ async function setPdfMode(mode) {
 
 async function persistDuplicate(v) {
   await api("/api/engine/config", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ duplicate: v }) });
+}
+
+async function persistImageLinks(v) {
+  await api("/api/engine/config", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ image_links: v }) });
 }
 
 async function persistVaultRoot(path) {

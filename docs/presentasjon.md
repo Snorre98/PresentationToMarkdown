@@ -4,9 +4,9 @@
 
 - Konverterer **PowerPoint (.pptx)**, **PDF (.pdf)** og **LaTeX-prosjekter** til Markdown
 - Bygget for å føre forelesningsslides inn i en Obsidian-vault
-- Ett Markdown-dokument per kilde; bilder til `assets/<navn>/`, deduplisert på innholds-hash
+- Ett Markdown-dokument per kilde; bildelenker er av som standard (ADR-0047) — AI-beskrivelser av bilder beholdes, `assets/`-uttrekk er opt-in (`--image-links` / `IMAGE_LINKS=on`)
 - Bevarer **fet/kursiv**, tabeller og lister; per-slide/per-side-overskrifter
-- PPTX-notater som sitat; PDF lenker til per-side PNG som visuell fasit
+- PPTX-notater som sitat; PDF renderer per-side PNG i minnet (lenke kun med `IMAGE_LINKS=on`)
 - Grensesnitt: web-GUI, desktop-GUI (PySide6), CLI (`ptm`), Go-TUI og et gjenbrukbart `converter`-bibliotek (ingen UI-avhengigheter)
 
 ## Slide 2 — Deterministisk
@@ -41,7 +41,7 @@
 
 ### Slide 1 — Prosjektet
 
-PresentationToMarkdown konverterer PowerPoint, PDF og LaTeX til Markdown for å føre forelesningsslides inn i en Obsidian-vault. Ett dokument per kilde, bilder til `assets/` og deduplisert på innholds-hash; fet/kursiv, tabeller, lister og per-slide-overskrifter bevares. Finnes som web-GUI, desktop-GUI, CLI (`ptm`), Go-TUI og et gjenbrukbart `converter`-bibliotek uten UI-avhengigheter.
+PresentationToMarkdown konverterer PowerPoint, PDF og LaTeX til Markdown for å føre forelesningsslides inn i en Obsidian-vault. Ett dokument per kilde; ingen bildelenker som standard — AI-beskrivelser beholdes og `assets/`-uttrekk er opt-in med `--image-links`; fet/kursiv, tabeller, lister og per-slide-overskrifter bevares. Finnes som web-GUI, desktop-GUI, CLI (`ptm`), Go-TUI og et gjenbrukbart `converter`-bibliotek uten UI-avhengigheter.
 
 ### Slide 2 — Deterministisk
 
@@ -87,7 +87,7 @@ flowchart TD
     end
 
     GATE[Verbatim-ordport +<br/>deterministisk kvalitetsport] --> FMT
-    FMT --> SUM --> OUT[Markdown + assets/]
+    FMT --> SUM --> OUT["Markdown (+ assets/ med IMAGE_LINKS=on)"]
     GATE -->|AI av / avvist| OUT
 
     subgraph CP["macos-dev-config: kontrollplan"]
@@ -146,6 +146,6 @@ sequenceDiagram
     end
 
     CO->>LG: logg (vision_events / run_config)
-    CO-->>IN: ConvertResult (Markdown + assets/)
+    CO-->>IN: ConvertResult (Markdown; assets/ kun med IMAGE_LINKS=on)
     IN-->>U: [OK] / [ERR] / [WARN]
 ```

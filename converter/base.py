@@ -26,6 +26,8 @@ _MD_SPECIALS_NO_UNDERSCORE = str.maketrans({"\\": "\\\\", "`": "\\`", "*": "\\*"
 
 # Images whose content appears on at least this fraction of slides/pages are
 # treated as recurring (logos/watermarks): shown inline once, then as a link.
+# Only relevant with ``IMAGE_LINKS`` on (ADR-0047); the default output has no
+# image links at all.
 REPEATED_IMAGE_THRESHOLD = 0.8
 
 
@@ -38,7 +40,8 @@ class ConvertResult:
 
 
 class Converter(ABC):
-    """Convert one file format to a Markdown file plus an assets folder."""
+    """Convert one file format to a Markdown file (plus an assets folder only
+    when ``IMAGE_LINKS`` is on; ADR-0047)."""
 
     extensions: tuple[str, ...] = ()
 

@@ -4,8 +4,11 @@ For diagrams, flowcharts and tables that appear as *images* — embedded raster
 images in PDFs, pictures in PowerPoint decks, and charts — the converter can hand
 them to a **local vision-language model** and transcribe them back as structured
 Markdown. This is strictly a *post-pass*: the deterministic text extraction always
-runs first, and every page still keeps its rendered PNG as the visual ground
-truth.
+runs first, and the vision passes always render each page to a PNG internally.
+By default that render is not written to disk and no image links are emitted
+(ADR-0047): the model's description is the only thing that appears in the
+Markdown. `IMAGE_LINKS=on` restores the legacy `assets/` extraction, `![…]`
+figure links and `[Page N](…)` visual-ground-truth links.
 
 ## Serving the model
 
@@ -165,8 +168,8 @@ VISION_ENABLED=1 ./python main.py
 ```
 
 When `VISION_ENABLED` is off (the default), conversion is fully deterministic and
-offline — diagrams fall back to the rendered PNG plus a collapsed
-`<details>` block of the raw extracted text.
+offline — diagrams fall back to a collapsed `<details>` block of the raw
+extracted text (no image link is emitted; ADR-0047).
 
 ## The classifier gate (optional)
 
@@ -179,7 +182,7 @@ categories, so the right thing happens to each:
 ```
                           ┌─ TEXT ────────▶ verbatim transcription (Qwen2.5-VL-7B, :8081)
 classifier (:8082) ───────┼─ DIAGRAM ─────▶ high-level description (Qwen2.5-VL-7B)
-                          └─ DECORATIVE ─▶ keep the image link as-is
+                          └─ DECORATIVE ─▶ skipped (no output)
 ```
 
 - **TEXT** — a document, slide, screenshot or table whose text is worth
@@ -191,8 +194,8 @@ classifier (:8082) ───────┼─ DIAGRAM ─────▶ high-l
   It deliberately does **not** attempt to reconstruct the diagram's structure
   or every label: a local VLM cannot reliably read small labels and would only
   hallucinate filler.
-- **DECORATIVE** — a photograph, logo, icon or background, left as a plain image
-  link.
+- **DECORATIVE** — a photograph, logo, icon or background. It is skipped and
+  contributes nothing to the Markdown (ADR-0047).
 
 Serve it on its own port (mlx-vlm runs one chat model per process):
 
@@ -211,14 +214,15 @@ What the gate changes:
 
 - **Image-level transcription** — embedded images (PDF and PPTX pictures, and
   PPTX charts rendered via LibreOffice) are classified, and educational ones get
-  a transcription appended below their `![image]` link. Text images are
-  transcribed verbatim; diagrams get a high-level description. This only runs
-  when **both** `VISION_ENABLED` *and* `VISION_CLASSIFY_ENABLED` are on.
+  a transcription emitted in their place (no image link is written; ADR-0047).
+  Text images are transcribed verbatim; diagrams get a high-level description.
+  This only runs when **both** `VISION_ENABLED` *and* `VISION_CLASSIFY_ENABLED`
+  are on.
 
 The classifier is cheap and switchable — set `VISION_CLASSIFY_MODEL` to any
 mlx-vlm VLM. Its answer is parsed loosely (a decorative signal like "photograph"
-wins over "graph"), and any classifier error degrades to "keep the link" — never
-to data loss.
+wins over "graph"), and any classifier error degrades to "skip the image" — no
+transcriber spend, and no output for that image.
 
 Because a false `decorative` verdict silently drops real content (data loss),
 while a false `text`/`diagram` verdict merely costs one transcription (caught by
@@ -244,15 +248,15 @@ classifier *and* transcriber:
   line-art diagrams score low even when sharp — the default is deliberately
   conservative (tune it up if you see blurry images slipping through).
 
-A skipped image keeps its `![image]` link, logs a `[WARN]`, and records a
-`stage = "readability"` event in the SQLite log.
+A skipped image logs a `[WARN]` and records a `stage = "readability"` event in
+the SQLite log.
 
 ### Quality gate
 
 Every transcription (image, chart, or diagram description) is passed through a
 deterministic quality gate before it is written. The gate catches the classic
-vision-model failure modes and discards the transcription, keeping only the
-image link:
+vision-model failure modes and discards the transcription; the image then
+contributes nothing (with `IMAGE_LINKS=on` the legacy link remains):
 
 - **Repetition loops** — the same label emitted over and over, including
   monotonically numbered filler (e.g. `Data Source 1…111`, collapsed by stripping
@@ -337,20 +341,21 @@ still converts.
 
 ## How it works
 
-1. Each embedded image / picture / chart is extracted (charts are rendered to a
-   PNG via LibreOffice first).
+1. Each embedded image / picture / chart is read (charts are rendered to a PNG
+   via LibreOffice first; nothing is written to disk unless `IMAGE_LINKS=on`).
 2. The image is **classified** by the small classifier model into `text`
    (transcribe verbatim), `diagram` (describe at a high level), or `decorative`
-   (leave as a plain image link).
+   (skip; the image contributes nothing).
 3. `text` images are **transcribed** with a lossless-transcription prompt
    (verbatim text, headings, bullets, tables; no commentary). `diagram` images
    get a high-level prose **gist** instead (type + purpose, plus any clearly
    legible labels), rendered as a blockquote. The result is passed through the
-   **quality gate** and appended below the image link only if it passes.
+   **quality gate** and emitted only if it passes (in legacy `IMAGE_LINKS` mode
+   it appears below the image link).
 4. Transcription results are **cached by image digest**, so identical content is
    only transcribed once per run.
 5. On any error (server down, model missing), the converter warns and falls back
-   to the plain image link.
+   to emitting no image output (legacy mode keeps the plain image link).
 
 ## Markdown polish pass
 
@@ -367,9 +372,9 @@ A separate, text-only formatting post-pass runs after conversion
 Because "keep the content exact" is the hard requirement, the restructure pass is
 gated: the original text and the model output are compared word-for-word, and
 any slide where content is dropped or invented is rejected (the deterministic
-output is kept instead). Structural lines — the slide title, page/image links,
-tables, blockquotes, `<details>` blocks, and the page-break `<div>` — must also
-survive verbatim. `FORMAT_BASE_URL`/`FORMAT_MODEL`/`FORMAT_API_KEY` default to
+output is kept instead). Structural lines — the slide title, any legacy image or
+page links, tables, blockquotes, `<details>` blocks, and the page-break `<div>` —
+must also survive verbatim. `FORMAT_BASE_URL`/`FORMAT_MODEL`/`FORMAT_API_KEY` default to
 their `WRITE_*` equivalents.
 
 ## Summary pass (per-presentation RAG)

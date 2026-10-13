@@ -223,6 +223,17 @@ def test_snapshot_reports_duplicate_preference(tmp_path, monkeypatch):
         db_engine.reset()
 
 
+def test_snapshot_reports_image_links(monkeypatch):
+    monkeypatch.delenv("IMAGE_LINKS", raising=False)
+    assert config.image_links_enabled() is False
+    assert config.snapshot(probe=False)["image_links"] is False
+    monkeypatch.setenv("IMAGE_LINKS", "on")
+    assert config.image_links_enabled() is True
+    assert config.snapshot(probe=False)["image_links"] is True
+    monkeypatch.setenv("IMAGE_LINKS", "off")
+    assert config.image_links_enabled() is False
+
+
 def test_snapshot_reports_audio_defaults(tmp_path, monkeypatch):
     from converter.db import engine as db_engine
 

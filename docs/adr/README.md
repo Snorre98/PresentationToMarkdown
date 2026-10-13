@@ -46,3 +46,4 @@ Index of architectural decisions for PresentationToMarkdown, in
 | [0044](0044-nb-whisper-server-asr.md) | NB-Whisper Norwegian ASR in the audio server | Accepted |
 | [0045](0045-engine-hosted-transcription.md) | Engine-hosted audio transcription and unified job progress | Proposed |
 | [0046](0046-pdf-latex-backend.md) | PDF LaTeX backend (PDF → LaTeX → Markdown) | Deprecated |
+| [0047](0047-text-only-output-image-links-opt-in.md) | Text-only Markdown by default; image links behind `IMAGE_LINKS` | Accepted |

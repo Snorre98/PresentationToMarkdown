@@ -50,7 +50,7 @@ _PROMPT = (
     "- Promote a bolded lead-in such as `**Purpose:**` into a `##` heading (or "
     "keep it as a bold paragraph if that reads better).\n"
     "- Fix list nesting and blank-line spacing.\n\n"
-    "Keep the slide title, image links, page links, tables, blockquotes, "
+    "Keep the slide title, any image or page links, tables, blockquotes, "
     "`<details>` blocks, fenced code, and the page-break `<div>` exactly as-is.\n\n"
     "Output only the Markdown, with no commentary or code fences."
 )

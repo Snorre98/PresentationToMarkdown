@@ -21,13 +21,21 @@ def test_supported_extensions():
     assert {".pptx", ".pdf", ".tex"} <= SUPPORTED_EXTENSIONS
 
 
+@pytest.fixture
+def legacy_image_links(monkeypatch):
+    """Restore the legacy asset/image-link output (IMAGE_LINKS=on, ADR-0047)."""
+    monkeypatch.setenv("IMAGE_LINKS", "on")
+
+
 def test_convert_pptx(tmp_path):
     result = convert_file(PPTX, tmp_path)
     assert result.error is None
     assert result.md_path is not None and result.md_path.exists()
     text = result.md_path.read_text(encoding="utf-8")
     assert text.startswith("# Test Deck — Slide 1")
-    assert "assets/" in text
+    assert "assets/" not in text
+    assert "![" not in text
+    assert not (tmp_path / "assets").exists()
     assert "---" in text
     assert 'page-break-after: always' in text
 
@@ -40,9 +48,53 @@ def test_convert_pdf(tmp_path):
     assert "# Sample PDF Page — Page 1" in text
     assert "# Second Page — Page 2" in text
     assert "Some more body text." in text
-    assert "[Page 1](assets/test_doc/" in text
+    assert "[Page 1](" not in text
+    assert "assets/" not in text
+    assert not (tmp_path / "assets").exists()
     assert "---" in text
     assert 'page-break-after: always' in text
+
+
+def test_pptx_image_links_legacy_restores_assets(tmp_path, legacy_image_links):
+    result = convert_file(PPTX, tmp_path)
+    assert result.error is None
+    text = result.md_path.read_text(encoding="utf-8")
+    assert "assets/test_deck/" in text
+    assert (tmp_path / "assets" / "test_deck").exists()
+
+
+def test_pdf_image_links_legacy_restores_assets(tmp_path, legacy_image_links):
+    result = convert_file(PDF, tmp_path)
+    assert result.error is None
+    text = result.md_path.read_text(encoding="utf-8")
+    assert "[Page 1](assets/test_doc/" in text
+    assert (tmp_path / "assets" / "test_doc").exists()
+
+
+def test_pptx_keeps_ai_description_without_links(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "converter.pptx.maybe_transcribe_image",
+        lambda *args, **kwargs: "> A described diagram.",
+    )
+    result = convert_file(PPTX, tmp_path)
+    assert result.error is None
+    text = result.md_path.read_text(encoding="utf-8")
+    assert "> A described diagram." in text
+    assert "![" not in text
+    assert not (tmp_path / "assets").exists()
+
+
+def test_pdf_keeps_ai_description_without_links(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "converter.pdf.maybe_transcribe_image",
+        lambda *args, **kwargs: "A transcribed figure.",
+    )
+    result = convert_file(PDF, tmp_path)
+    assert result.error is None
+    text = result.md_path.read_text(encoding="utf-8")
+    assert "A transcribed figure." in text
+    assert "assets/" not in text
+    assert "[Page " not in text
 
 
 def test_convert_pdf_bullets(tmp_path):
@@ -187,7 +239,7 @@ def test_convert_files_resolves_per_file(tmp_path):
     assert set(seen) == {src_a, src_b}
 
 
-def test_pptx_link_dest_encodes_spaces(tmp_path):
+def test_pptx_link_dest_encodes_spaces(tmp_path, legacy_image_links):
     import shutil
 
     src = tmp_path / "My Deck.pptx"
@@ -198,7 +250,7 @@ def test_pptx_link_dest_encodes_spaces(tmp_path):
     assert "assets/My%20Deck/" in text
 
 
-def test_pdf_link_dest_encodes_spaces(tmp_path):
+def test_pdf_link_dest_encodes_spaces(tmp_path, legacy_image_links):
     import shutil
 
     src = tmp_path / "My Doc.pdf"
@@ -209,7 +261,7 @@ def test_pdf_link_dest_encodes_spaces(tmp_path):
     assert "[Page 1](assets/My%20Doc/" in text
 
 
-def test_pptx_repeated_image(tmp_path):
+def test_pptx_repeated_image(tmp_path, legacy_image_links):
     from pptx import Presentation
     from pptx.util import Inches
 
@@ -236,7 +288,7 @@ def test_pptx_repeated_image(tmp_path):
     assert len(assets) == 1
 
 
-def test_pdf_repeated_image(tmp_path):
+def test_pdf_repeated_image(tmp_path, legacy_image_links):
     import pymupdf as fitz
 
     from tests.make_test_deck import make_png
@@ -329,8 +381,7 @@ def test_convert_duplicate_if_exists_keeps_original(tmp_path):
     assert second.md_path == tmp_path / "deck (2).md"
     assert second.md_path.exists()
     assert original_md.read_bytes() == before
-    assert (tmp_path / "assets" / "deck").exists()
-    assert (tmp_path / "assets" / "deck (2)").exists()
+    assert not (tmp_path / "assets").exists()
 
     third = convert_file(src, tmp_path, duplicate_if_exists=True)
     assert third.error is None

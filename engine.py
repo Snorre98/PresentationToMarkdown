@@ -794,6 +794,10 @@ def create_app() -> Flask:
             mode = "paper" if data["pdf_mode"] == "paper" else "slide"
             os.environ["PDF_MODE"] = mode
             set_setting("pdf_mode", mode)
+        if "image_links" in data:
+            value = "on" if data["image_links"] else "off"
+            os.environ["IMAGE_LINKS"] = value
+            set_setting("image_links", value)
         if "vault_root" in data:
             set_setting("vault_root", str(data["vault_root"]).strip())
         if "duplicate" in data:

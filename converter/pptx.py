@@ -127,7 +127,21 @@ def _picture_bytes(shape):
     return None
 
 
-def _handle_image(shape, assets_dir: Path, stem: str, counter: list[int], warnings: list[str], dedup: dict[str, str]):
+def _handle_image(
+    shape,
+    assets_dir: Path,
+    stem: str,
+    counter: list[int],
+    warnings: list[str],
+    dedup: dict[str, str],
+    image_links: bool,
+):
+    """Return ``(filename, digest, blob, ext, width, height)`` for a picture.
+
+    ``filename`` is ``None`` when ``image_links`` is off: the image is no longer
+    extracted to ``assets/`` (ADR-0047), but the blob is still returned so the
+    vision pass can describe it.
+    """
     try:
         image = _picture_bytes(shape)
     except Exception:
@@ -141,9 +155,11 @@ def _handle_image(shape, assets_dir: Path, stem: str, counter: list[int], warnin
     except Exception as exc:
         warnings.append(f"Could not read image '{shape.name}': {exc}")
         return None
-    filename = write_image(blob, ext, assets_dir, stem, counter, warnings, dedup)
-    if filename is None:
-        return None
+    filename = None
+    if image_links:
+        filename = write_image(blob, ext, assets_dir, stem, counter, warnings, dedup)
+        if filename is None:
+            return None
     width, height = size if size else (None, None)
     return filename, image_digest(blob), blob, ext, width, height
 
@@ -177,15 +193,24 @@ def _walk_shape(shape, ctx) -> list[str]:
         return out
     if shape.has_table:
         return _table_to_md(_table_rows(shape.table))
-    image = _handle_image(shape, ctx["assets_dir"], ctx["stem"], ctx["counter"], ctx["warnings"], ctx["dedup"])
+    image = _handle_image(
+        shape,
+        ctx["assets_dir"],
+        ctx["stem"],
+        ctx["counter"],
+        ctx["warnings"],
+        ctx["dedup"],
+        ctx["image_links"],
+    )
     if image:
         filename, digest, blob, ext, width, height = image
-        rel = _link_dest(f"assets/{ctx['stem']}/{filename}")
-        if digest in ctx["repeated"]:
-            if digest in ctx["seen"]:
-                return [f"[{shape.name}]({rel})"]
-            ctx["seen"].add(digest)
-        out = [f"![{shape.name}]({rel})"]
+        if filename is not None:
+            rel = _link_dest(f"assets/{ctx['stem']}/{filename}")
+            if digest in ctx["repeated"]:
+                if digest in ctx["seen"]:
+                    return [f"[{shape.name}]({rel})"]
+                ctx["seen"].add(digest)
+            out = [f"![{shape.name}]({rel})"]
         transcription = maybe_transcribe_image(
             blob,
             ext,
@@ -242,11 +267,13 @@ def _handle_chart(shape, ctx) -> list[str]:
     if not png:
         ctx["warnings"].append(f"Chart '{shape.name}' skipped (could not render)")
         return []
-    filename = write_image(png, "png", ctx["assets_dir"], ctx["stem"], ctx["counter"], ctx["warnings"], ctx["dedup"])
-    if filename is None:
-        return []
-    rel = _link_dest(f"assets/{ctx['stem']}/{filename}")
-    out = [f"![{shape.name}]({rel})"]
+    out: list[str] = []
+    if ctx["image_links"]:
+        filename = write_image(png, "png", ctx["assets_dir"], ctx["stem"], ctx["counter"], ctx["warnings"], ctx["dedup"])
+        if filename is None:
+            return []
+        rel = _link_dest(f"assets/{ctx['stem']}/{filename}")
+        out = [f"![{shape.name}]({rel})"]
     log_ctx = {
         "source": ctx["source"],
         "page": ctx["slide_num"],
@@ -380,23 +407,27 @@ class PPTXConverter(Converter):
         try:
             prs = Presentation(path)
             stem = output_stem or path.stem
+            image_links = config.image_links_enabled()
             assets_dir = output_dir / "assets" / stem
-            assets_dir.mkdir(parents=True, exist_ok=True)
+            if image_links:
+                assets_dir.mkdir(parents=True, exist_ok=True)
             slide_count = len(prs.slides)
             per_slide: list[set[str]] = []
-            for slide in prs.slides:
-                digests: set[str] = set()
-                for shape in slide.shapes:
-                    digests |= _shape_image_digests(shape)
-                per_slide.append(digests)
+            if image_links:
+                for slide in prs.slides:
+                    digests: set[str] = set()
+                    for shape in slide.shapes:
+                        digests |= _shape_image_digests(shape)
+                    per_slide.append(digests)
             ctx = {
                 "assets_dir": assets_dir,
+                "image_links": image_links,
                 "stem": stem,
                 "counter": [1],
                 "warnings": result.warnings,
                 "slide_num": 0,
                 "dedup": {},
-                "repeated": repeated_image_hashes(per_slide),
+                "repeated": repeated_image_hashes(per_slide) if image_links else set(),
                 "seen": set(),
                 "renderer": None,
                 "slide_w": int(prs.slide_width),

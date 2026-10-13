@@ -7,8 +7,8 @@ OpenAI-compatible endpoint) to classify an image into one of three categories:
   transcribing verbatim;
 - ``diagram`` — a flowchart or conceptual figure, where a short high-level
   description is more useful than its labels;
-- ``decorative`` — photographs, logos, icons, clip-art, backgrounds left as an
-  image link.
+- ``decorative`` — photographs, logos, icons, clip-art, backgrounds, which get
+  no Markdown output (ADR-0047).
 
 Configuration (environment variables):
 
@@ -329,8 +329,8 @@ def classify_image_with_log(
 
     When ``VISION_CLASSIFY_ENABLED`` is off this returns ``text`` (no gate, so the
     verbatim transcription runs as before). On classifier error it appends a
-    warning and returns ``decorative``, so a failed gate degrades to "keep the
-    image link" rather than spending the transcriber.
+    warning and returns ``decorative``, so a failed gate degrades to "skip the
+    image" rather than spending the transcriber.
     """
     if not config.is_enabled("classify"):
         return "text"
@@ -431,9 +431,9 @@ def maybe_transcribe_image(
     """Transcribe an embedded image based on its classifier category.
 
     Only runs when both ``VISION_ENABLED`` and ``VISION_CLASSIFY_ENABLED`` are on;
-    otherwise returns ``None`` (images stay link-only). Images that are too
-    low-resolution or blurry to read are skipped before any model call. Text
-    images are transcribed verbatim; diagrams get a high-level description;
+    otherwise returns ``None`` (the image gets no Markdown output). Images that
+    are too low-resolution or blurry to read are skipped before any model call.
+    Text images are transcribed verbatim; diagrams get a high-level description;
     decorative images are skipped. A transcription that fails the quality gate is
     discarded with a warning. Any error degrades to ``None``.
     """
@@ -447,7 +447,7 @@ def maybe_transcribe_image(
     reason = _readability_cache[digest]
     if reason is not None:
         if warnings is not None:
-            warnings.append(f"Skipping unreadable image ({reason}); keeping image link")
+            warnings.append(f"Skipping unreadable image ({reason}); no description emitted")
         record(
             source=ctx.get("source", ""),
             page=ctx.get("page"),

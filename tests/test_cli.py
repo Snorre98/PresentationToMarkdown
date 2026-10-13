@@ -71,6 +71,11 @@ def test_no_gate_with_format():
     assert env == {"FORMAT_ENABLED": "1", "NEED_GATE": "off"}
 
 
+def test_image_links_maps_to_env():
+    assert ai_env_vars(parse([])) == {}
+    assert ai_env_vars(parse(["--image-links"])) == {"IMAGE_LINKS": "on"}
+
+
 def test_ab_parser_builds():
     import cli_ab
 

@@ -5,9 +5,9 @@
 Desktop app and reusable Python library that converts PowerPoint (`.pptx`), PDF (`.pdf`), and LaTeX projects into Markdown.
 
 - The importable library lives in the `converter/` package and has no UI dependencies.
-- One Markdown file is produced per source document, with images extracted to a sidecar `assets/<name>/` folder and deduplicated by content hash. Recurring images (logos/watermarks) are inlined once, then hyperlinked.
-- Both formats preserve **bold** and *italic*; output includes pipe tables, bullet/numbered lists, and per-slide/page headings carrying the slide or page number. PPTX also emits speaker notes as blockquotes; PDF also links a per-page rendered PNG as visual ground truth.
-- A LaTeX **project** is a folder containing `.tex` source; it converts to one `.md` named after the folder via pandoc (a required binary for `.tex`), with `\input`/`\include`/`\import` flattened, a `# Title` + `*Authors*` block, `##` sections, content-hash-deduped figures, display math rendered to PNG (pdflatex), and inline `$…$` left as passthrough. LaTeX runs **no AI passes except the RAG summary** (ADR-0038).
+- One Markdown file is produced per source document. Image links are **off by default** (ADR-0047): no `assets/<name>/` sidecar and no `![...]`/`[Page N](...)` links — local-AI image descriptions are emitted in their place where available. `--image-links` (env `IMAGE_LINKS=on`, GUI/web checkbox) restores extraction + links, deduplicated by content hash; recurring images (logos/watermarks) are then inlined once, then hyperlinked.
+- Both formats preserve **bold** and *italic*; output includes pipe tables, bullet/numbered lists, and per-slide/page headings carrying the slide or page number. PPTX also emits speaker notes as blockquotes; PDF renders a per-page PNG in memory for the vision passes (linked as visual ground truth only with `IMAGE_LINKS=on`).
+- A LaTeX **project** is a folder containing `.tex` source; it converts to one `.md` named after the folder via pandoc (a required binary for `.tex`), with `\input`/`\include`/`\import` flattened, a `# Title` + `*Authors*` block, `##` sections, figures dropped by default, display math left as `$$…$$` passthrough, and inline `$…$` left as passthrough. With `IMAGE_LINKS=on`: content-hash-deduped figures plus display math rendered to PNG (pdflatex). LaTeX runs **no AI passes except the RAG summary** (ADR-0038).
 - Multi-column PDFs (whitepapers, academic papers) are linearized column-by-column automatically; opt-in **paper mode** (`--paper` / `PDF_MODE=paper` / GUI checkbox) renders them as continuous documents with a title/authors block, `##` section headings, and stripped running headers. Slide decks keep the per-page default (`--slide`).
 - GUI (`gui.py`, `main.py`, `ptm-start`) — drag-and-drop, batch convert, background-thread progress, per-file `[OK]`/`[ERR]`/`[WARN]` log.
 - CLI (`cli.py` / `ptm`) — headless batch conversion mirroring the GUI; `cli_transcribe.py` / `ptm-transcribe` — decoupled local audio→Markdown transcription.
@@ -30,6 +30,7 @@ Run:
 ptm deck.pptx handout.pdf           # headless conversion (after pip install -e .)
 ptm --output out/ --vision .
 ptm --paper whitepaper.pdf          # two-column paper -> continuous document
+ptm --image-links deck.pptx         # legacy: extract assets + emit image/page links
 ptm-start --all                     # GUI with AI flags
 ptm-transcribe deck.md              # audio -> Markdown transcription
 ptm-ab compare --format deck.pdf    # A/B the pre-flight need-check gate (ADR-0039)
@@ -52,7 +53,7 @@ No lint, typecheck, or formatter is configured (no ruff/black/mypy/pre-commit in
   - `base.py` — shared `Converter` interface, `ConverterRegistry`, and reusable Markdown helpers
   - `pptx.py`, `pdf.py`, `latex.py` — the concrete converters (`latex.py` shells out to pandoc, ADR-0038)
   - `vision.py`, `classify.py`, `interpret.py`, `format.py`, `structure.py`, `summary.py` — optional AI post-passes
-  - `config.py` — runtime registry of AI feature toggles + local server catalog (ADR-0012)
+  - `config.py` — runtime registry of AI feature toggles + local server catalog (ADR-0012) + the lazy `IMAGE_LINKS` output preference (ADR-0047)
   - `render.py` — LibreOffice + PyMuPDF rendering for PPTX charts
   - `logstore.py` — SQLite log of classifier/transcription decisions (`ptm.sqlite`)
   - `settings.py` — persistent app preferences + recent-files list (same DB as `logstore`)
@@ -75,7 +76,7 @@ No lint, typecheck, or formatter is configured (no ruff/black/mypy/pre-commit in
 - Conversion is deterministic and never invokes audio transcription (that is the separate `ptm-transcribe` command, ADR-0009).
 - AI/audio configuration is read from environment variables at **import time**; `cli_common.apply_ai_env` must be called before importing `converter` or `gui`. `cli_common` deliberately does not import `converter`.
 - Exception to the import-time rule: the AI feature *on/off* toggles are runtime state owned by `converter.config` (`is_enabled`/`set_enabled`), seeded from the env at import; the GUI flips them per conversion without a restart (ADR-0012). Endpoint/model env vars (`*_BASE_URL`/`*_MODEL`/`EMBED_*`) remain import-time.
-- Exception to the import-time rule: the PDF layout (`PDF_MODE`) is read lazily inside `PDFConverter.convert`, so the GUI checkbox can toggle it per conversion without a restart; `--paper`/`--slide` set it via `apply_ai_env`.
+- Exception to the import-time rule: the PDF layout (`PDF_MODE`) and the image-link output preference (`IMAGE_LINKS`, ADR-0047) are read lazily inside the converters, so the GUI checkbox can toggle them per conversion without a restart; `--paper`/`--slide`/`--image-links` set them via `apply_ai_env`.
 - `converter` stays MLX-free: transcription runs `mlx_whisper`/`ffmpeg` as subprocesses.
 - Tests use `pytest` and `tmp_path`; `conftest.py` isolates `PTM_STATE_DIR` to a temp dir so tests never touch the real state dir.
 - `ptm.sqlite` and `.env` are gitignored.
@@ -85,5 +86,5 @@ No lint, typecheck, or formatter is configured (no ruff/black/mypy/pre-commit in
 - `apply_ai_env(args)` (or equivalent env-var setup) must run before any `import converter` / `import gui`; otherwise AI flags are silently ignored.
 - `requirements-audio.txt` targets an isolated Python 3.11 venv (deepfilternet has no cp312 wheel); pins are interdependent — see `docs/runbook.md` §2.
 - PyMuPDF is AGPL-3.0 (or commercial) licensed — review before distributing.
-- pandoc is a **required** external binary for `.tex` input (`brew install pandoc`); `pdflatex` is required only for display-math rendering (inline passthrough otherwise). Paths `PANDOC_PATH`/`PDLATEX_PATH` override the binaries.
+- pandoc is a **required** external binary for `.tex` input (`brew install pandoc`); `pdflatex` is required only for legacy (`IMAGE_LINKS=on`) display-math rendering. Paths `PANDOC_PATH`/`PDLATEX_PATH` override the binaries.
 - Adding a format: subclass `Converter`, register it in `converter/__init__.py`, then update the GUI file filter in `gui.py` if it should be listed.

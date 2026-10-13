@@ -34,6 +34,7 @@ _INPUT_DIR_KEY = "last_input_dir"
 _OUTPUT_DIR_KEY = "last_output_dir"
 _WINDOW_GEOMETRY_KEY = "window_geometry"
 _PDF_MODE_KEY = "pdf_mode"
+_IMAGE_LINKS_KEY = "image_links"
 _DUPLICATE_KEY = "duplicate_if_exists"
 _AI_KEY_PREFIX = "ai_"
 
@@ -172,6 +173,21 @@ class MainWindow(QMainWindow):
         )
         self.duplicate_check.toggled.connect(self._remember_duplicate)
 
+        self.image_links_check = QCheckBox(
+            "Image links (legacy — extract assets and link images/pages)"
+        )
+        self.image_links_check.setToolTip(
+            "Off by default: images are not extracted and no image/page links are "
+            "written; AI descriptions of images are kept either way."
+        )
+        startup_image_links = (
+            os.environ.get("IMAGE_LINKS") or get_setting(_IMAGE_LINKS_KEY, "off")
+        )
+        self.image_links_check.setChecked(
+            startup_image_links.strip().lower() in _TRUE_VALUES
+        )
+        self.image_links_check.toggled.connect(self._remember_image_links)
+
         self.ai_checks: dict[str, QCheckBox] = {}
         ai_label = QLabel("AI features (need local model servers):")
         ai_checks_layout = QVBoxLayout()
@@ -206,7 +222,7 @@ class MainWindow(QMainWindow):
         self.log.setReadOnly(True)
         self.log.setPlaceholderText(
             "Drop .pptx/.pdf files or LaTeX project folders here, or use Add Files. "
-            "One .md file per document, images saved under assets/<name>/."
+            "One .md file per document; image links are off by default (AI descriptions are kept)."
         )
 
         copy_btn = QPushButton("Copy")
@@ -226,6 +242,7 @@ class MainWindow(QMainWindow):
         layout.addLayout(ai_checks_layout)
         layout.addLayout(ai_status_row)
         layout.addWidget(self.paper_check)
+        layout.addWidget(self.image_links_check)
         layout.addWidget(self.duplicate_check)
         layout.addWidget(self.convert_btn)
         layout.addWidget(self.progress)
@@ -352,6 +369,9 @@ class MainWindow(QMainWindow):
     def _remember_pdf_mode(self, checked: bool):
         set_setting(_PDF_MODE_KEY, "paper" if checked else "slide")
 
+    def _remember_image_links(self, checked: bool):
+        set_setting(_IMAGE_LINKS_KEY, "on" if checked else "off")
+
     def _remember_duplicate(self, checked: bool):
         set_setting(_DUPLICATE_KEY, "on" if checked else "off")
 
@@ -443,6 +463,8 @@ class MainWindow(QMainWindow):
     def start_conversion(self):
         os.environ["PDF_MODE"] = "paper" if self.paper_check.isChecked() else "slide"
         self._remember_pdf_mode(self.paper_check.isChecked())
+        os.environ["IMAGE_LINKS"] = "on" if self.image_links_check.isChecked() else "off"
+        self._remember_image_links(self.image_links_check.isChecked())
         paths = [
             Path(self.file_list.item(i).data(0))
             for i in range(self.file_list.count())

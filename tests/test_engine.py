@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import io
+import os
 
 import pytest
 
@@ -42,6 +43,8 @@ class _FakeConfig:
     def snapshot(self, probe=False):
         return {
             "pdf_mode": "slide",
+            "image_links": os.environ.get("IMAGE_LINKS", "").strip().lower()
+            in {"1", "true", "yes", "on"},
             "duplicate": False,
             "vault_root": None,
             "audio_model": "nb-whisper-large",
@@ -133,12 +136,25 @@ def test_engine_fs_resolve_missing(client):
 def test_engine_config_get(client):
     c = client.get("/api/config").get_json()
     assert c["pdf_mode"] in ("slide", "paper")
+    assert c["image_links"] is False
     assert "features" in c
     assert "vault_root" in c
     assert c["audio_model"] == "nb-whisper-large"
     assert c["audio_language"] == "no"
     assert c["audio_diarize"] is True
     assert c["audio_speakers"] == 2
+
+
+def test_engine_config_set_image_links(client, monkeypatch):
+    monkeypatch.setenv("IMAGE_LINKS", "off")
+    stored = {}
+    monkeypatch.setattr(
+        "converter.settings.set_setting",
+        lambda key, value: stored.__setitem__(key, value),
+    )
+    r = client.post("/api/config", json={"image_links": True}).get_json()
+    assert r["image_links"] is True
+    assert stored["image_links"] == "on"
 
 
 def test_engine_config_set_vault_root(client, monkeypatch, tmp_path):

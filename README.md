@@ -8,7 +8,11 @@ Web app, desktop app and reusable Python library that converts PowerPoint presen
 
 ## What it does
 
-One Markdown file per source document, with images extracted to a sidecar `assets/<name>/` folder. Both formats preserve **bold** and *italic* formatting.
+One Markdown file per source document. Image links are **off by default** — a
+figure's local-AI description is kept where one exists, and nothing is extracted
+to disk; pass `--image-links` (or tick *Image links*) to restore the legacy
+`assets/<name>/` sidecar with `![…]`/`[Page N]` links (ADR-0047). Both formats
+preserve **bold** and *italic* formatting.
 
 ### PowerPoint (`.pptx`)
 
@@ -20,7 +24,7 @@ One Markdown file per source document, with images extracted to a sidecar `asset
 | Numbered lists | `1. ` list items |
 | Nested levels | Indented with two spaces per level |
 | Tables | Pipe tables (`\|` and newlines escaped) |
-| Images | Extracted to `assets/<name>/` and referenced |
+| Images | No link by default — an AI description replaces it where available; `--image-links` extracts to `assets/<name>/` and references them |
 | Speaker notes | `> **Notes:**` blockquote after each slide |
 
 Also: slide-number and date placeholders are skipped, headers/footers are italicized, groups are walked recursively, and charts are skipped with a warning.
@@ -30,7 +34,7 @@ Also: slide-number and date placeholders are skipped, headers/footers are italic
 | Source element | Markdown output |
 | --- | --- |
 | Each page | `# {slide title} — Page N` heading (falls back to `# Page N`) |
-| Page render | Rendered PNG linked as `[Page N](…)` — the visual ground truth |
+| Page render | Rendered in memory for the vision passes; linked as `[Page N](…)` only with `--image-links` |
 | Text | Reconstructed into reading order, preserving bold/italic |
 | Bullets | `- ` / nested `  - ` lists (bullet glyphs + indentation) |
 | Tables | Pipe tables via `page.find_tables()` |
@@ -39,8 +43,8 @@ Also: slide-number and date placeholders are skipped, headers/footers are italic
 Layout-aware: lines are reordered by their coordinates, bullets are detected from
 the `•`/`–` glyphs and their indent, and real tables are detected by PyMuPDF.
 Pages whose text can't be linearized (diagrams, multi-column flowcharts) fall
-back to a link to the rendered PNG plus a collapsed raw-text block — and can
-optionally be transcribed by a local vision model. See [docs/ai-vision.md](docs/ai-vision.md).
+back to a collapsed raw-text block — and can optionally be transcribed by a local
+vision model. See [docs/ai-vision.md](docs/ai-vision.md).
 
 #### Whitepapers / multi-column documents (`--paper`)
 
@@ -61,7 +65,7 @@ slide deck:
 | --- | --- |
 | Title + subtitle + authors (page 1) | `# Title` + `*Authors · Affiliation*` metadata block |
 | Section headings | `## Heading` (bold / larger / centered standalone lines) |
-| Each page | `# Page N` heading + `[Page N](…)` PNG link |
+| Each page | `# Page N` heading |
 | Running headers | Dropped (repeats at the top of every page) |
 | Page separators | None — pages flow continuously (no `---` / page-break divs) |
 
@@ -79,10 +83,12 @@ from the rendered page image. Any page the model gets wrong is left in its
 deterministic form with a warning. See
 [Paper structure pass](#paper-structure-pass).
 
-Shared slide-master background images are detected and skipped, and all extracted
-images are deduplicated by content hash. Images that recur on ≥80% of slides/pages
-(logos, watermarks) are embedded inline only on their first occurrence; later
-occurrences become a text hyperlink to the same asset instead of a repeated image.
+Shared slide-master background images are detected and skipped. With
+`--image-links` (legacy), all extracted images are deduplicated by content hash,
+and images that recur on ≥80% of slides/pages (logos, watermarks) are embedded
+inline only on their first occurrence; later occurrences become a text hyperlink
+to the same asset instead of a repeated image. By default no images are extracted
+or linked at all — only their AI descriptions appear.
 
 ## How to use
 
@@ -125,6 +131,7 @@ ptm --output out/ --vision --format .
 ptm --all --quiet folder_of_slides/
 ptm --paper whitepaper.pdf       # two-column paper -> continuous document
 ptm --slide handout.pdf          # force per-page slide layout (the default)
+ptm --image-links deck.pptx      # legacy: extract assets, emit image/page links
 
 # launch the GUI, enabling AI passes via flags
 ptm-start --vision
@@ -174,7 +181,7 @@ recursively for `.pptx`/`.pdf`, the output folder defaults to
 in the recent list.
 
 ```
-ptm [AI flags] [-o DIR] [--no-recursive] [--no-recent] [-q] PATH...
+ptm [AI flags] [--image-links] [-o DIR] [--no-recursive] [--no-recent] [-q] PATH...
 ```
 
 **`ptm-start`** — the same GUI as `./python main.py`, with AI capabilities toggled
@@ -198,6 +205,7 @@ Both accept the same AI flags (default: all off):
 | `--all` | The five slide passes above (vision + classify + interpret + format + summary) |
 | `--paper` | Treat PDFs as multi-column whitepapers (continuous document layout) |
 | `--slide` | Treat PDFs as slide decks (the default) |
+| `--image-links` | Legacy output: extract `assets/<name>/` and emit `![…]`/`[Page N](…)` links (default: no image links, AI descriptions only) |
 | `--env KEY=VALUE` | Set any other env var (repeatable) — model ids, URLs, log DB |
 
 Audio transcription is **not** an AI flag on `ptm`/`ptm-start` — it is its own
@@ -338,6 +346,18 @@ in when that exact port is already occupied.
 
 ## Output layout
 
+By default one `.md` per source document — no `assets/` sidecar and no image
+links (AI descriptions stand in for figures where the vision passes run):
+
+```text
+out/
+├── deck.md
+└── handout.md
+```
+
+With `--image-links` the legacy sidecar is written too; images are deduplicated
+by content hash and named `<name>_<NN>_<hash>.<ext>`:
+
 ```text
 out/
 ├── deck.md
@@ -348,8 +368,6 @@ out/
     └── handout/
         └── handout_01_164ea19d.png
 ```
-
-Images are deduplicated by content hash and named `<name>_<NN>_<hash>.<ext>`.
 
 With the default `output_dir=None`, the same layout is written under each source file's own folder, i.e. `<input-folder>/markdown/`.
 
@@ -530,9 +548,11 @@ via LibreOffice). Before any model call, a **readability gate** skips images tha
 are too low-resolution or blurry to read (a VLM only hallucinates on those), and
 every transcription passes a deterministic **quality gate** that discards
 repetition loops, pathological nesting, placeholder/template echo, and runaway
-output. See **[docs/ai-vision.md](docs/ai-vision.md)** for how to serve the models
-(referencing `macos-dev-config/inference-readme.md`) and the env vars that enable
-it.
+output. Descriptions are emitted in place of the image link, so they survive the
+default text-only output (ADR-0047); a skipped *decorative* image contributes
+nothing at all. See **[docs/ai-vision.md](docs/ai-vision.md)** for how to serve
+the models (referencing `macos-dev-config/inference-readme.md`) and the env vars
+that enable it.
 
 ## Markdown polish pass
 

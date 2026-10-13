@@ -91,6 +91,13 @@ def add_ai_flags(parser: argparse.ArgumentParser) -> None:
         action="store_true",
         help="treat PDFs as slide decks (default)",
     )
+    output = parser.add_argument_group("Output options")
+    output.add_argument(
+        "--image-links",
+        action="store_true",
+        help="keep image/page links in the Markdown and extract assets "
+        "(legacy; default: no image links, AI descriptions only)",
+    )
 
 
 def ai_env_vars(args: argparse.Namespace) -> dict[str, str]:
@@ -125,6 +132,9 @@ def ai_env_vars(args: argparse.Namespace) -> dict[str, str]:
 
     if getattr(args, "no_gate", False):
         env["NEED_GATE"] = "off"
+
+    if getattr(args, "image_links", False):
+        env["IMAGE_LINKS"] = "on"
 
     for item in getattr(args, "env", None) or []:
         if "=" not in item:
