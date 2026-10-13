@@ -103,17 +103,19 @@ type ConfigUpdate struct {
 
 // JobEvent is one WebSocket frame from the engine's /ws stream.
 type JobEvent struct {
-	Type    string `json:"type"` // file | page | log | phase | done | error
-	JobID   int    `json:"job_id"`
-	Idx     int    `json:"idx"`
-	Total   int    `json:"total"`
-	Name    string `json:"name"`
-	Page    int    `json:"page"`
-	Kind    string `json:"kind"` // log kind: ok | warn | err | info
-	Message string `json:"message"`
-	Ok      int    `json:"ok"`
-	Error   string `json:"error"`
-	Phase   string `json:"phase"` // transcribe phase (ADR-0045)
+	Type    string      `json:"type"` // file | page | log | phase | done | cancelled | error
+	JobID   int         `json:"job_id"`
+	JobKind string      `json:"job_kind"`
+	Idx     int         `json:"idx"`
+	Total   int         `json:"total"`
+	Name    string      `json:"name"`
+	Page    int         `json:"page"`
+	Kind    string      `json:"kind"` // log kind: ok | warn | err | info
+	Message string      `json:"message"`
+	Ok      int         `json:"ok"`
+	Error   string      `json:"error"`
+	Phase   string      `json:"phase"`   // transcribe phase (ADR-0045)
+	Results []JobResult `json:"results"` // per-file outcomes on the done frame
 }
 
 // Job is the engine's structured current_job (ADR-0045/0053).
@@ -130,6 +132,8 @@ type Job struct {
 	StartedAt       float64     `json:"started_at"`
 	FinishedAt      *float64    `json:"finished_at"`
 	CancelRequested bool        `json:"cancel_requested"`
+	Ok              int         `json:"ok"`
+	Error           string      `json:"error"`
 	Results         []JobResult `json:"results"`
 	LogTail         []string    `json:"log_tail"`
 }
@@ -162,6 +166,20 @@ type Run struct {
 	StartedAt  string `json:"started_at"`
 	EndedAt    string `json:"ended_at"`
 	DurationMS int    `json:"duration_ms"`
+}
+
+// ServerHealth is one model server's state from /api/health/servers.
+type ServerHealth struct {
+	Name    string `json:"name"`
+	Up      bool   `json:"up"`
+	URL     string `json:"url"`
+	Command string `json:"command"`
+}
+
+// ServersResult is the /api/health/servers payload.
+type ServersResult struct {
+	Servers []ServerHealth `json:"servers"`
+	Missing []ServerHealth `json:"missing"`
 }
 
 // Health returns the engine's health.
@@ -267,6 +285,26 @@ func (c *Client) Runs(ctx context.Context, limit int) ([]Run, error) {
 		return nil, err
 	}
 	return r.Runs, nil
+}
+
+// Recent returns the engine's most-recently-used files (newest first).
+func (c *Client) Recent(ctx context.Context) ([]string, error) {
+	var r struct {
+		Recent []string `json:"recent"`
+	}
+	if err := c.getJSON(ctx, "/api/recent", &r); err != nil {
+		return nil, err
+	}
+	return r.Recent, nil
+}
+
+// Servers returns model-server health plus the missing-required list.
+func (c *Client) Servers(ctx context.Context) (ServersResult, error) {
+	var r ServersResult
+	if err := c.getJSON(ctx, "/api/health/servers", &r); err != nil {
+		return ServersResult{}, err
+	}
+	return r, nil
 }
 
 // Shutdown asks a TUI-spawned engine to stop.

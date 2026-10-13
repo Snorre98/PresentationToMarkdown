@@ -64,6 +64,19 @@ def test_engine_health(client):
     assert h["engine"] is True
 
 
+def test_create_app_imports_converter_eagerly(monkeypatch):
+    """The lazy per-request import deadlocks under Flask's thread pool."""
+    import engine
+
+    calls = []
+    monkeypatch.setattr(
+        "engine._import_converter",
+        lambda: (calls.append(1), (frozenset(), _FakeConfig(), lambda *a, **k: []))[1],
+    )
+    engine.create_app()
+    assert calls, "create_app must import converter on one thread"
+
+
 def test_engine_fs_list_directory(tmp_path, client):
     d = tmp_path / "sub"
     d.mkdir()

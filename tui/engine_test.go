@@ -315,6 +315,32 @@ func TestRuns(t *testing.T) {
 	}
 }
 
+func TestServersMissingIsObjectShaped(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{
+			"servers": []map[string]any{
+				{"name": "vision", "up": true, "url": "http://127.0.0.1:8080/v1"},
+			},
+			"missing": []map[string]any{
+				{"name": "transcriber", "up": false, "url": "http://127.0.0.1:8081/v1", "command": "curl ..."},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	c := NewClient(srv.URL)
+	res, err := c.Servers(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Servers) != 1 || !res.Servers[0].Up {
+		t.Fatalf("servers = %+v", res.Servers)
+	}
+	if len(res.Missing) != 1 || res.Missing[0].Name != "transcriber" {
+		t.Fatalf("missing = %+v", res.Missing)
+	}
+}
+
 func TestOpenReveal(t *testing.T) {
 	var body map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -685,12 +685,17 @@ def _job_execute(wsock, paths: list[str], output_dir: str | None, duplicate: boo
     _set_job(reset=True, kind="convert", paths=paths)
     job_id = _engine_state["current_job"]["id"]
 
+    def emit(event: dict) -> None:
+        event.setdefault("job_id", job_id)
+        event.setdefault("job_kind", "convert")
+        _emit(event, origin=wsock)
+
     def log(kind: str, msg: str) -> None:
         _engine_state["log"].append((kind, msg))
         job = _engine_state.get("current_job")
         if job is not None:
             job["log_tail"].append(f"[{kind}] {msg}")
-        _emit({"type": "log", "kind": kind, "message": msg, "job_id": job_id}, origin=wsock)
+        emit({"type": "log", "kind": kind, "message": msg})
 
     file_durations: list[float] = []
     last_mark = time.time()
@@ -702,12 +707,12 @@ def _job_execute(wsock, paths: list[str], output_dir: str | None, duplicate: boo
         file_durations.append(now - last_mark)
         last_mark = now
         _set_job(idx=idx, total=total, phase=name)
-        _emit({"type": "file", "idx": idx, "total": total, "name": name, "job_id": job_id}, origin=wsock)
+        emit({"type": "file", "idx": idx, "total": total, "name": name})
 
     def on_page_progress(page: int, total: int, name: str) -> None:
         _check_cancelled()
         _set_job(page=page, page_total=total, phase=name)
-        _emit({"type": "page", "page": page, "total": total, "name": name, "job_id": job_id}, origin=wsock)
+        emit({"type": "page", "page": page, "total": total, "name": name})
 
     if output_dir:
         out = Path(output_dir)
@@ -769,17 +774,17 @@ def _job_execute(wsock, paths: list[str], output_dir: str | None, duplicate: boo
         records = [_result_record(r, file_durations, i) for i, r in enumerate(results)]
         ok = sum(1 for r in results if not r.error)
         _finish_job("done", ok=ok, results=records)
-        _emit({"type": "done", "ok": ok, "total": len(results), "job_id": job_id}, origin=wsock)
+        emit({"type": "done", "ok": ok, "total": len(results), "results": records})
     except _JobCancelled:
         _engine_state["status"] = "cancelled"
         log("warn", "Conversion cancelled")
         _finish_job("cancelled", ok=len(file_durations))
-        _emit({"type": "cancelled", "ok": len(file_durations), "total": len(paths), "job_id": job_id}, origin=wsock)
+        emit({"type": "cancelled", "ok": len(file_durations), "total": len(paths)})
     except Exception as exc:  # noqa: BLE001
         _engine_state["status"] = "error"
         log("err", f"Conversion failed: {exc}")
         _finish_job("error", ok=0, error=str(exc))
-        _emit({"type": "done", "ok": 0, "total": len(paths), "error": str(exc), "job_id": job_id}, origin=wsock)
+        emit({"type": "done", "ok": 0, "total": len(paths), "error": str(exc)})
     finally:
         _job_running.clear()
 
@@ -867,11 +872,16 @@ def _transcribe_execute(wsock, paths: list[str], audio_options: dict | None) -> 
     _set_job(reset=True, kind="transcribe", paths=paths)
     job_id = _engine_state["current_job"]["id"]
 
+    def emit(event: dict) -> None:
+        event.setdefault("job_id", job_id)
+        event.setdefault("job_kind", "transcribe")
+        _emit(event, origin=wsock)
+
     def on_line(line: str) -> None:
         phase = _map_phase(line)
         if phase is not None:
             _set_job(phase=phase)
-            _emit({"type": "phase", "phase": phase, "job_id": job_id}, origin=wsock)
+            emit({"type": "phase", "phase": phase})
             return
         text = line.rstrip("\n").strip()
         if text:
@@ -880,7 +890,7 @@ def _transcribe_execute(wsock, paths: list[str], audio_options: dict | None) -> 
             if job is not None:
                 job["log_tail"].append(text)
                 job["log_tail"] = job["log_tail"][-_JOB_LOG_TAIL_MAX:]
-            _emit({"type": "log", "kind": "info", "message": text, "job_id": job_id}, origin=wsock)
+            emit({"type": "log", "kind": "info", "message": text})
 
     ok = 0
     total = len(paths)
@@ -889,7 +899,7 @@ def _transcribe_execute(wsock, paths: list[str], audio_options: dict | None) -> 
             _check_cancelled()
             path = Path(raw)
             _set_job(idx=idx, total=total, phase="starting")
-            _emit({"type": "file", "idx": idx, "total": total, "name": path.name, "job_id": job_id}, origin=wsock)
+            emit({"type": "file", "idx": idx, "total": total, "name": path.name})
             warnings: list[str] = []
             if path.suffix.lower() == ".md":
                 result = attach_transcript(path, warnings, on_line=on_line)
@@ -900,23 +910,23 @@ def _transcribe_execute(wsock, paths: list[str], audio_options: dict | None) -> 
                 else:
                     result = transcribe_to_markdown(path, warnings, on_line=on_line)
             for warning in warnings:
-                _emit({"type": "log", "kind": "warn", "message": f"{path.name}: {warning}", "job_id": job_id}, origin=wsock)
+                emit({"type": "log", "kind": "warn", "message": f"{path.name}: {warning}"})
             if result is None and not warnings:
-                _emit({"type": "log", "kind": "warn", "message": f"{path.name}: no transcript produced", "job_id": job_id}, origin=wsock)
+                emit({"type": "log", "kind": "warn", "message": f"{path.name}: no transcript produced"})
             else:
                 ok += 1
         _engine_state["status"] = "done"
         _finish_job("done", ok=ok)
-        _emit({"type": "done", "ok": ok, "total": total, "job_id": job_id}, origin=wsock)
+        emit({"type": "done", "ok": ok, "total": total})
     except _JobCancelled:
         _engine_state["status"] = "cancelled"
         _finish_job("cancelled", ok=ok)
-        _emit({"type": "cancelled", "ok": ok, "total": total, "job_id": job_id}, origin=wsock)
+        emit({"type": "cancelled", "ok": ok, "total": total})
     except Exception as exc:  # noqa: BLE001
         _engine_state["status"] = "error"
         _finish_job("error", ok=ok, error=str(exc))
-        _emit({"type": "log", "kind": "err", "message": f"Transcription failed: {exc}", "job_id": job_id}, origin=wsock)
-        _emit({"type": "done", "ok": 0, "total": total, "error": str(exc), "job_id": job_id}, origin=wsock)
+        emit({"type": "log", "kind": "err", "message": f"Transcription failed: {exc}"})
+        emit({"type": "done", "ok": 0, "total": total, "error": str(exc)})
     finally:
         lock_handle.release()
         _job_running.clear()
@@ -925,6 +935,11 @@ def _transcribe_execute(wsock, paths: list[str], audio_options: dict | None) -> 
 def create_app() -> Flask:
     app = Flask("ptm-engine")
     app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_BYTES
+    # Import converter eagerly, on this one thread: the request handlers run on
+    # Flask's thread pool, and two concurrent *first* imports (e.g. /api/fs/glob
+    # importing `converter` and /api/runs importing `converter.db`) deadlock in
+    # CPython's module locks.
+    _import_converter()
     _prune_uploads()
     sock = Sock(app)
 
@@ -1037,7 +1052,13 @@ def create_app() -> Flask:
                     {"name": name, "up": config.probe(url), "url": url,
                      "command": config.SERVERS[name].start_command}
                 )
-        return jsonify({"servers": results, "missing": config.missing_servers()})
+        # missing_servers() returns (name, url, command) tuples; the TUI wants
+        # the same object shape as `servers` (ADR-0053).
+        missing = [
+            {"name": name, "url": url, "command": command, "up": False}
+            for name, url, command in config.missing_servers()
+        ]
+        return jsonify({"servers": results, "missing": missing})
 
     @app.get("/api/status")
     def status():

@@ -1,8 +1,9 @@
 package main
 
-// Entry point for ptm-tui. Resolves the engine (attach or spawn), then runs the
-// Bubble Tea program. Configuration comes from the environment (set by
-// scripts/ptm-tui.sh), not from the terminal: PTM_ENGINE_PORT, PTM_ENGINE_CMD.
+// Entry point for ptm-tui. The Bubble Tea program starts immediately; the
+// engine is attached to or spawned by the app itself (ADR-0040/0053), so the
+// UI never blocks on engine startup. Configuration comes from the environment
+// (set by scripts/ptm-tui.sh): PTM_ENGINE_PORT, PTM_ENGINE_CMD.
 
 import (
 	"context"
@@ -31,34 +32,22 @@ func run() error {
 	}
 	client := DefaultClient(port)
 
-	spawned := false
-	if _, err := client.Health(context.Background()); err != nil {
-		cmdLine := os.Getenv("PTM_ENGINE_CMD")
-		if cmdLine == "" {
-			return fmt.Errorf("ptm-engine not reachable on :%d and PTM_ENGINE_CMD is not set", port)
-		}
-		cmd := exec.Command("sh", "-c", cmdLine+" --port "+strconv.Itoa(port))
-		if err := cmd.Start(); err != nil {
-			return fmt.Errorf("failed to start ptm-engine: %w", err)
-		}
-		go cmd.Wait() // reap the child; the engine exits on /api/shutdown
-		spawned = true
-		if err := waitHealthy(client, 30*time.Second); err != nil {
-			return err
-		}
-	}
-
 	cwd, err := os.Getwd()
 	if err != nil {
 		return err
 	}
 
-	p := tea.NewProgram(newModel(client, cwd, spawned))
+	m := newModel(client, cwd, port)
+	p := tea.NewProgram(m)
+	// Watch messages are pushed straight into the update loop.
+	m.watch.onMsg = p.Send
 	if _, err := p.Run(); err != nil {
 		return err
 	}
 
-	if spawned {
+	// Only stop an engine this session spawned; an attached one keeps running
+	// (ADR-0040).
+	if m.spawned {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
 		_ = client.Shutdown(ctx)
@@ -66,7 +55,8 @@ func run() error {
 	return nil
 }
 
-func waitHealthy(c *Client, d time.Duration) error {
+// waitHealthy polls the engine until it answers or d runs out.
+func waitHealthy(c healthChecker, d time.Duration) error {
 	deadline := time.Now().Add(d)
 	for time.Now().Before(deadline) {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -78,4 +68,15 @@ func waitHealthy(c *Client, d time.Duration) error {
 		time.Sleep(200 * time.Millisecond)
 	}
 	return fmt.Errorf("ptm-engine did not become healthy within %s", d)
+}
+
+func env(key string) string { return os.Getenv(key) }
+
+type healthChecker interface {
+	Health(context.Context) (Health, error)
+}
+
+// shellCommand builds the engine spawn command from PTM_ENGINE_CMD.
+func shellCommand(cmdLine string, port int) *exec.Cmd {
+	return exec.Command("sh", "-c", cmdLine+" --port "+strconv.Itoa(port))
 }

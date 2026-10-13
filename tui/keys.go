@@ -1,0 +1,49 @@
+package main
+
+// keys.go — one binding table for the footer hints and the `?` overlay.
+
+import "charm.land/bubbles/v2/key"
+
+type keyMap struct {
+	Up       key.Binding
+	Down     key.Binding
+	Select   key.Binding
+	Run      key.Binding
+	Filter   key.Binding
+	Tabs     key.Binding
+	Cancel   key.Binding
+	Open     key.Binding
+	Settings key.Binding
+	Help     key.Binding
+	Quit     key.Binding
+}
+
+func defaultKeys() keyMap {
+	return keyMap{
+		Up:       key.NewBinding(key.WithKeys("up", "k"), key.WithHelp("↑/k", "move")),
+		Down:     key.NewBinding(key.WithKeys("down", "j"), key.WithHelp("↓/j", "move")),
+		Select:   key.NewBinding(key.WithKeys("space", " "), key.WithHelp("space", "select")),
+		Run:      key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "convert")),
+		Filter:   key.NewBinding(key.WithKeys("@", "/"), key.WithHelp("@", "filter")),
+		Tabs:     key.NewBinding(key.WithKeys("tab"), key.WithHelp("tab/1-3", "panes")),
+		Cancel:   key.NewBinding(key.WithKeys("x"), key.WithHelp("x", "cancel job")),
+		Open:     key.NewBinding(key.WithKeys("o", "f"), key.WithHelp("o/f", "open · reveal")),
+		Settings: key.NewBinding(key.WithKeys("s"), key.WithHelp("s", "settings")),
+		Help:     key.NewBinding(key.WithKeys("?"), key.WithHelp("?", "help")),
+		Quit:     key.NewBinding(key.WithKeys("q", "ctrl+c"), key.WithHelp("q", "quit")),
+	}
+}
+
+var keys = defaultKeys()
+
+func (k keyMap) ShortHelp() []key.Binding {
+	return []key.Binding{k.Up, k.Down, k.Select, k.Run, k.Filter, k.Tabs, k.Cancel, k.Settings, k.Help, k.Quit}
+}
+
+func (k keyMap) FullHelp() [][]key.Binding {
+	return [][]key.Binding{
+		{k.Up, k.Down, k.Select, k.Run},
+		{k.Filter, k.Tabs, k.Cancel, k.Open},
+		{k.Settings, k.Help, k.Quit},
+	}
+}
