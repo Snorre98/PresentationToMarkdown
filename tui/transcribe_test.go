@@ -38,7 +38,7 @@ func TestGlobAudio(t *testing.T) {
 func TestPartitionSelected(t *testing.T) {
 	files := []string{"/a/deck.pptx", "/a/notes.md", "/a/lecture.mp3", "/a/week-2.m4a"}
 	kinds := []string{"convert", "convert", "audio", "audio"}
-	selected := map[int]bool{0: true, 2: true, 3: true}
+	selected := map[string]bool{"/a/deck.pptx": true, "/a/lecture.mp3": true, "/a/week-2.m4a": true}
 
 	convert, audio := partitionSelected(files, kinds, selected)
 	if len(convert) != 1 || convert[0] != "/a/deck.pptx" {
@@ -52,7 +52,7 @@ func TestPartitionSelected(t *testing.T) {
 func TestPartitionSelectedSorts(t *testing.T) {
 	files := []string{"/b/2.mp3", "/a/1.mp3", "/a/deck.pptx"}
 	kinds := []string{"audio", "audio", "convert"}
-	selected := map[int]bool{0: true, 1: true, 2: true}
+	selected := map[string]bool{"/b/2.mp3": true, "/a/1.mp3": true, "/a/deck.pptx": true}
 
 	_, audio := partitionSelected(files, kinds, selected)
 	if len(audio) != 2 || audio[0] != "/a/1.mp3" || audio[1] != "/b/2.mp3" {

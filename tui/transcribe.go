@@ -11,17 +11,17 @@ import (
 	"sort"
 )
 
-// partitionSelected splits the selected indices into conversion inputs and
-// audio files by kind (any non-"audio" kind converts).
-func partitionSelected(files, kinds []string, selected map[int]bool) (convert, audio []string) {
-	for idx := range selected {
-		if idx >= len(files) || idx >= len(kinds) {
+// partitionSelected splits the selection (keyed by absolute path) into
+// conversion inputs and audio files by kind (any non-"audio" kind converts).
+func partitionSelected(files, kinds []string, selected map[string]bool) (convert, audio []string) {
+	for i, f := range files {
+		if !selected[f] {
 			continue
 		}
-		if kinds[idx] == "audio" {
-			audio = append(audio, files[idx])
+		if i < len(kinds) && kinds[i] == "audio" {
+			audio = append(audio, f)
 		} else {
-			convert = append(convert, files[idx])
+			convert = append(convert, f)
 		}
 	}
 	sort.Strings(convert)

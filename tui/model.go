@@ -23,6 +23,9 @@ const (
 	screenSettings
 )
 
+// maxStripJobs bounds the jobs strip so the view can never grow per poll tick.
+const maxStripJobs = 5
+
 var (
 	headerStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12"))
 	subtleStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
@@ -35,6 +38,7 @@ var (
 
 // jobView is one entry in the compact jobs strip (running first, then done/failed).
 type jobView struct {
+	id        int // engine job id; 0 for a locally started job until frames carry it
 	kind      string // "convert" | "transcribe"
 	status    string // "running" | "done" | "error"
 	name      string
@@ -60,7 +64,7 @@ type model struct {
 	relFiles  []string
 	visible   []int
 	cursor    int
-	selected  map[int]bool
+	selected  map[string]bool // keyed by absolute path (survives refreshes)
 	filtering bool
 	filter    string
 	loadErr   error
@@ -95,16 +99,16 @@ func newModel(client *Client, cwd string, spawned bool) *model {
 		cwd:      cwd,
 		spawned:  spawned,
 		screen:   screenPick,
-		selected: map[int]bool{},
+		selected: map[string]bool{},
 	}
 }
 
 // --- messages ----------------------------------------------------------------
 
-type globMsg struct {
-	kind string // "convert" | "audio"
-	res  GlobResult
-	err  error
+type filesMsg struct {
+	convert GlobResult
+	audio   GlobResult
+	err     error
 }
 
 type cfgMsg struct {
@@ -124,18 +128,19 @@ func (m *model) Init() tea.Cmd {
 }
 
 func (m *model) loadFiles() tea.Cmd {
-	glob := func(kind string, fn func(ctx context.Context, path string, recursive bool) (GlobResult, error)) tea.Cmd {
-		return func() tea.Msg {
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer cancel()
-			res, err := fn(ctx, m.cwd, true)
-			return globMsg{kind, res, err}
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		res, err := m.client.Glob(ctx, m.cwd, true)
+		if err != nil {
+			return filesMsg{err: err}
 		}
+		audio, err := m.client.GlobAudio(ctx, m.cwd, true)
+		if err != nil {
+			return filesMsg{err: err}
+		}
+		return filesMsg{convert: res, audio: audio}
 	}
-	return tea.Batch(
-		glob("convert", m.client.Glob),
-		glob("audio", m.client.GlobAudio),
-	)
 }
 
 func (m *model) fetchConfig() tea.Cmd {
@@ -184,17 +189,13 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.mergeExternalJob(msg)
 		return m, m.statusTick()
 
-	case globMsg:
+	case filesMsg:
 		if msg.err != nil {
 			m.loadErr = msg.err
 			return m, nil
 		}
-		for _, f := range msg.res.Files {
-			m.files = append(m.files, f)
-			m.kinds = append(m.kinds, msg.kind)
-		}
-		m.relFiles = relPaths(m.cwd, m.files)
-		m.refilter()
+		m.loadErr = nil
+		m.setFiles(msg)
 		return m, nil
 
 	case cfgMsg:
@@ -259,6 +260,8 @@ func (m *model) updatePick(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.refilter()
 	case "l":
 		m.showLog = !m.showLog
+	case "r":
+		return m, m.loadFiles()
 	case "up", "k":
 		if m.cursor > 0 {
 			m.cursor--
@@ -269,14 +272,16 @@ func (m *model) updatePick(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 	case " ":
 		m.toggleSelect()
+	case "a":
+		m.selectAllVisible()
+	case "c":
+		m.selected = map[string]bool{}
 	case "enter":
-		if len(m.selected) == 0 && len(m.visible) > 0 {
-			m.selected[m.visible[m.cursor]] = true
-		}
-		if len(m.selected) == 0 {
+		convert, audio := m.takeSelection()
+		if len(convert) == 0 && len(audio) == 0 {
 			return m, nil
 		}
-		return m, m.startJob()
+		return m, m.startJob(convert, audio)
 	case "s", "tab":
 		m.screen = screenSettings
 		return m, m.fetchConfig()
@@ -284,21 +289,38 @@ func (m *model) updatePick(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// takeSelection resolves what a run should convert: an explicit multi-selection
+// wins, otherwise the cursor item is used. Either way the selection is consumed
+// so the next enter acts on the cursor again (ADR-0053) — a stale selection
+// used to re-run the previous batch (and its archived sources) forever.
+func (m *model) takeSelection() (convert, audio []string) {
+	if len(m.selected) == 0 && len(m.visible) > 0 {
+		m.selected[m.files[m.visible[m.cursor]]] = true
+	}
+	convert, audio = partitionSelected(m.files, m.kinds, m.selected)
+	m.selected = map[string]bool{}
+	return convert, audio
+}
+
 func (m *model) toggleSelect() {
 	if len(m.visible) == 0 {
 		return
 	}
-	idx := m.visible[m.cursor]
-	if m.selected[idx] {
-		delete(m.selected, idx)
+	path := m.files[m.visible[m.cursor]]
+	if m.selected[path] {
+		delete(m.selected, path)
 	} else {
-		m.selected[idx] = true
+		m.selected[path] = true
 	}
 }
 
-func (m *model) startJob() tea.Cmd {
-	convertPaths, audioPaths := partitionSelected(m.files, m.kinds, m.selected)
+func (m *model) selectAllVisible() {
+	for _, idx := range m.visible {
+		m.selected[m.files[idx]] = true
+	}
+}
 
+func (m *model) startJob(convertPaths, audioPaths []string) tea.Cmd {
 	m.jobs = nil
 	m.done = nil
 	m.showLog = false
@@ -363,13 +385,16 @@ func (m *model) onJobEvent(ev JobEvent) (tea.Model, tea.Cmd) {
 		m.logs = append(m.logs, fmt.Sprintf("[%s] %s", ev.Kind, ev.Message))
 	case "done", "error":
 		m.finishJob(ev)
+		// Refresh discovery: the default layout archives converted sources
+		// (ADR-0048), so the picker list would otherwise keep stale paths.
+		refresh := m.loadFiles()
 		if ev.Type == "done" && len(m.audioPending) > 0 {
 			pending := m.audioPending
 			m.audioPending = nil
 			m.jobs = append(m.jobs, jobView{kind: "transcribe", status: "running", total: len(pending)})
-			return m, m.runTranscribe(pending)
+			return m, tea.Batch(refresh, m.runTranscribe(pending))
 		}
-		return m, nil
+		return m, refresh
 	}
 	return m, waitEvent(m.eventsCh)
 }
@@ -403,21 +428,35 @@ func (m *model) finishJob(ev JobEvent) {
 	}
 }
 
-// mergeExternalJob surfaces an externally-started job found via /api/status,
-// but only when the WS is not already the live source of progress.
+// mergeExternalJob surfaces an externally-started job found via /api/status.
+// The engine advertises a job under ``current_job`` only while it is running
+// (ADR-0053), and the strip keys it by id, so a finished job can never be
+// re-added on the next poll.
 func (m *model) mergeExternalJob(msg statusMsg) {
-	if msg.err != nil || msg.status.CurrentJob == nil {
+	if msg.err != nil {
 		return
+	}
+	j := msg.status.CurrentJob
+	if j == nil || j.Status != "running" {
+		return
+	}
+	for i := range m.jobs {
+		if m.jobs[i].id != 0 && m.jobs[i].id == j.ID {
+			m.jobs[i].idx, m.jobs[i].total = j.Idx, j.Total
+			m.jobs[i].page, m.jobs[i].pageTotal = j.Page, j.PageTotal
+			m.jobs[i].phase = j.Phase
+			return
+		}
 	}
 	for _, existing := range m.jobs {
 		if existing.status == "running" {
 			return
 		}
 	}
-	j := msg.status.CurrentJob
 	m.jobs = append(m.jobs, jobView{
+		id:        j.ID,
 		kind:      j.Kind,
-		status:    j.Status,
+		status:    "running",
 		name:      lastName(j.Paths),
 		idx:       j.Idx,
 		total:     j.Total,
@@ -425,6 +464,39 @@ func (m *model) mergeExternalJob(msg statusMsg) {
 		pageTotal: j.PageTotal,
 		phase:     j.Phase,
 	})
+}
+
+// setFiles replaces the picker list with a fresh discovery result, keeping
+// selections for paths that are still present.
+func (m *model) setFiles(msg filesMsg) {
+	files := make([]string, 0, len(msg.convert.Files)+len(msg.audio.Files))
+	kinds := make([]string, 0, cap(files))
+	for _, f := range msg.convert.Files {
+		files = append(files, f)
+		kinds = append(kinds, "convert")
+	}
+	for _, f := range msg.audio.Files {
+		files = append(files, f)
+		kinds = append(kinds, "audio")
+	}
+	m.files, m.kinds = files, kinds
+	m.relFiles = relPaths(m.cwd, m.files)
+	m.pruneSelection()
+	m.refilter()
+}
+
+// pruneSelection drops selections for paths that disappeared (e.g. sources
+// archived into source/ by a finished conversion).
+func (m *model) pruneSelection() {
+	known := make(map[string]bool, len(m.files))
+	for _, f := range m.files {
+		known[f] = true
+	}
+	for path := range m.selected {
+		if !known[path] {
+			delete(m.selected, path)
+		}
+	}
 }
 
 func (m *model) refilter() {
@@ -463,8 +535,12 @@ func jobsStrip(m *model) string {
 	if len(m.jobs) == 0 {
 		return ""
 	}
+	jobs := m.jobs
+	if len(jobs) > maxStripJobs {
+		jobs = jobs[len(jobs)-maxStripJobs:]
+	}
 	var b strings.Builder
-	for _, j := range m.jobs {
+	for _, j := range jobs {
 		glyph := "●"
 		if j.status == "done" {
 			glyph = "✓"
@@ -532,7 +608,7 @@ func pickView(m *model) string {
 	} else {
 		for i, idx := range m.visible {
 			mark := "  "
-			if m.selected[idx] {
+			if m.selected[m.files[idx]] {
 				mark = checkStyle.Render("✓ ")
 			}
 			line := mark + m.relFiles[idx]
@@ -548,7 +624,7 @@ func pickView(m *model) string {
 	}
 
 	b.WriteString("\n")
-	b.WriteString(hintStyle.Render("↑/↓ move · space select · @ filter · enter convert/transcribe · l log · s settings · q quit"))
+	b.WriteString(hintStyle.Render("↑/↓ move · space select · @ filter · enter convert/transcribe · c clear · l log · s settings · q quit"))
 
 	if m.done != nil {
 		b.WriteString("\n")

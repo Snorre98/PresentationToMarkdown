@@ -747,6 +747,115 @@ def test_engine_status_endpoint(client):
     r = client.get("/api/status").get_json()
     assert "status" in r
     assert "current_job" in r
+    assert isinstance(r["jobs"], list)
+    assert "job_seq" in r
+
+
+@pytest.fixture
+def engine_state(monkeypatch):
+    """Reset the module-global engine job state around a test (ADR-0053)."""
+    import engine
+
+    def reset():
+        engine._engine_state.update(
+            status="idle",
+            paths=[],
+            output_dir=None,
+            duplicate=False,
+            results=None,
+            log=[],
+            current_job=None,
+            jobs=[],
+            job_seq=0,
+        )
+        engine._job_running.clear()
+
+    reset()
+    monkeypatch.setattr("converter.settings.record_recent", lambda path: None)
+    monkeypatch.setattr("converter.settings.get_upload_original", lambda path: None)
+    yield engine
+    reset()
+
+
+def _fake_converter(fn):
+    return lambda: (frozenset(), _FakeConfig(), fn)
+
+
+def test_job_finish_records_history_and_clears_current(engine_state, monkeypatch, tmp_path):
+    from pathlib import Path
+
+    from converter.base import ConvertResult
+
+    def fake_convert(paths, output_dir, **kw):
+        p = Path(paths[0])
+        return [
+            ConvertResult(
+                source_path=p,
+                md_path=p.with_suffix(".md"),
+                moved_to=p.parent / "source" / p.name,
+            )
+        ]
+
+    monkeypatch.setattr("engine._import_converter", _fake_converter(fake_convert))
+    ws = _RecordingWS()
+    engine_state._job_execute(ws, [str(tmp_path / "deck.pdf")], str(tmp_path), False)
+
+    state = engine_state._engine_state
+    assert state["current_job"] is None
+    assert state["status"] == "done"
+    job = state["jobs"][0]
+    assert job["id"] == 1
+    assert job["status"] == "done"
+    assert job["started_at"] <= job["finished_at"]
+    assert job["results"][0]["md_path"].endswith("deck.md")
+    assert job["results"][0]["moved_to"].endswith("source/deck.pdf")
+    done = next(m for m in ws.sent if m["type"] == "done")
+    assert done["job_id"] == 1
+
+
+def test_job_ids_increment_and_history_is_newest_first(engine_state, monkeypatch, tmp_path):
+    from pathlib import Path
+
+    from converter.base import ConvertResult
+
+    def ok_convert(paths, output_dir, **kw):
+        p = Path(paths[0])
+        return [ConvertResult(source_path=p, md_path=p.with_suffix(".md"))]
+
+    monkeypatch.setattr("engine._import_converter", _fake_converter(ok_convert))
+    engine_state._job_execute(_RecordingWS(), [str(tmp_path / "a.pdf")], str(tmp_path), False)
+
+    def boom(paths, output_dir, **kw):
+        raise RuntimeError("kaboom")
+
+    monkeypatch.setattr("engine._import_converter", _fake_converter(boom))
+    engine_state._job_execute(_RecordingWS(), [str(tmp_path / "b.pdf")], str(tmp_path), False)
+
+    state = engine_state._engine_state
+    assert state["current_job"] is None
+    assert [j["id"] for j in state["jobs"]] == [2, 1]
+    assert state["jobs"][0]["status"] == "error"
+    assert state["jobs"][0]["error"] == "kaboom"
+    assert state["jobs"][1]["status"] == "done"
+    assert state["status"] == "error"
+
+
+def test_job_history_is_capped(engine_state, monkeypatch, tmp_path):
+    from pathlib import Path
+
+    from converter.base import ConvertResult
+
+    def ok_convert(paths, output_dir, **kw):
+        p = Path(paths[0])
+        return [ConvertResult(source_path=p, md_path=p.with_suffix(".md"))]
+
+    monkeypatch.setattr("engine._import_converter", _fake_converter(ok_convert))
+    for _ in range(engine_state._JOBS_HISTORY_MAX + 3):
+        engine_state._job_execute(_RecordingWS(), [str(tmp_path / "a.pdf")], str(tmp_path), False)
+
+    state = engine_state._engine_state
+    assert len(state["jobs"]) == engine_state._JOBS_HISTORY_MAX
+    assert state["jobs"][0]["id"] == engine_state._JOBS_HISTORY_MAX + 3
 
 
 def test_map_phase():

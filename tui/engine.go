@@ -93,6 +93,7 @@ type ConfigUpdate struct {
 // JobEvent is one WebSocket frame from the engine's /ws stream.
 type JobEvent struct {
 	Type    string `json:"type"` // file | page | log | phase | done | error
+	JobID   int    `json:"job_id"`
 	Idx     int    `json:"idx"`
 	Total   int    `json:"total"`
 	Name    string `json:"name"`
@@ -104,8 +105,9 @@ type JobEvent struct {
 	Phase   string `json:"phase"` // transcribe phase (ADR-0045)
 }
 
-// Job is the engine's structured current_job (ADR-0045).
+// Job is the engine's structured current_job (ADR-0045/0053).
 type Job struct {
+	ID        int      `json:"id"`
 	Kind      string   `json:"kind"`
 	Status    string   `json:"status"`
 	Paths     []string `json:"paths"`

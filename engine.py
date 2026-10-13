@@ -48,14 +48,22 @@ _SUPPORTED_EXTENSIONS = {".pptx", ".pdf", ".tex"}
 UPLOAD_MAX_AGE_SECONDS = 7 * 24 * 60 * 60
 MAX_UPLOAD_BYTES = 500 * 1024 * 1024
 
+# Finished jobs kept for late-joining /api/status readers (ADR-0053). The
+# engine never advertises a finished job as ``current_job``: clients key their
+# own UI on this history by job id instead.
+_JOBS_HISTORY_MAX = 20
+_JOB_LOG_TAIL_MAX = 20
+
 _engine_state = {
-    "status": "idle",  # idle | running | done | error
+    "status": "idle",  # idle | running | done | error | cancelled
     "paths": [],
     "output_dir": None,
     "duplicate": False,
     "results": None,
     "log": [],
-    "current_job": None,  # structured job progress (ADR-0045)
+    "current_job": None,  # structured running job (ADR-0045/0053)
+    "jobs": [],  # finished jobs, newest first (ADR-0053)
+    "job_seq": 0,  # monotonic job id source (ADR-0053)
 }
 
 _job_lock = threading.Lock()
@@ -64,15 +72,20 @@ _job_running = threading.Event()
 
 def _new_job(kind: str, paths: list[str]) -> dict:
     """Return a fresh ``current_job`` record for a conversion or transcribe job."""
+    _engine_state["job_seq"] += 1
     return {
+        "id": _engine_state["job_seq"],
         "kind": kind,
         "status": "running",
-        "paths": paths,
+        "paths": list(paths),
         "idx": 0,
         "total": len(paths),
         "page": 0,
         "page_total": 0,
         "phase": None,
+        "started_at": time.time(),
+        "finished_at": None,
+        "results": [],
         "log_tail": [],
     }
 
@@ -85,8 +98,25 @@ def _set_job(**fields) -> None:
     if job is None:
         return
     job.update(fields)
-    if "log_tail" in fields and len(job["log_tail"]) > 20:
-        job["log_tail"] = job["log_tail"][-20:]
+    if job["log_tail"] and len(job["log_tail"]) > _JOB_LOG_TAIL_MAX:
+        job["log_tail"] = job["log_tail"][-_JOB_LOG_TAIL_MAX:]
+
+
+def _finish_job(status: str, **fields) -> None:
+    """Retire the running job into the finished-jobs ring (ADR-0053).
+
+    ``current_job`` is cleared so observers can distinguish "a job is running"
+    from "the last job finished"; the record (with results and timestamps)
+    lives on in ``_engine_state["jobs"]``, newest first.
+    """
+    job = _engine_state.get("current_job")
+    if job is None:
+        return
+    job.update(status=status, phase=None, finished_at=time.time())
+    job.update(fields)
+    _engine_state["jobs"].insert(0, job)
+    del _engine_state["jobs"][_JOBS_HISTORY_MAX:]
+    _engine_state["current_job"] = None
 
 
 def _import_converter():
@@ -526,6 +556,22 @@ def _kill_running_engines(port: int | None = None) -> list[int]:
     return killed
 
 
+def _result_record(result, durations: list[float], idx: int) -> dict:
+    """Serialize one ``ConvertResult`` for the job history (ADR-0053)."""
+    duration_ms = None
+    if idx < len(durations):
+        duration_ms = int(durations[idx] * 1000)
+    return {
+        "source": str(result.source_path),
+        "md_path": str(result.md_path) if result.md_path else None,
+        "moved_to": str(result.moved_to) if result.moved_to else None,
+        "error": result.error,
+        "warnings": list(result.warnings),
+        "inference_passes": list(result.inference_passes),
+        "duration_ms": duration_ms,
+    }
+
+
 def _job_execute(wsock, paths: list[str], output_dir: str | None, duplicate: bool) -> None:
     _, config, convert_files = _import_converter()
     from converter.settings import get_upload_original, record_recent
@@ -543,6 +589,7 @@ def _job_execute(wsock, paths: list[str], output_dir: str | None, duplicate: boo
         results=None, log=[],
     )
     _set_job(reset=True, kind="convert", paths=paths)
+    job_id = _engine_state["current_job"]["id"]
 
     def log(kind: str, msg: str) -> None:
         _engine_state["log"].append((kind, msg))
@@ -551,7 +598,14 @@ def _job_execute(wsock, paths: list[str], output_dir: str | None, duplicate: boo
             job["log_tail"].append(f"[{kind}] {msg}")
         wsock.send(json.dumps({"type": "log", "kind": kind, "message": msg}))
 
+    file_durations: list[float] = []
+    last_mark = time.time()
+
     def on_progress(idx: int, total: int, name: str) -> None:
+        nonlocal last_mark
+        now = time.time()
+        file_durations.append(now - last_mark)
+        last_mark = now
         _set_job(idx=idx, total=total, phase=name)
         wsock.send(json.dumps({"type": "file", "idx": idx, "total": total, "name": name}))
 
@@ -616,13 +670,15 @@ def _job_execute(wsock, paths: list[str], output_dir: str | None, duplicate: boo
                     log("warn", f"{result.source_path.name}: {warning}")
         _engine_state["results"] = [r.error or str(r.md_path) for r in results]
         _engine_state["status"] = "done"
-        _set_job(status="done", phase=None)
-        wsock.send(json.dumps({"type": "done", "ok": sum(1 for r in results if not r.error), "total": len(results)}))
+        records = [_result_record(r, file_durations, i) for i, r in enumerate(results)]
+        ok = sum(1 for r in results if not r.error)
+        _finish_job("done", ok=ok, results=records)
+        wsock.send(json.dumps({"type": "done", "ok": ok, "total": len(results), "job_id": job_id}))
     except Exception as exc:  # noqa: BLE001
         _engine_state["status"] = "error"
-        _set_job(status="error")
         log("err", f"Conversion failed: {exc}")
-        wsock.send(json.dumps({"type": "done", "ok": 0, "total": len(paths), "error": str(exc)}))
+        _finish_job("error", ok=0, error=str(exc))
+        wsock.send(json.dumps({"type": "done", "ok": 0, "total": len(paths), "error": str(exc), "job_id": job_id}))
     finally:
         _job_running.clear()
 
@@ -707,6 +763,7 @@ def _transcribe_execute(wsock, paths: list[str], audio_options: dict | None) -> 
 
     _engine_state.update(status="running", results=None, log=[])
     _set_job(reset=True, kind="transcribe", paths=paths)
+    job_id = _engine_state["current_job"]["id"]
 
     def on_line(line: str) -> None:
         phase = _map_phase(line)
@@ -720,7 +777,7 @@ def _transcribe_execute(wsock, paths: list[str], audio_options: dict | None) -> 
             job = _engine_state.get("current_job")
             if job is not None:
                 job["log_tail"].append(text)
-                job["log_tail"] = job["log_tail"][-20:]
+                job["log_tail"] = job["log_tail"][-_JOB_LOG_TAIL_MAX:]
             wsock.send(json.dumps({"type": "log", "kind": "info", "message": text}))
 
     ok = 0
@@ -746,13 +803,13 @@ def _transcribe_execute(wsock, paths: list[str], audio_options: dict | None) -> 
             else:
                 ok += 1
         _engine_state["status"] = "done"
-        _set_job(status="done", phase=None)
-        wsock.send(json.dumps({"type": "done", "ok": ok, "total": total}))
+        _finish_job("done", ok=ok)
+        wsock.send(json.dumps({"type": "done", "ok": ok, "total": total, "job_id": job_id}))
     except Exception as exc:  # noqa: BLE001
         _engine_state["status"] = "error"
-        _set_job(status="error")
+        _finish_job("error", ok=ok, error=str(exc))
         wsock.send(json.dumps({"type": "log", "kind": "err", "message": f"Transcription failed: {exc}"}))
-        wsock.send(json.dumps({"type": "done", "ok": 0, "total": total, "error": str(exc)}))
+        wsock.send(json.dumps({"type": "done", "ok": 0, "total": total, "error": str(exc), "job_id": job_id}))
     finally:
         lock_handle.release()
         _job_running.clear()
