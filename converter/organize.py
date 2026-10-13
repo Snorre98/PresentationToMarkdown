@@ -18,10 +18,18 @@ The move never overwrites silently within a batch: two different sources whose
 names normalize identically get a ``-2`` suffix plus a warning. Across runs an
 existing archive copy is replaced (deterministic names), using a
 move-aside/restore dance so a failed move cannot destroy the previous copy.
+
+Markdown that contains model-produced content is written as
+``<stem>-inference-used.md`` (ADR-0050). The marker is appended *after* the
+conversion — only then is it known whether any AI pass contributed — and an
+existing marked file is never overwritten: the rename bumps to
+``-inference-used-2``, ``-3``, … unless the ``INFERENCE_OVERWRITE`` preference
+explicitly asks for a replacement.
 """
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import unicodedata
 from dataclasses import dataclass, field
@@ -31,6 +39,11 @@ from typing import Callable
 SOURCE_DIR_NAME = "source"
 _FALLBACK_STEM = "document"
 _MAX_STEM_LEN = 100
+
+# Suffix marking a Markdown file that contains model-produced content (ADR-0050).
+# Appended after the kebab-case truncation, so the marker itself is never cut.
+INFERENCE_MARKER = "-inference-used"
+_MARKED_RE = re.compile(rf"{re.escape(INFERENCE_MARKER)}(?:-\d+)?$")
 
 # Characters that NFKD does not decompose into an ASCII base letter. Applied
 # after lowercasing; the rest of the Latin accents fall out of the NFKD strip.
@@ -101,6 +114,97 @@ def default_output_dir(path: Path) -> Path:
     if parent.name.lower() == SOURCE_DIR_NAME:
         return parent.parent
     return parent
+
+
+def is_marked_stem(stem: str) -> bool:
+    """Whether ``stem`` already carries the inference marker (ADR-0050)."""
+    return bool(_MARKED_RE.search(stem))
+
+
+def marked_stem(stem: str) -> str:
+    """Return ``stem`` with the inference marker appended.
+
+    An already-marked stem (including a bumped ``…-inference-used-2``) is
+    returned unchanged, so a conversion can never double-mark a name.
+    """
+    return stem if is_marked_stem(stem) else f"{stem}{INFERENCE_MARKER}"
+
+
+def _exists(output_dir: Path, stem: str) -> bool:
+    """Whether ``stem`` is taken, as Markdown or as an assets folder."""
+    return (output_dir / f"{stem}.md").exists() or (
+        output_dir / "assets" / stem
+    ).exists()
+
+
+def claim_inference_path(
+    output_dir: Path, stem: str, warnings: list[str], *, overwrite: bool = False
+) -> Path:
+    """Return the final ``.md`` path for inference-produced content (ADR-0050).
+
+    Prefers ``<stem>-inference-used.md``; when that already exists the next free
+    ``-inference-used-2``/``-3``/… is used instead (with a warning), because a
+    file that cost model time is never replaced by accident. ``overwrite`` is
+    the explicit ``--overwrite-inference`` / ``INFERENCE_OVERWRITE`` opt-out:
+    it replaces the marked file rather than bumping.
+    """
+    marked = marked_stem(stem)
+    target = output_dir / f"{marked}.md"
+    if overwrite or not target.exists():
+        return target
+    n = 2
+    while (output_dir / f"{marked}-{n}.md").exists():
+        n += 1
+    bumped = f"{marked}-{n}.md"
+    warnings.append(
+        f"Inference output '{target.name}' already exists; wrote '{bumped}' "
+        f"instead (use --overwrite-inference to replace it)"
+    )
+    return output_dir / bumped
+
+
+def avoid_marked_artifact(output_dir: Path, stem: str, warnings: list[str]) -> str:
+    """Keep a plain conversion from clobbering a marker-named artifact.
+
+    A source literally named like a marked file (``deck-inference-used.pdf``)
+    would otherwise write its plain ``deck-inference-used.md`` straight over the
+    artifact an earlier inference run produced. When that target exists the
+    next free ``-2``/``-3`` stem is used (with a warning) instead. Returns the
+    stem to convert with, unchanged in every other case.
+    """
+    if not (is_marked_stem(stem) and _exists(output_dir, stem)):
+        return stem
+    n = 2
+    while _exists(output_dir, f"{stem}-{n}"):
+        n += 1
+    bumped = f"{stem}-{n}"
+    warnings.append(
+        f"Inference artifact '{stem}.md' already exists; using '{bumped}.md'"
+    )
+    return bumped
+
+
+def mark_inference_output(
+    md_path: Path, stem: str, warnings: list[str], *, overwrite: bool = False
+) -> Path:
+    """Rename a freshly written ``.md`` to its marker-named counterpart (ADR-0050).
+
+    Returns the final path: ``md_path`` itself when it already carries the marker,
+    the renamed path otherwise. Best-effort — a failed rename only warns and
+    leaves the unmarked file in place, because naming never fails a conversion.
+    """
+    try:
+        target = claim_inference_path(
+            md_path.parent, stem, warnings, overwrite=overwrite
+        )
+        if target == md_path:
+            return md_path
+        _remove(target)
+        os.replace(md_path, target)
+        return target
+    except OSError as exc:
+        warnings.append(f"Could not mark inference output: {exc}")
+        return md_path
 
 
 @dataclass

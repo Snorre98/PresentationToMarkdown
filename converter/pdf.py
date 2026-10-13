@@ -20,7 +20,7 @@ from pathlib import Path
 
 import pymupdf as fitz
 
-from converter import config
+from converter import config, inference
 from converter.base import (
     ConvertResult,
     Converter,
@@ -408,6 +408,7 @@ def _page_images(
             height=extracted.get("height"),
         )
         if transcription:
+            inference.note("vision")
             refs.extend(transcription.splitlines())
             refs.append("")
     return refs, png_bytes, pix.width, pix.height
@@ -716,6 +717,9 @@ class PDFConverter(Converter):
                         paper_pages, warnings=result.warnings, source=source
                     )
                 if structured is not None:
+                    # The structure pass amended at least one page with model
+                    # output (ADR-0050).
+                    inference.note("structure")
                     lines = structured
             md_path = output_dir / f"{stem}.md"
             md_path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
@@ -805,6 +809,7 @@ class PDFConverter(Converter):
                     height=png_h,
                 )
             if interpretation:
+                inference.note("interpret")
                 out.extend(interpretation.splitlines())
             else:
                 transcription = transcribe_columns(
@@ -821,6 +826,7 @@ class PDFConverter(Converter):
                     bands=bands,
                 )
                 if transcription:
+                    inference.note("vision")
                     out.extend(_strip_transcribed_title(transcription).splitlines())
                 elif _raw_text(content).strip():
                     out.append(_details_block("Raw extracted text", _raw_text(content)))

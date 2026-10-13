@@ -10,6 +10,10 @@ content:
   chat model to reflow wrapped lines into paragraphs and promote heading-like
   bullets into ``##``/``###`` headings, while keeping every word verbatim.
 
+A restructure that survives the verbatim word gate and lands in the file is
+recorded in the per-conversion inference ledger (ADR-0050); the conversion is
+then named ``<stem>-inference-used.md``.
+
 Configuration (environment variables):
 
 - ``FORMAT_ENABLED`` — master switch for the LLM pass. Default off.
@@ -23,7 +27,7 @@ import os
 import re
 import time
 
-from converter import config
+from converter import config, inference
 from converter.logstore import record
 from converter.need import NEED_BASE_URL, NEED_MODEL, need_gate, needs_reformat
 from converter.router import format_clean
@@ -202,6 +206,9 @@ def _reformat_slide(slide: str, index: int = 1, source: str = "") -> str:
         if _deterministic_pass(reformatted) == _deterministic_pass(original)
         else "amended"
     )
+    if decision == "amended":
+        # The restructure survived the word gate and lands in the file (ADR-0050).
+        inference.note("format")
     record(
         source=source,
         page=index,

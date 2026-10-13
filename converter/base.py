@@ -40,6 +40,10 @@ class ConvertResult:
     # Where the converted source was archived (ADR-0048); ``None`` when it was
     # left in place (no organizing, already archived, or the move failed).
     moved_to: Path | None = None
+    # Which AI passes contributed content to the Markdown (ADR-0050), e.g.
+    # ``["vision", "summary"]``. Non-empty means ``md_path`` carries the
+    # ``-inference-used`` marker; empty means the output is deterministic.
+    inference_passes: list[str] = field(default_factory=list)
 
 
 class Converter(ABC):

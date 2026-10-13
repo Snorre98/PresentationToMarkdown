@@ -5,7 +5,7 @@ let state = {
   source: null, runId: null, tab: "convert", lastOk: Date.now(),
   engine: { running: false, base_url: "" },
   engineConfig: null, servers: null,
-  files: [], outputDir: "", duplicate: false, paperMode: false, imageLinks: false, compress: true, vaultRoot: "",
+  files: [], outputDir: "", duplicate: false, paperMode: false, imageLinks: false, compress: true, overwriteInference: false, vaultRoot: "",
   ws: null, converting: false, logLines: [],
 };
 const $ = (id) => document.getElementById(id);
@@ -56,6 +56,7 @@ async function load() {
         state.vaultRoot = cfg.body.vault_root || "";
         if (typeof cfg.body.image_links === "boolean") state.imageLinks = cfg.body.image_links;
         if (typeof cfg.body.pdf_compress === "boolean") state.compress = cfg.body.pdf_compress;
+        if (typeof cfg.body.inference_overwrite === "boolean") state.overwriteInference = cfg.body.inference_overwrite;
         if (typeof cfg.body.duplicate === "boolean") state.duplicate = cfg.body.duplicate;
       }
       if (srv.status === 200) state.servers = srv.body;
@@ -134,6 +135,7 @@ function renderConvert() {
   html += '<label><input type="checkbox" id="paper-check"' + (state.paperMode ? ' checked' : '') + '> Paper layout (multi-column whitepapers)</label>';
   html += '<label><input type="checkbox" id="imagelinks-check"' + (state.imageLinks ? ' checked' : '') + '> Image links (legacy — extract assets and link images/pages)</label>';
   html += '<label><input type="checkbox" id="compress-check"' + (state.compress ? ' checked' : '') + '> Compress archived PDFs</label>';
+  html += '<label><input type="checkbox" id="overwrite-inference-check"' + (state.overwriteInference ? ' checked' : '') + '> Overwrite existing -inference-used.md (default: keep it, write -2)</label>';
   html += '<label><input type="checkbox" id="duplicate-check"' + (state.duplicate ? ' checked' : '') + '> Duplicate if exists (keep prior output)</label>';
   html += '</div>';
 
@@ -222,6 +224,7 @@ function bindConvertEvents() {
   $("paper-check").onchange = e => { state.paperMode = e.target.checked; setPdfMode(e.target.checked ? "paper" : "slide"); };
   $("imagelinks-check").onchange = e => { state.imageLinks = e.target.checked; persistImageLinks(e.target.checked); };
   $("compress-check").onchange = e => { state.compress = e.target.checked; persistCompress(e.target.checked); };
+  $("overwrite-inference-check").onchange = e => { state.overwriteInference = e.target.checked; persistInferenceOverwrite(e.target.checked); };
   $("duplicate-check").onchange = e => { state.duplicate = e.target.checked; persistDuplicate(e.target.checked); };
   $("check-servers-btn").onclick = async () => {
     const r = await api("/api/engine/health/servers");
@@ -362,6 +365,10 @@ async function persistImageLinks(v) {
 
 async function persistCompress(v) {
   await api("/api/engine/config", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pdf_compress: v }) });
+}
+
+async function persistInferenceOverwrite(v) {
+  await api("/api/engine/config", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ inference_overwrite: v }) });
 }
 
 async function persistVaultRoot(path) {

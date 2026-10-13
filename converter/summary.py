@@ -14,7 +14,9 @@ always computed locally, never by the model. If the model's output is *garbled*
 (no parseable sections, a section with no bullets, or low word diversity), it is
 retried once; otherwise it falls back to a deterministic extractive header
 (slide titles). A failure at any step degrades gracefully and never fails the
-conversion.
+conversion. Only a model-written header is recorded in the per-conversion
+inference ledger (ADR-0050) — the deterministic fallback contributes no model
+output, so it does not mark the file.
 
 Configuration (environment variables):
 
@@ -41,7 +43,7 @@ from pathlib import Path
 
 import numpy as np
 
-from converter import config
+from converter import config, inference
 from converter.db import repos
 from converter.format import _iter_slides
 from converter.logstore import _lock, record
@@ -617,6 +619,9 @@ def prepend_summary(md_path: Path, source_path: Path, warnings: list[str]) -> No
             context_chunks, titles, metadata, counts, warnings,
             outcomes := {}
         )
+        if outcomes.get("decision") == "model":
+            # A model-written header, not the deterministic fallback (ADR-0050).
+            inference.note("summary")
         record(
             source=str(source_path),
             stage="summary",

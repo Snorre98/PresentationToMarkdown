@@ -1,12 +1,12 @@
 package main
 
 // Settings screen: AI feature toggles, pdf mode, image links, PDF compression,
-// duplicate, output dir, and transcription settings (diarize/speakers/model/
-// language). Feature/pdf/image-links/compress/duplicate/transcription changes
-// round-trip through the engine's /api/config so they stay in sync with the
-// GUI and web surfaces (converter.settings). The transcription settings
-// (ADR-0043) are injected into the spawned ptm-transcribe argv by the TUI at
-// run time.
+// inference overwrite, duplicate, output dir, and transcription settings
+// (diarize/speakers/model/language). Feature/pdf/image-links/compress/
+// inference-overwrite/duplicate/transcription changes round-trip through the
+// engine's /api/config so they stay in sync with the GUI and web surfaces
+// (converter.settings). The transcription settings (ADR-0043) are injected into
+// the spawned ptm-transcribe argv by the TUI at run time.
 
 import (
 	"context"
@@ -20,9 +20,9 @@ import (
 
 var featureOrder = []string{"vision", "classify", "interpret", "format", "summary", "structure"}
 
-// pdf_mode, image_links, compress, duplicate, diarize, speakers, model,
-// language, output_dir.
-const settingsExtraRows = 9
+// pdf_mode, image_links, compress, inference overwrite, duplicate, diarize,
+// speakers, model, language, output_dir.
+const settingsExtraRows = 10
 
 // audioModels is the cycle of ASR models the TUI offers (ADR-0043/0044). The
 // first is the machine default: NB-Whisper (Norwegian, routed through the audio
@@ -131,26 +131,30 @@ func (m *model) activateSetting() (tea.Model, tea.Cmd) {
 		next := !m.cfg.PDFCompress
 		m.cfg.PDFCompress = next
 		return m, m.saveConfig(ConfigUpdate{PDFCompress: &next})
-	case 3: // duplicate
+	case 3: // overwrite an existing -inference-used.md (ADR-0050)
+		next := !m.cfg.InferenceOverwrite
+		m.cfg.InferenceOverwrite = next
+		return m, m.saveConfig(ConfigUpdate{InferenceOverwrite: &next})
+	case 4: // duplicate
 		next := !m.duplicate
 		m.duplicate = next
 		return m, m.saveConfig(ConfigUpdate{Duplicate: &next})
-	case 4: // diarize
+	case 5: // diarize
 		next := !m.cfg.AudioDiarize
 		m.cfg.AudioDiarize = next
 		return m, m.saveConfig(ConfigUpdate{AudioDiarize: &next})
-	case 5: // speakers
+	case 6: // speakers
 		m.editingSpeakers = true
 		m.speakersInput = strconv.Itoa(m.cfg.AudioSpeakers)
 		return m, nil
-	case 6: // model — cycle between the bundled ASR models
+	case 7: // model — cycle between the bundled ASR models
 		next := audioModels[0]
 		if m.cfg.AudioModel == audioModels[0] {
 			next = audioModels[1]
 		}
 		m.cfg.AudioModel = next
 		return m, m.saveConfig(ConfigUpdate{AudioModel: &next})
-	case 7: // language
+	case 8: // language
 		m.editingLanguage = true
 		m.languageInput = m.cfg.AudioLanguage
 		if m.languageInput == "" {
@@ -212,14 +216,16 @@ func (m *model) settingsLabel(i int) string {
 	case 2:
 		return "compress pdf"
 	case 3:
-		return "duplicate"
+		return "overwrite infer"
 	case 4:
-		return "diarize"
+		return "duplicate"
 	case 5:
-		return "speakers"
+		return "diarize"
 	case 6:
-		return "model"
+		return "speakers"
 	case 7:
+		return "model"
+	case 8:
 		return "language"
 	default:
 		return "output dir"
@@ -249,10 +255,12 @@ func (m *model) settingsValue(i int) string {
 	case 2:
 		return boolLabel(m.cfg.PDFCompress)
 	case 3:
-		return boolLabel(m.duplicate)
+		return boolLabel(m.cfg.InferenceOverwrite)
 	case 4:
-		return boolLabel(m.cfg.AudioDiarize)
+		return boolLabel(m.duplicate)
 	case 5:
+		return boolLabel(m.cfg.AudioDiarize)
+	case 6:
 		if m.editingSpeakers {
 			return m.speakersInput + "▌"
 		}
@@ -260,9 +268,9 @@ func (m *model) settingsValue(i int) string {
 			return "auto"
 		}
 		return strconv.Itoa(m.cfg.AudioSpeakers)
-	case 6:
-		return modelShort(m.cfg.AudioModel)
 	case 7:
+		return modelShort(m.cfg.AudioModel)
+	case 8:
 		if m.editingLanguage {
 			return m.languageInput + "▌"
 		}
@@ -292,9 +300,9 @@ func settingsView(m *model) string {
 	for i := 0; i < m.settingsRows(); i++ {
 		label := m.settingsLabel(i)
 		val := m.settingsValue(i)
-		line := fmt.Sprintf("  %-14s %s", label, val)
+		line := fmt.Sprintf("  %-17s %s", label, val)
 		if i == m.settingsCursor {
-			line = cursorStyle.Render("> ") + fmt.Sprintf("%-14s %s", label, val)
+			line = cursorStyle.Render("> ") + fmt.Sprintf("%-17s %s", label, val)
 		}
 		b.WriteString(line)
 		b.WriteString("\n")

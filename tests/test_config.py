@@ -245,6 +245,17 @@ def test_snapshot_reports_pdf_compress(monkeypatch):
     assert config.pdf_compress_enabled() is True
 
 
+def test_snapshot_reports_inference_overwrite(monkeypatch):
+    monkeypatch.delenv("INFERENCE_OVERWRITE", raising=False)
+    assert config.inference_overwrite() is False
+    assert config.snapshot(probe=False)["inference_overwrite"] is False
+    monkeypatch.setenv("INFERENCE_OVERWRITE", "on")
+    assert config.inference_overwrite() is True
+    assert config.snapshot(probe=False)["inference_overwrite"] is True
+    monkeypatch.setenv("INFERENCE_OVERWRITE", "off")
+    assert config.inference_overwrite() is False
+
+
 def test_snapshot_reports_audio_defaults(tmp_path, monkeypatch):
     from converter.db import engine as db_engine
 

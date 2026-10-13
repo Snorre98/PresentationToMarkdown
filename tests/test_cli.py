@@ -81,6 +81,13 @@ def test_no_compress_maps_to_env():
     assert ai_env_vars(parse(["--no-compress"])) == {"PDF_COMPRESS": "off"}
 
 
+def test_overwrite_inference_maps_to_env():
+    assert ai_env_vars(parse([])) == {}
+    assert ai_env_vars(parse(["--overwrite-inference"])) == {
+        "INFERENCE_OVERWRITE": "on"
+    }
+
+
 def test_ab_parser_builds():
     import cli_ab
 

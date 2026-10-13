@@ -15,13 +15,20 @@ written **beside the source** and the converted source is moved into a sibling
 
 An explicit ``output_dir`` disables that organizing: the ``.md`` keeps its
 original name and the source is left untouched.
+
+Markdown that contains model-produced content is named
+``<stem>-inference-used.md`` instead (ADR-0050) — wherever it is written — so a
+deterministic re-run (which writes the unmarked ``<stem>.md``) can never
+overwrite a file that cost inference time. An existing marked file is never
+overwritten: the rename bumps to ``-inference-used-2`` unless
+``INFERENCE_OVERWRITE`` explicitly opts into replacing it.
 """
 from __future__ import annotations
 
 from collections.abc import Callable
 from pathlib import Path
 
-from converter import compress, config
+from converter import compress, config, inference
 from converter.base import (
     ConvertResult,
     Converter,
@@ -35,7 +42,9 @@ from converter.organize import (
     LayoutResolver,
     SourceResolver,
     archive_source,
+    avoid_marked_artifact,
     default_output_dir,
+    mark_inference_output,
 )
 from converter.pptx import PPTXConverter
 from converter.pdf import PDFConverter
@@ -162,6 +171,12 @@ def convert_file(
     Conversion is deterministic: it never invokes audio transcription
     (see ``ptm-transcribe`` / ``converter.transcribe`` for that, ADR-0009).
 
+    When any AI pass contributed model output to the Markdown, the file is
+    named ``<stem>-inference-used.md`` rather than ``<stem>.md`` (ADR-0050),
+    and ``result.inference_passes`` lists the passes that did so. A marked file
+    is never overwritten: the next run bumps to ``-inference-used-2`` unless
+    ``INFERENCE_OVERWRITE`` is on (``--overwrite-inference``).
+
     ``progress_callback``, when given, is called once per slide/page as
     ``(page, page_total, name)``.
 
@@ -197,50 +212,67 @@ def _convert_one(
     status = "error"
     try:
         layout.output_dir.mkdir(parents=True, exist_ok=True)
-        output_stem: str | None = layout.stem
+        output_stem: str = layout.stem
         if duplicate_if_exists and (layout.output_dir / f"{layout.stem}.md").exists():
             output_stem = _next_free_stem(layout.output_dir, layout.stem)
-        with phase(run_id, "convert", 1):
-            result = converter.convert(
-                path,
-                layout.output_dir,
-                progress_callback=progress_callback,
-                output_stem=output_stem,
-            )
-        if layout.warnings:
-            result.warnings = layout.warnings + result.warnings
-        if result.error is None and result.md_path is not None:
-            try:
-                original = result.md_path.read_text(encoding="utf-8")
-                with phase(run_id, "format", 3):
-                    polished = polish_text(
-                        original,
-                        warnings=result.warnings,
-                        source=str(path),
-                        allow_llm="format" in converter.ai_passes,
-                    )
-                rewritten = (polished + "\n") if polished else ""
-                if rewritten != original:
-                    result.md_path.write_text(rewritten, encoding="utf-8")
-            except Exception as exc:  # noqa: BLE001 - polish never fails the conversion
-                result.warnings.append(f"Markdown polish failed: {exc}")
-            release_readers()
-            if "summary" in converter.ai_passes:
+        output_stem = avoid_marked_artifact(
+            layout.output_dir, output_stem, layout.warnings
+        )
+        # The AI passes record what actually landed in the Markdown (ADR-0050);
+        # the ledger scopes those notes to this one conversion.
+        with inference.tracking():
+            with phase(run_id, "convert", 1):
+                result = converter.convert(
+                    path,
+                    layout.output_dir,
+                    progress_callback=progress_callback,
+                    output_stem=output_stem,
+                )
+            if layout.warnings:
+                result.warnings = layout.warnings + result.warnings
+            if result.error is None and result.md_path is not None:
                 try:
-                    with phase(run_id, "summary", 4):
-                        prepend_summary(result.md_path, path, result.warnings)
-                except Exception as exc:  # noqa: BLE001 - summary never fails the conversion
-                    result.warnings.append(f"Summary generation failed: {exc}")
-            release_writers()
-            if layout.source_dest is not None:
-                moved = archive_source(path, layout.source_dest, result.warnings)
-                if moved is not None:
-                    result.moved_to = moved
-                    if (
-                        moved.suffix.lower() == ".pdf"
-                        and config.pdf_compress_enabled()
+                    original = result.md_path.read_text(encoding="utf-8")
+                    with phase(run_id, "format", 3):
+                        polished = polish_text(
+                            original,
+                            warnings=result.warnings,
+                            source=str(path),
+                            allow_llm="format" in converter.ai_passes,
+                        )
+                    rewritten = (polished + "\n") if polished else ""
+                    if rewritten != original:
+                        result.md_path.write_text(rewritten, encoding="utf-8")
+                except Exception as exc:  # noqa: BLE001 - polish never fails the conversion
+                    result.warnings.append(f"Markdown polish failed: {exc}")
+                release_readers()
+                if "summary" in converter.ai_passes:
+                    try:
+                        with phase(run_id, "summary", 4):
+                            prepend_summary(result.md_path, path, result.warnings)
+                    except Exception as exc:  # noqa: BLE001 - summary never fails the conversion
+                        result.warnings.append(f"Summary generation failed: {exc}")
+                release_writers()
+                if inference.used():
+                    result.inference_passes = inference.passes()
+                    with phase(
+                        run_id, "mark-inference", 5, {"passes": result.inference_passes}
                     ):
-                        compress.compress_pdf(moved, result.warnings)
+                        result.md_path = mark_inference_output(
+                            result.md_path,
+                            output_stem,
+                            result.warnings,
+                            overwrite=config.inference_overwrite(),
+                        )
+                if layout.source_dest is not None:
+                    moved = archive_source(path, layout.source_dest, result.warnings)
+                    if moved is not None:
+                        result.moved_to = moved
+                        if (
+                            moved.suffix.lower() == ".pdf"
+                            and config.pdf_compress_enabled()
+                        ):
+                            compress.compress_pdf(moved, result.warnings)
         status = "ok" if result.error is None else "error"
         return result
     finally:

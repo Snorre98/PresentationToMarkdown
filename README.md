@@ -133,6 +133,7 @@ ptm --paper whitepaper.pdf       # two-column paper -> continuous document
 ptm --slide handout.pdf          # force per-page slide layout (the default)
 ptm --image-links deck.pptx      # legacy: extract assets, emit image/page links
 ptm --no-compress deck.pdf       # skip Ghostscript compression of the archived PDF
+ptm --overwrite-inference deck.pdf   # replace deck-inference-used.md instead of writing -2
 
 # launch the GUI, enabling AI passes via flags
 ptm-start --vision
@@ -208,6 +209,7 @@ Both accept the same AI flags (default: all off):
 | `--slide` | Treat PDFs as slide decks (the default) |
 | `--image-links` | Legacy output: extract `assets/<name>/` and emit `![…]`/`[Page N](…)` links (default: no image links, AI descriptions only) |
 | `--no-compress` | Skip Ghostscript/qpdf compression of PDFs archived into `source/` (default: compress) |
+| `--overwrite-inference` | Replace an existing `<name>-inference-used.md` instead of writing `-2` (default: never overwrite inference output, ADR-0050) |
 | `--env KEY=VALUE` | Set any other env var (repeatable) — model ids, URLs, log DB |
 
 Audio transcription is **not** an AI flag on `ptm`/`ptm-start` — it is its own
@@ -245,7 +247,7 @@ for r in results:
 - `progress_callback(idx: int, total: int, name: str) -> None`
 - `ConvertResult` fields: `source_path`, `md_path`, `error`, `warnings`, `moved_to`
 - `SUPPORTED_EXTENSIONS` — e.g. `{".pptx", ".pdf"}`
-- `output_dir` is optional; when omitted, each file's Markdown is written beside the source under a kebab-case name and the source is moved into a sibling `source/` folder (ADR-0048); an explicit `output_dir` disables that organizing. `ConvertResult.moved_to` points at the archived copy.
+- `output_dir` is optional; when omitted, each file's Markdown is written beside the source under a kebab-case name and the source is moved into a sibling `source/` folder (ADR-0048); an explicit `output_dir` disables that organizing. `ConvertResult.moved_to` points at the archived copy, and `ConvertResult.inference_passes` lists the AI passes whose model output landed in the file — non-empty means the Markdown carries the `-inference-used` marker (ADR-0050).
 
 ### Web GUI (dashboard + native engine)
 
@@ -375,9 +377,19 @@ descriptions stand in for figures where the vision passes run).
   identically in one batch get a `-2` suffix (Markdown *and* archive copy)
   plus a warning, so nothing is silently overwritten. A pre-existing archive
   copy is replaced on re-conversion (deterministic names).
+- **Inference-produced Markdown is name-marked** (ADR-0050): when any AI pass
+  contributed content to the file (vision, interpret, structure, an accepted
+  format rewrite, a model-written summary), the `.md` is named
+  `<name>-inference-used.md` instead of `<name>.md`, so a free deterministic
+  re-run can never overwrite a file that cost model time. An existing marked
+  file is never overwritten — the next run writes `-inference-used-2` with a
+  warning, unless `--overwrite-inference` / `INFERENCE_OVERWRITE=on` (GUI/Web
+  checkbox, TUI setting) explicitly replaces it. The `source/` archive and
+  `assets/<name>/` keep their plain names.
 - **An explicit output folder disables the organizing** (`ptm -o DIR`, the
   GUI/Web output field): Markdown keeps its original name, sources are left
-  untouched, and PDFs are neither moved nor compressed.
+  untouched, and PDFs are neither moved nor compressed. The `-inference-used`
+  marker still applies, since it describes the *content*, not the folder.
 
 With `--image-links` the legacy sidecar is written next to the Markdown;
 images are deduplicated by content hash and named `<name>_<NN>_<hash>.<ext>`:

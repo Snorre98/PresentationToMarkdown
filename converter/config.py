@@ -8,9 +8,10 @@ state at import time, but the GUI can now flip the same state with checkboxes �
 no restart required.
 
 It also owns non-AI *output* preferences that share the same runtime-toggle
-contract (``IMAGE_LINKS``, ADR-0047; ``PDF_COMPRESS``, ADR-0049): those are read
-lazily at conversion time so a GUI/engine flip takes effect on the next
-conversion, mirroring the lazy ``PDF_MODE`` read.
+contract (``IMAGE_LINKS``, ADR-0047; ``PDF_COMPRESS``, ADR-0049;
+``INFERENCE_OVERWRITE``, ADR-0050): those are read lazily at conversion time so
+a GUI/engine flip takes effect on the next conversion, mirroring the lazy
+``PDF_MODE`` read.
 
 The AI modules consult :func:`is_enabled` at call time instead of reading a
 module-level ``*_ENABLED`` constant, so a toggle takes effect on the next
@@ -245,6 +246,18 @@ def pdf_compress_enabled() -> bool:
     return (os.environ.get("PDF_COMPRESS", "on").strip().lower() or "on") in _TRUE
 
 
+def inference_overwrite() -> bool:
+    """Whether a re-run may replace an existing ``-inference-used.md`` (ADR-0050).
+
+    A lazy output preference like ``IMAGE_LINKS``/``PDF_COMPRESS``, read at
+    naming time. Default **off**: an existing marker-named file is never
+    overwritten, the new conversion bumps to ``-inference-used-2`` instead.
+    ``INFERENCE_OVERWRITE=on`` (``ptm --overwrite-inference``) opts into
+    replacing it, for a deliberate re-run onto the same name.
+    """
+    return _env_true(os.environ.get("INFERENCE_OVERWRITE"))
+
+
 def enabled_keys() -> list[str]:
     """The keys of currently enabled features, in registration order."""
     return [key for key in FEATURES if is_enabled(key)]
@@ -477,10 +490,10 @@ def snapshot(probe: bool = True) -> dict:
 
     Captures ``PDF_MODE``, the on/off state of every feature, each enabled pass's
     resolved base URLs and model id, the embeddings model, the
-    duplicate-if-exists preference, the image-link and PDF-compression output
-    preferences, and — when ``probe`` is true — the ``missing_servers()`` result.
-    Never raises; used to persist a per-run record of "what models/toggles/servers
-    were in effect".
+    duplicate-if-exists preference, the image-link, PDF-compression and
+    inference-overwrite output preferences, and — when ``probe`` is true — the
+    ``missing_servers()`` result. Never raises; used to persist a per-run record
+    of "what models/toggles/servers were in effect".
     """
     passes: dict[str, dict] = {}
     for key in FEATURES:
@@ -503,6 +516,7 @@ def snapshot(probe: bool = True) -> dict:
         "pdf_mode": os.environ.get("PDF_MODE", "").strip().lower() or "slide",
         "image_links": image_links_enabled(),
         "pdf_compress": pdf_compress_enabled(),
+        "inference_overwrite": inference_overwrite(),
         "need_gate": os.environ.get("NEED_GATE", "on").strip().lower() or "on",
         "duplicate": _duplicate_if_exists(),
         "vault_root": _vault_root(),

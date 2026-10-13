@@ -49,3 +49,4 @@ Index of architectural decisions for PresentationToMarkdown, in
 | [0047](0047-text-only-output-image-links-opt-in.md) | Text-only Markdown by default; image links behind `IMAGE_LINKS` | Accepted |
 | [0048](0048-markdown-beside-source-archive.md) | Markdown beside the source; sources archived to `source/` under kebab-case names | Accepted |
 | [0049](0049-pdf-compression-on-archive.md) | Best-effort PDF compression when sources are archived | Accepted |
+| [0050](0050-inference-marked-markdown.md) | Markdown containing model output is named `-inference-used` | Accepted |

@@ -103,6 +103,12 @@ def add_ai_flags(parser: argparse.ArgumentParser) -> None:
         action="store_true",
         help="do not compress PDFs archived into each folder's source/ (default: compress)",
     )
+    output.add_argument(
+        "--overwrite-inference",
+        action="store_true",
+        help="replace an existing <name>-inference-used.md instead of writing "
+        "the next -2/-3 (default: never overwrite inference output)",
+    )
 
 
 def ai_env_vars(args: argparse.Namespace) -> dict[str, str]:
@@ -143,6 +149,9 @@ def ai_env_vars(args: argparse.Namespace) -> dict[str, str]:
 
     if getattr(args, "no_compress", False):
         env["PDF_COMPRESS"] = "off"
+
+    if getattr(args, "overwrite_inference", False):
+        env["INFERENCE_OVERWRITE"] = "on"
 
     for item in getattr(args, "env", None) or []:
         if "=" not in item:

@@ -837,6 +837,10 @@ def create_app() -> Flask:
             value = "on" if data["pdf_compress"] else "off"
             os.environ["PDF_COMPRESS"] = value
             set_setting("pdf_compress", value)
+        if "inference_overwrite" in data:
+            value = "on" if data["inference_overwrite"] else "off"
+            os.environ["INFERENCE_OVERWRITE"] = value
+            set_setting("inference_overwrite", value)
         if "vault_root" in data:
             set_setting("vault_root", str(data["vault_root"]).strip())
         if "duplicate" in data:

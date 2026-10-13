@@ -42,6 +42,7 @@ _WINDOW_GEOMETRY_KEY = "window_geometry"
 _PDF_MODE_KEY = "pdf_mode"
 _IMAGE_LINKS_KEY = "image_links"
 _COMPRESS_KEY = "pdf_compress"
+_OVERWRITE_INFERENCE_KEY = "inference_overwrite"
 _DUPLICATE_KEY = "duplicate_if_exists"
 _AI_KEY_PREFIX = "ai_"
 
@@ -213,6 +214,25 @@ class MainWindow(QMainWindow):
         )
         self.compress_check.toggled.connect(self._remember_compress)
 
+        self.overwrite_inference_check = QCheckBox(
+            "Overwrite existing -inference-used.md instead of writing -2"
+        )
+        self.overwrite_inference_check.setToolTip(
+            "Off by default: a file that already carries the -inference-used "
+            "marker is never overwritten — a later conversion writes "
+            "-inference-used-2/-3 instead. Turn on to deliberately replace it."
+        )
+        self.overwrite_inference_check.setChecked(
+            (
+                os.environ.get("INFERENCE_OVERWRITE")
+                or get_setting(_OVERWRITE_INFERENCE_KEY, "off")
+            ).strip().lower()
+            in _TRUE_VALUES
+        )
+        self.overwrite_inference_check.toggled.connect(
+            self._remember_overwrite_inference
+        )
+
         self.ai_checks: dict[str, QCheckBox] = {}
         ai_label = QLabel("AI features (need local model servers):")
         ai_checks_layout = QVBoxLayout()
@@ -269,6 +289,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.paper_check)
         layout.addWidget(self.image_links_check)
         layout.addWidget(self.compress_check)
+        layout.addWidget(self.overwrite_inference_check)
         layout.addWidget(self.duplicate_check)
         layout.addWidget(self.convert_btn)
         layout.addWidget(self.progress)
@@ -401,6 +422,9 @@ class MainWindow(QMainWindow):
     def _remember_compress(self, checked: bool):
         set_setting(_COMPRESS_KEY, "on" if checked else "off")
 
+    def _remember_overwrite_inference(self, checked: bool):
+        set_setting(_OVERWRITE_INFERENCE_KEY, "on" if checked else "off")
+
     def _remember_duplicate(self, checked: bool):
         set_setting(_DUPLICATE_KEY, "on" if checked else "off")
 
@@ -496,6 +520,12 @@ class MainWindow(QMainWindow):
         self._remember_image_links(self.image_links_check.isChecked())
         os.environ["PDF_COMPRESS"] = "on" if self.compress_check.isChecked() else "off"
         self._remember_compress(self.compress_check.isChecked())
+        os.environ["INFERENCE_OVERWRITE"] = (
+            "on" if self.overwrite_inference_check.isChecked() else "off"
+        )
+        self._remember_overwrite_inference(
+            self.overwrite_inference_check.isChecked()
+        )
         paths = [
             Path(self.file_list.item(i).data(0))
             for i in range(self.file_list.count())

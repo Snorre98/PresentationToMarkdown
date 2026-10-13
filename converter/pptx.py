@@ -8,7 +8,7 @@ from pptx import Presentation
 from pptx.enum.shapes import MSO_SHAPE_TYPE, PP_PLACEHOLDER
 from pptx.oxml.ns import qn
 
-from converter import config
+from converter import config, inference
 from converter.base import (
     ConvertResult,
     Converter,
@@ -225,6 +225,7 @@ def _walk_shape(shape, ctx) -> list[str]:
             height=height,
         )
         if transcription:
+            inference.note("vision")
             out.extend(transcription.splitlines())
             out.append("")
         return out
@@ -332,6 +333,7 @@ def _handle_chart(shape, ctx) -> list[str]:
                     generated_tokens=generated_tokens,
                     markdown=transcription,
                 )
+                inference.note("vision")
                 out.extend(transcription.splitlines())
                 out.append("")
     return out
