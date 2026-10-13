@@ -482,6 +482,9 @@ The model weights live on the external SSD under `HF_HOME` (see
   - `audio.py` — speaker-diarization client (isolated PyTorch server)
 - `docs/ai-vision.md` — how to serve the vision model and enable the AI pass
 - `docs/ai-audio.md` — how to serve the ASR/diarization models and enable the audio pass
+- `docs/garbled-text-recovery.md` — the shared detect → classify → recover → gate → review pipeline across PDF/OCR/STT sources
+- `docs/garbled-handling-vision.md` — the forward-looking vision: principles, layered signal stack, classifier ladder, and synthetic-data strategy
+- `docs/ai-laya.md` — proposed typed classifier (Laya) for the classify stage, with rationale, schema, serving and fine-tuning
 - `docs/adr/` — architecture decision records (MADR index)
 - `dashboard/` — Flask web app for conversion + the read-only log view (`app.py`, `db.py`, `templates/`, `static/`, `__main__.py`; ADR-0022, ADR-0025, ADR-0026)
 - `engine.py` — native engine process the web app drives (filesystem, conversion, settings; ADR-0025)
