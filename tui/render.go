@@ -12,6 +12,9 @@ import (
 
 const ellipsis = "…"
 
+// maxRecentRows bounds the recent section so local discovery stays visible.
+const maxRecentRows = 5
+
 // baseName and tail are the two tiny path/line helpers shared across panes.
 func baseName(path string) string {
 	if i := strings.LastIndexAny(path, "/\\"); i >= 0 {

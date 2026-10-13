@@ -86,8 +86,8 @@ type pickSection struct {
 	row   int // first row index of the section
 }
 
-// allEntries returns recent files (deduped against discovery) followed by the
-// discovery entries, regardless of the active filter.
+// allEntries returns recent files (deduped against discovery, capped) followed
+// by the discovery entries, regardless of the active filter.
 func (m *model) allEntries() []GlobEntry {
 	known := map[string]bool{}
 	for _, e := range m.entries {
@@ -100,6 +100,9 @@ func (m *model) allEntries() []GlobEntry {
 		}
 		known[p] = true
 		recent = append(recent, GlobEntry{Path: p, Name: baseName(p), Kind: "recent"})
+		if len(recent) >= maxRecentRows {
+			break
+		}
 	}
 	return append(recent, m.entries...)
 }
