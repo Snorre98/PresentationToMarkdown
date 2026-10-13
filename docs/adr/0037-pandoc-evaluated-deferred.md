@@ -101,3 +101,11 @@ that preserves the pipeline's conventions (image dedup, title/authors block,
 heading chunking). The `pptx`/`pdf` converters remain on python-pptx /
 PyMuPDF, and the deferred options A–D below stay open for those formats.
 See [0038](0038-latex-pandoc-backend.md) for the decision.
+
+## Update (2026-10-13)
+
+A `PDF_BACKEND=latex` path was proposed and then deprecated
+([0046](0046-pdf-latex-backend.md)): its producer is necessarily model-based
+— pandoc still has no PDF reader — and a non-deterministic PDF backend is not
+to be implemented here. The `direct` PyMuPDF path is unchanged, and option
+**A** (an optional pandoc *pptx* backend) stays deferred.
