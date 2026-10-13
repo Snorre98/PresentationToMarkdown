@@ -272,7 +272,9 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.spawned = true
 		}
 		m.engineReady = true
-		return m, tea.Batch(m.loadFiles(), m.loadRecent(), m.loadRuns())
+		// Load settings up front: output dir and duplicate handling apply to
+		// the first dispatch, not only after opening the settings modal.
+		return m, tea.Batch(m.loadFiles(), m.loadRecent(), m.loadRuns(), m.fetchConfig())
 
 	case filesMsg:
 		if msg.err != nil {
