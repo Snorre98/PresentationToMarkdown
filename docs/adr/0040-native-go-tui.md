@@ -3,6 +3,7 @@
 - Status: Accepted
 - Date: 2026-09-20
 - Supersedes: [0036](0036-terminal-tui.md)
+- Amended by: [0053](0053-tui-v2-charm-and-job-contract.md)
 
 ## Context
 

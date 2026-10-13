@@ -1,6 +1,6 @@
 # 0045. Engine-hosted audio transcription and unified job progress
 
-- Status: Proposed; amended by [0051](0051-tui-sole-surface.md)
+- Status: Proposed; amended by [0051](0051-tui-sole-surface.md) and [0053](0053-tui-v2-charm-and-job-contract.md)
 - Date: 2026-09-23
 - Relates to: [0009](0009-decouple-transcription-from-conversion.md), [0040](0040-native-go-tui.md), [0041](0041-tui-transcription.md), [0043](0043-quality-first-asr-defaults.md), [0044](0044-nb-whisper-server-asr.md)
 

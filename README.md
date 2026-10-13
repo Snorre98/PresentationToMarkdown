@@ -99,15 +99,23 @@ available for scripting (see [Library](#library)).
 A compiled, opencode-style terminal app (`ptm-tui`) that discovers the
 `.pptx`/`.pdf`/`.tex` files, LaTeX project folders, **and audio files** in the
 current directory, selects them with `@` fuzzy search, and converts/transcribes
-with live progress. `Space` multi-selects, `Enter` runs the selection, and the
-run pane streams per-file/per-page progress and `[OK]`/`[ERR]`/`[WARN]` lines.
+with live progress. The screen is a fixed frame (ADR-0053): a header with the
+engine badge, a bounded jobs panel (composite progress bar, page counter,
+transcription phase, elapsed time, `x` to cancel), three tabs — `1` files,
+`2` results, `3` log — and a one-line help footer (`?` shows every binding).
+`Space` multi-selects, `Enter` runs (an explicit selection first, otherwise the
+cursor row; the selection is consumed either way), `r` re-discovers, and the
+results tab lists each finished file's output path, warnings and duration
+(`o` opens the Markdown, `f` reveals it in Finder, `y` copies the path) above
+the durable `/api/runs` history.
+
 Audio rows are marked `♫`: transcription is an engine-hosted job (ADR-0045),
 which pairs a recording with its same-stem Markdown or writes a standalone
-`<stem>.transcript.md`. The settings screen (`s`) toggles the AI passes, paper
+`<stem>.transcript.md`. The settings modal (`s`) toggles the AI passes, paper
 layout, image links, PDF compression, inference overwrite, duplicate handling,
 output folder, and transcription options (diarization, speaker count, model,
 language) — persisted through the engine and applied to the next run without a
-restart.
+restart — and shows live model-server health.
 
 ```bash
 scripts/install-global.sh        # install ~/.local/bin/ptm-tui (once)
