@@ -121,6 +121,70 @@ def _make_paper():
     print(f"wrote {out}")
 
 
+def _make_borderless():
+    """A synthetic PDF exercising borderless (whitespace-only) table detection (ADR-0054).
+
+    Page 1 holds prose plus a 3-column table with no ruling lines, inserted line
+    by line (``insert_text`` writes one span per line, so this also covers the
+    producer style where a cell's wrapped lines arrive as separate spans). The
+    table has a header without a first-column cell, a wrapped three-line cell,
+    and two adjacent single-line rows at the same 17pt pitch as the wrapped
+    lines — geometrically indistinguishable from a wrapped cell, separated only
+    by the content-stream order. Page 2 holds a ruled table: the existing
+    ``find_tables()`` path must keep winning over borderless detection.
+    """
+    out = Path(__file__).parent / "test_borderless.pdf"
+    doc = fitz.open()
+
+    page = doc.new_page(width=612, height=792)
+    page.insert_text((72, 72), "Borderless Tables", fontsize=16)
+    page.insert_text((72, 100), "The table below has no ruling lines at all.", fontsize=11)
+    # Header row: the first column's cell is empty; the headers sit centred
+    # over the body columns (their x0 does not match any body cell's x0).
+    page.insert_text((290, 140), "Current process", fontsize=11)
+    page.insert_text((470, 140), "Model A", fontsize=11)
+    # Row 1: a wrapped three-line cell, centred against the tall row.
+    page.insert_text((72, 176), "Main approach", fontsize=11)
+    page.insert_text((250, 158), "Scheduled maintenance", fontsize=11)
+    page.insert_text((250, 175), "+ warning signs +", fontsize=11)
+    page.insert_text((250, 192), "engineer judgement", fontsize=11)
+    page.insert_text((430, 175), "Simpler model", fontsize=11)
+    # Row 2: a wrapped two-line label, 17pt pitch inside the cell.
+    page.insert_text((72, 215), "Bus age, mileage and", fontsize=11)
+    page.insert_text((72, 232), "service history", fontsize=11)
+    page.insert_text((250, 223), "Yes", fontsize=11)
+    page.insert_text((430, 223), "Yes", fontsize=11)
+    # Rows 3-4: adjacent single-line rows at the same 17pt pitch as the
+    # wrapped lines above.
+    page.insert_text((72, 258), "Previous repairs/faults", fontsize=11)
+    page.insert_text((250, 258), "Used manually", fontsize=11)
+    page.insert_text((430, 258), "Yes", fontsize=11)
+    page.insert_text((72, 275), "Warning codes", fontsize=11)
+    page.insert_text((250, 275), "Used manually", fontsize=11)
+    page.insert_text((430, 275), "Yes", fontsize=11)
+    page.insert_text((72, 325), "Technical complexity", fontsize=11)
+    page.insert_text((250, 325), "Low", fontsize=11)
+    page.insert_text((430, 325), "Higher", fontsize=11)
+    page.insert_text((72, 380), "Both models update their risk score every evening.", fontsize=11)
+
+    page = doc.new_page(width=612, height=792)
+    page.insert_text((72, 72), "Ruled Table", fontsize=16)
+    page.draw_rect(fitz.Rect(72, 120, 360, 240))
+    page.draw_line(fitz.Point(72, 160), fitz.Point(360, 160))
+    page.draw_line(fitz.Point(72, 200), fitz.Point(360, 200))
+    page.draw_line(fitz.Point(216, 120), fitz.Point(216, 240))
+    page.insert_text((90, 145), "Ruled A", fontsize=11)
+    page.insert_text((234, 145), "Ruled B", fontsize=11)
+    page.insert_text((90, 185), "one", fontsize=11)
+    page.insert_text((234, 185), "two", fontsize=11)
+    page.insert_text((90, 225), "three", fontsize=11)
+    page.insert_text((234, 225), "four", fontsize=11)
+
+    doc.save(out)
+    doc.close()
+    print(f"wrote {out}")
+
+
 def main():
     out = Path(__file__).parent / "test_doc.pdf"
     img = Path(__file__).parent / "test_image.png"
@@ -159,6 +223,7 @@ def main():
     doc.close()
     print(f"wrote {out}")
     _make_paper()
+    _make_borderless()
 
 
 if __name__ == "__main__":

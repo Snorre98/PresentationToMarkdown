@@ -8,6 +8,7 @@ from converter import SUPPORTED_EXTENSIONS, config, convert_file, convert_files
 TESTS_DIR = Path(__file__).parent
 PPTX = TESTS_DIR / "test_deck.pptx"
 PDF = TESTS_DIR / "test_doc.pdf"
+BORDERLESS = TESTS_DIR / "test_borderless.pdf"
 
 
 @pytest.fixture(autouse=True)
@@ -53,6 +54,41 @@ def test_convert_pdf(tmp_path):
     assert not (tmp_path / "assets").exists()
     assert "---" in text
     assert 'page-break-after: always' in text
+
+
+def test_convert_pdf_borderless_table(tmp_path):
+    """Whitespace-only tables become pipe tables (ADR-0054); ruled tables keep
+    flowing through ``page.find_tables()`` on the same document."""
+    result = convert_file(BORDERLESS, tmp_path)
+    assert result.error is None
+    text = result.md_path.read_text(encoding="utf-8")
+    assert "# Borderless Tables — Page 1" in text
+    assert "|  | Current process | Model A |" in text
+    assert (
+        "| Main approach | Scheduled maintenance + warning signs + engineer judgement "
+        "| Simpler model |"
+    ) in text
+    assert "| Bus age, mileage and service history | Yes | Yes |" in text
+    assert "| Previous repairs/faults | Used manually | Yes |" in text
+    assert "| Warning codes | Used manually | Yes |" in text
+    assert "The table below has no ruling lines at all." in text
+    assert "Both models update their risk score every evening." in text
+    # The ruled page is untouched: the borderless candidate overlapping it is
+    # suppressed, so the ruled table appears exactly once.
+    assert text.count("Ruled A") == 1
+    assert "| Ruled A | Ruled B |" in text
+    assert "| one | two |" in text
+    assert "| three | four |" in text
+
+
+def test_convert_pdf_borderless_table_disabled(tmp_path, monkeypatch):
+    monkeypatch.setenv("PDF_BORDERLESS_TABLES", "off")
+    result = convert_file(BORDERLESS, tmp_path)
+    assert result.error is None
+    text = result.md_path.read_text(encoding="utf-8")
+    assert "|  | Current process |" not in text
+    assert "Scheduled maintenance" in text  # still present, just not as a table
+    assert text.count("Ruled A") == 1  # ruled tables are not affected
 
 
 def test_pptx_image_links_legacy_restores_assets(tmp_path, legacy_image_links):

@@ -9,9 +9,9 @@ TUI settings screen) — no restart required.
 
 It also owns non-AI *output* preferences that share the same runtime-toggle
 contract (``IMAGE_LINKS``, ADR-0047; ``PDF_COMPRESS``, ADR-0049;
-``INFERENCE_OVERWRITE``, ADR-0050): those are read lazily at conversion time so
-an engine flip takes effect on the next conversion, mirroring the lazy
-``PDF_MODE`` read.
+``INFERENCE_OVERWRITE``, ADR-0050; ``PDF_BORDERLESS_TABLES``, ADR-0054): those
+are read lazily at conversion time so an engine flip takes effect on the next
+conversion, mirroring the lazy ``PDF_MODE`` read.
 
 The AI modules consult :func:`is_enabled` at call time instead of reading a
 module-level ``*_ENABLED`` constant, so a toggle takes effect on the next
@@ -258,6 +258,18 @@ def inference_overwrite() -> bool:
     return _env_true(os.environ.get("INFERENCE_OVERWRITE"))
 
 
+def borderless_tables_enabled() -> bool:
+    """Whether borderless (whitespace-only) PDF tables are reconstructed (ADR-0054).
+
+    A non-AI output preference read lazily at conversion time like
+    ``IMAGE_LINKS``/``PDF_COMPRESS``. Default **on**: pages whose tables carry
+    no ruling lines (Word layout grids) get their tables rebuilt from the text
+    layer and emitted as pipe tables; ``PDF_BORDERLESS_TABLES=off`` disables the
+    detection and keeps the previous line-based output.
+    """
+    return (os.environ.get("PDF_BORDERLESS_TABLES", "on").strip().lower() or "on") in _TRUE
+
+
 def enabled_keys() -> list[str]:
     """The keys of currently enabled features, in registration order."""
     return [key for key in FEATURES if is_enabled(key)]
@@ -491,10 +503,10 @@ def snapshot(probe: bool = True) -> dict:
 
     Captures ``PDF_MODE``, the on/off state of every feature, each enabled pass's
     resolved base URLs and model id, the embeddings model, the
-    duplicate-if-exists preference, the image-link, PDF-compression and
-    inference-overwrite output preferences, and — when ``probe`` is true — the
-    ``missing_servers()`` result. Never raises; used to persist a per-run record
-    of "what models/toggles/servers were in effect".
+    duplicate-if-exists preference, the image-link, PDF-compression,
+    borderless-table and inference-overwrite output preferences, and — when
+    ``probe`` is true — the ``missing_servers()`` result. Never raises; used to
+    persist a per-run record of "what models/toggles/servers were in effect".
     """
     passes: dict[str, dict] = {}
     for key in FEATURES:
@@ -517,6 +529,7 @@ def snapshot(probe: bool = True) -> dict:
         "pdf_mode": os.environ.get("PDF_MODE", "").strip().lower() or "slide",
         "image_links": image_links_enabled(),
         "pdf_compress": pdf_compress_enabled(),
+        "borderless_tables": borderless_tables_enabled(),
         "inference_overwrite": inference_overwrite(),
         "need_gate": os.environ.get("NEED_GATE", "on").strip().lower() or "on",
         "duplicate": _duplicate_if_exists(),

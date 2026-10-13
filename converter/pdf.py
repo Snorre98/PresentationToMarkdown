@@ -6,7 +6,8 @@ The converter reconstructs a page's visual layout from per-span coordinates:
   file is only saved, with a ``[Page N](...)`` link, when ``IMAGE_LINKS`` is on),
 - the shared slide-master background image is detected and skipped,
 - text lines are reordered by ``(row, x)`` and formatted into bullets, paragraphs
-  and pipe tables,
+  and pipe tables (bordered via ``find_tables()``; borderless layout grids are
+  reconstructed from the text-layer stream order, ADR-0054),
 - footers and slide numbers are dropped (they repeat on every page),
 - "complex" pages (diagrams / multi-column flowcharts) fall back to the rendered
   image, optionally with a local vision-model transcription.
@@ -33,6 +34,7 @@ from converter.base import (
     text_layer_quality,
     write_image,
 )
+from converter.borderless import detect_borderless_tables
 from converter.classify import maybe_transcribe_image
 from converter.interpret import interpret_diagram
 from converter.logstore import current_run_id, phase
@@ -338,6 +340,24 @@ def _line_in_tables(line: Line, tables) -> bool:
         tr = fitz.Rect(table.bbox)
         inter = lr & tr
         if not inter.is_empty and inter.get_area() >= lr.get_area() * 0.5:
+            return True
+    return False
+
+
+def _covered_by_ruled(bbox, ruled, threshold: float = 0.5) -> bool:
+    """Whether a borderless candidate mostly sits inside a ruled table (ADR-0054).
+
+    A ruled table already renders itself through ``find_tables()``; a
+    borderless candidate overlapping it is the same table seen twice, so the
+    ruled one wins and the candidate is dropped.
+    """
+    candidate = fitz.Rect(bbox)
+    area = candidate.get_area()
+    if area <= 0.0:
+        return False
+    for table in ruled:
+        overlap = candidate & fitz.Rect(table.bbox)
+        if not overlap.is_empty and overlap.get_area() >= threshold * area:
             return True
     return False
 
@@ -778,6 +798,10 @@ class PDFConverter(Converter):
             out.append("")
 
         tables = [t for t in page.find_tables().tables if t.row_count >= 2 and t.col_count >= 2]
+        borderless = [
+            t for t in detect_borderless_tables(page) if not _covered_by_ruled(t.bbox, tables)
+        ]
+        tables.extend(borderless)
 
         content = [
             line
@@ -884,7 +908,12 @@ class PDFConverter(Converter):
                 out.extend(_emit_items(_merge_lone_bullets(text_buffer), bullet_levels))
                 text_buffer = []
                 rows = payload.extract()
-                out.extend(_table_to_md(rows))
+                table = _table_to_md(rows)
+                if table and out and out[-1].strip():
+                    # A pipe table is a leaf block: it needs a blank line before
+                    # it to not be read as a continuation of the paragraph above.
+                    out.append("")
+                out.extend(table)
                 out.append("")
         if text_buffer:
             out.extend(_emit_items(_merge_lone_bullets(text_buffer), bullet_levels))

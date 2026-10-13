@@ -37,11 +37,13 @@ Also: slide-number and date placeholders are skipped, headers/footers are italic
 | Page render | Rendered in memory for the vision passes; linked as `[Page N](…)` only with `IMAGE_LINKS=on` |
 | Text | Reconstructed into reading order, preserving bold/italic |
 | Bullets | `- ` / nested `  - ` lists (bullet glyphs + indentation) |
-| Tables | Pipe tables via `page.find_tables()` |
+| Tables | Pipe tables — bordered via `page.find_tables()`, borderless (Word layout grids) reconstructed from the text-layer stream order (ADR-0054); `PDF_BORDERLESS_TABLES=off` disables |
 | Footer / slide number | Dropped (repeats identically on every page) |
 
 Layout-aware: lines are reordered by their coordinates, bullets are detected from
-the `•`/`–` glyphs and their indent, and real tables are detected by PyMuPDF.
+the `•`/`–` glyphs and their indent, and tables are detected by PyMuPDF — plus
+whitespace-only (borderless) tables rebuilt from the text layer's content-stream
+order (`PDF_BORDERLESS_TABLES=off` disables that, ADR-0054).
 Pages whose text can't be linearized (diagrams, multi-column flowcharts) fall
 back to a collapsed raw-text block — and can optionally be transcribed by a local
 vision model. See [docs/ai-vision.md](docs/ai-vision.md).
@@ -374,6 +376,7 @@ The model weights live on the external SSD under `HF_HOME` (see
   - `base.py` — shared `Converter` interface, registry, and reusable Markdown helpers
   - `pptx.py` — PowerPoint converter (python-pptx)
   - `pdf.py` — PDF converter (PyMuPDF), layout-aware text + table/bullet reconstruction
+  - `borderless.py` — deterministic borderless-table detection from the PDF text layer (ADR-0054)
   - `vision.py` — optional local vision-LLM post-pass (OpenAI-compatible endpoint)
   - `format.py` — Markdown polish post-pass (deterministic whitespace cleanup + optional LLM restructure)
   - `classify.py` — cheap classifier gate for the vision pass (tiny VLM)

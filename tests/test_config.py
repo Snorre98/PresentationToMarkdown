@@ -245,6 +245,17 @@ def test_snapshot_reports_pdf_compress(monkeypatch):
     assert config.pdf_compress_enabled() is True
 
 
+def test_snapshot_reports_borderless_tables(monkeypatch):
+    monkeypatch.delenv("PDF_BORDERLESS_TABLES", raising=False)
+    assert config.borderless_tables_enabled() is True
+    assert config.snapshot(probe=False)["borderless_tables"] is True
+    monkeypatch.setenv("PDF_BORDERLESS_TABLES", "off")
+    assert config.borderless_tables_enabled() is False
+    assert config.snapshot(probe=False)["borderless_tables"] is False
+    monkeypatch.setenv("PDF_BORDERLESS_TABLES", "on")
+    assert config.borderless_tables_enabled() is True
+
+
 def test_snapshot_reports_inference_overwrite(monkeypatch):
     monkeypatch.delenv("INFERENCE_OVERWRITE", raising=False)
     assert config.inference_overwrite() is False
