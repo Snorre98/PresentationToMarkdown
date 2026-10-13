@@ -35,6 +35,12 @@ def test_latex_ai_passes_are_summary_only():
     assert LatexConverter.ai_passes == frozenset({"summary"})
 
 
+def test_latex_chunks_by_sections():
+    # LaTeX output is one continuous document (`# Title` + `##` sections),
+    # so the summary pass chunks it by section, not by slide (ADR-0052).
+    assert LatexConverter.chunking == "sections"
+
+
 def test_collect_inputs_detects_projects(tmp_path):
     build_project(tmp_path, "proj_a")
     build_project(tmp_path, "proj_b")

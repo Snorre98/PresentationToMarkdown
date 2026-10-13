@@ -51,3 +51,4 @@ Index of architectural decisions for PresentationToMarkdown, in
 | [0049](0049-pdf-compression-on-archive.md) | Best-effort PDF compression when sources are archived | Accepted |
 | [0050](0050-inference-marked-markdown.md) | Markdown containing model output is named `-inference-used` | Accepted |
 | [0051](0051-tui-sole-surface.md) | Native TUI is the sole user interface; desktop GUI, dashboard, and CLIs retired | Accepted |
+| [0052](0052-paper-continuous-document.md) | Paper mode is one continuous document (no per-page headings) | Accepted |

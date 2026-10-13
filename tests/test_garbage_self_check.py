@@ -76,7 +76,7 @@ def test_garbage_flags_mixed_garbled_page():
 
 def test_page_regime_routes_garbage_to_skip():
     page = PageData(
-        md_lines=["# Page 1", "", "metagoa gmnes numbdr interesti"] * 20 + [""],
+        md_lines=["metagoa gmnes numbdr interesti"] * 20 + [""],
         line_meta=[{"text": "metagoa", "size": 10.0, "bold": False, "x0": 50.0}] * 80,
         pno=1,
     )
@@ -91,7 +91,7 @@ def test_structure_skips_garbage_page_without_model_call(monkeypatch):
         lambda messages, **kw: calls.append(1) or "anything",
     )
     garbage = PageData(
-        md_lines=["# Page 1", "", "metagoa gmnes numbdr interesti wurds"] * 20 + [""],
+        md_lines=["metagoa gmnes numbdr interesti wurds"] * 20 + [""],
         line_meta=[{"text": "metagoa", "size": 10.0, "bold": False, "x0": 50.0}] * 80,
         pno=1,
     )
@@ -109,7 +109,7 @@ def test_structure_byte_identical_when_garbage_skipped(monkeypatch):
         lambda messages, **kw: (_ for _ in ()).throw(AssertionError("must not call")),
     )
     garbage = PageData(
-        md_lines=["# Page 1", "", "metagoa gmnes numbdr interesti wurds"] * 20 + [""],
+        md_lines=["metagoa gmnes numbdr interesti wurds"] * 20 + [""],
         line_meta=[{"text": "metagoa", "size": 10.0, "bold": False, "x0": 50.0}] * 80,
         pno=1,
     )

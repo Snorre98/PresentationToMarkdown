@@ -230,3 +230,64 @@ def test_prepend_summary_disabled_is_noop(tmp_path, monkeypatch):
     md.write_text(SAMPLE_MD, encoding="utf-8")
     summary.prepend_summary(md, tmp_path / "deck.pptx", warnings=[])
     assert md.read_text(encoding="utf-8") == SAMPLE_MD
+
+
+PAPER_MD = (
+    "# What Makes Things Fun to Learn?\n\n"
+    "*T. Malone · Xerox PARC*\n\n"
+    "## Challenge\n\n"
+    "The first challenge is keeping players engaged.\n\n"
+    "## Fantasy\n\n"
+    "Fantasy can make a game more compelling.\n\n"
+    "### A Subsection\n\n"
+    "A subsection stays with its section.\n\n"
+    "## References\n\n"
+    "References and notes go here.\n"
+)
+
+
+def test_iter_sections_splits_at_h2_only():
+    sections = summary._iter_sections(PAPER_MD)
+    assert len(sections) == 4
+    assert sections[0].startswith("# What Makes Things Fun to Learn?")
+    assert sections[1].startswith("## Challenge")
+    assert sections[2].startswith("## Fantasy")
+    assert "### A Subsection" in sections[2]
+    assert sections[3].startswith("## References")
+
+
+def test_chunk_title_for_sections():
+    assert summary._chunk_title("## Challenge\n\nbody", "sections") == "Challenge"
+    assert (
+        summary._chunk_title("# The Paper Title\n\n*authors*", "sections")
+        == "The Paper Title"
+    )
+    assert summary._chunk_title("# Slide 5\n\nbody", "slides") == ""
+
+
+def test_metadata_label_for_sections():
+    assert summary._metadata(Path("paper.pdf"), 4, "sections")[1] == "Sections: 4"
+    assert summary._metadata(Path("deck.pptx"), 4)[1] == "Slides: 4"
+
+
+def test_prepend_summary_sections_chunking(tmp_path, isolated_db, fake_embed, monkeypatch):
+    config.set_enabled("summary", True)
+    monkeypatch.setattr(
+        summary, "_chat_completion", lambda messages, **kw: VALID_REPLY
+    )
+    md = tmp_path / "paper.md"
+    md.write_text(PAPER_MD, encoding="utf-8")
+    src = tmp_path / "paper.pdf"
+    src.write_bytes(b"x")
+
+    summary.prepend_summary(md, src, warnings=[], chunking="sections")
+
+    text = md.read_text(encoding="utf-8")
+    assert text.startswith("# Summary\n")
+    assert "## Metadata\n- Source: paper.pdf" in text
+    assert "- Sections: 4" in text
+    # The paper body survives verbatim after the header.
+    assert "# What Makes Things Fun to Learn?" in text
+    # Chunked by section (preamble + 3 `##` sections), not as one document.
+    with repos.raw_connection() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM deck_chunks").fetchone()[0] == 4

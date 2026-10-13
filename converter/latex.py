@@ -444,6 +444,9 @@ class LatexConverter(Converter):
     extensions = (".tex",)
     project_extensions = (".tex",)
     ai_passes = frozenset({"summary"})
+    # A LaTeX project is one continuous document (`# Title` + `##` sections),
+    # so the summary pass chunks it by section rather than by slide (ADR-0052).
+    chunking = "sections"
 
     @classmethod
     def project_entry(cls, directory: Path) -> Path | None:

@@ -645,6 +645,16 @@ def _mark_headings(items: list[dict], body_size: float) -> None:
 class PDFConverter(Converter):
     extensions = (".pdf",)
 
+    @property
+    def chunking(self) -> str:
+        """Paper mode is one continuous document chunked by ``##`` sections;
+        slide mode keeps the per-``#``-page chunking (ADR-0052).
+
+        Read lazily because ``PDF_MODE`` is runtime state (ADR-0012), flipped
+        per conversion by the TUI/engine.
+        """
+        return "sections" if _pdf_mode() else "slides"
+
     def convert(
         self,
         path: Path,
@@ -754,13 +764,13 @@ class PDFConverter(Converter):
                     if authors:
                         out.append(f"*{authors}*")
                         out.append("")
-                else:
-                    out.append("# Page 1")
-                    out.append("")
+                # No ``# Page 1`` fallback: paper mode is one continuous
+                # document, so a missing title means no top-level heading at
+                # all (ADR-0052).
             else:
+                # Pages 2+ emit no heading: their content flows under the last
+                # real ``##`` section of the paper (ADR-0052).
                 title_ids = set()
-                out.append(f"# Page {pno}")
-                out.append("")
         else:
             title, title_ids = _detect_title(all_lines, page.rect.height)
             heading = f"{title} — Page {pno}" if title else f"Page {pno}"

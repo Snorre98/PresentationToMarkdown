@@ -64,8 +64,6 @@ PAGE2_META = [
 ]
 
 PAGE2_MD = [
-    "# Page 2",
-    "",
     "[Page 2](assets/test_paper/test_paper_page_02.png)",
     "",
     "## Curiosity",
@@ -89,8 +87,6 @@ def _page2() -> PageData:
 def _image_page() -> PageData:
     return PageData(
         md_lines=[
-            "# Page 3",
-            "",
             "[Page 3](assets/test_paper/test_paper_page_03.png)",
             "",
             "<details>",
@@ -129,7 +125,7 @@ def test_text_coverage_levels():
 def test_page_regime_routing():
     assert _page_regime(_page1()) == "text"
     assert _page_regime(_image_page()) == "image"
-    sparse = PageData(md_lines=["# Page 1", "", "a few words"], line_meta=PAGE1_META[:2], pno=1)
+    sparse = PageData(md_lines=["## Challenge", "", "a few words"], line_meta=PAGE1_META[:2], pno=1)
     assert _page_regime(sparse) == "skip"
 
 
@@ -199,19 +195,19 @@ def test_text_regime_rejects_invented_heading(monkeypatch):
     assert any("added" in w for w in warnings)
 
 
-def test_text_regime_keeps_page_n_heading_exact(monkeypatch):
-    """On pages 2+ the `# Page N` heading is an anchor and cannot be renamed."""
+def test_text_regime_rejects_added_top_level_heading(monkeypatch):
+    """Pages 2+ carry no `# ` heading; a reply that adds one is rejected (ADR-0052)."""
     _enable(monkeypatch)
-    reply = "\n".join(PAGE2_MD).replace("# Page 2", "# Page Two")
+    reply = "# Page Two\n\n" + "\n".join(PAGE2_MD)
     warnings: list[str] = []
     _mock(monkeypatch, reply)
     assert structure_paper([_page2()], warnings=warnings) is None
+    assert any("heading invariant" in w for w in warnings)
 
 
 def test_text_regime_allows_reorder_and_reflow(monkeypatch):
     _enable(monkeypatch)
     reply = (
-        "# Page 2\n\n"
         "[Page 2](assets/test_paper/test_paper_page_02.png)\n\n"
         "## Curiosity\n\n"
         "Curiosity is sparked by surprise and by constructive feedback. "
@@ -258,7 +254,6 @@ def test_image_regime_rewords_page(monkeypatch):
     _enable(monkeypatch)
     monkeypatch.setattr("converter.structure.image_readable", lambda blob, ext="png": None)
     reply = (
-        "# Conclusion\n\n"
         "[Page 3](assets/test_paper/test_paper_page_03.png)\n\n"
         "## Conclusion\n\n"
         "A conclusion wraps up the paper and points at future work.\n\n"
@@ -270,8 +265,23 @@ def test_image_regime_rewords_page(monkeypatch):
     assert out is not None
     text = "\n".join(out)
     assert "## References" in text
-    assert "# Conclusion" in text
+    assert "## Conclusion" in text
     assert "<details>" not in text
+
+
+def test_image_regime_rejects_added_top_level_heading(monkeypatch):
+    """A reworded page after the first must not carry a `# ` heading (ADR-0052)."""
+    _enable(monkeypatch)
+    monkeypatch.setattr("converter.structure.image_readable", lambda blob, ext="png": None)
+    warnings: list[str] = []
+    _mock(
+        monkeypatch,
+        "# Conclusion\n\n"
+        "[Page 3](assets/test_paper/test_paper_page_03.png)\n\n"
+        "A conclusion wraps up the paper and points at future work.\n",
+    )
+    assert structure_paper([_image_page()], warnings=warnings) is None
+    assert any("heading invariant" in w for w in warnings)
 
 
 def test_image_regime_skips_unreadable_image(monkeypatch):
@@ -303,7 +313,8 @@ def test_pdf_paper_structure_off_path_unchanged(tmp_path, monkeypatch):
     text = result.md_path.read_text(encoding="utf-8")
     assert "## Challenge" in text
     assert "## References" not in text
-    assert "# Page 2" in text
+    assert "# Page 2" not in text
+    assert text.startswith("# What Makes Things Fun to Learn? Heuristics for Design")
     assert "page-break-after" not in text
 
 
@@ -339,6 +350,9 @@ def test_pdf_paper_structure_on_path(tmp_path, monkeypatch):
     assert result.error is None
     text = result.md_path.read_text(encoding="utf-8")
     assert "## References" in text
-    assert "# Page 2" in text
-    assert "# Page 3" in text
+    assert "# Page 2" not in text
+    assert "# Page 3" not in text
+    assert [line for line in text.splitlines() if line.startswith("# ")] == [
+        "# What Makes Things Fun to Learn? Heuristics for Design"
+    ]
     assert "page-break-after" not in text

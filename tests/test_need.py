@@ -64,11 +64,25 @@ def test_needs_reformat_batches_and_maps(monkeypatch):
     assert "1. - a" in prompt and "2. - b" in prompt and "3. - c" in prompt
 
 
+def test_needs_reformat_sections_kind_uses_sections_prompt(monkeypatch):
+    calls: list[list] = []
+
+    def fake_chat(messages, **kw):
+        calls.append(messages)
+        return "1", {}
+
+    monkeypatch.setattr("converter.need._chat_completion", fake_chat)
+    assert needs_reformat(["## Challenge\n\ntext"], source="x", kind="sections") == {0}
+    prompt = calls[0][0]["content"]
+    assert "sections of a converted academic paper" in prompt
+    assert "Headings are never changed" in prompt
+
+
 def test_needs_restructure_maps_indices(monkeypatch):
     monkeypatch.setattr(
         "converter.need._chat_completion", lambda m, **kw: ("1, 3", {})
     )
-    pages = ["# Page 1\n...", "# Page 2\n...", "# Page 3\n..."]
+    pages = ["First page body.\n...", "Second page body.\n...", "Third page body.\n..."]
     assert needs_restructure(pages, source="x") == {0, 2}
 
 

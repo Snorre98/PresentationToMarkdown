@@ -41,24 +41,24 @@ _PROSE_LINES = _clean_lines()
 
 
 def test_structure_regime_routes_garbage_to_skip():
-    md = ["# Page 1", "", "a line"] * 20 + [""]
+    md = ["a line"] * 20 + [""]
     meta = _line_meta(*(["metagoa"] * 80))
     assert structure_regime(meta, md) == "skip"
 
 
 def test_structure_regime_routes_sparse_to_skip():
-    md = ["# Page 1", "", "few"]
+    md = ["few"]
     assert structure_regime(_line_meta("a", "b"), md) == "skip"
 
 
 def test_structure_regime_routes_details_to_image():
-    md = ["# Page 1", "", "<details>", "<summary>Raw extracted text</summary>", "</details>", ""]
+    md = ["<details>", "<summary>Raw extracted text</summary>", "</details>", ""]
     assert structure_regime(_line_meta("garbled"), md) == "image"
 
 
 def test_structure_regime_routes_clean_to_text():
     meta = [{"text": l, "size": 10.0, "bold": False, "x0": 50.0} for l in _PROSE_LINES]
-    md = ["# Page 1", "", "[Page 1](assets/x/x.png)", ""] + _PROSE_LINES
+    md = ["[Page 1](assets/x/x.png)", ""] + _PROSE_LINES
     assert structure_regime(meta, md) == "text"
 
 def test_text_downgrade_resolves_because_small_model_differ():
@@ -102,7 +102,7 @@ def test_text_regime_sends_text_only(monkeypatch):
 
     meta = [{"text": l, "size": 10.0, "bold": False, "x0": 50.0} for l in _PROSE_LINES]
     page = PageData(
-        md_lines=["# Page 1", "", "[Page 1](assets/x/x.png)", ""] + _PROSE_LINES,
+        md_lines=["[Page 1](assets/x/x.png)", ""] + _PROSE_LINES,
         line_meta=meta,
         pno=1,
     )

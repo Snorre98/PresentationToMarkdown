@@ -348,11 +348,57 @@ def test_pdf_paper_mode_structure(tmp_path, monkeypatch):
     assert "## Challenge" in text
     assert "## Fantasy" in text
     assert "## Curiosity" in text
-    assert "# Page 2" in text
-    assert "# Page 3" in text
+    # Paper mode is one continuous document (ADR-0052): the title is the only
+    # top-level heading; pages 2+ carry none and their content flows under the
+    # paper's last real `##` section.
+    assert [line for line in text.splitlines() if line.startswith("# ")] == [
+        "# What Makes Things Fun to Learn? Heuristics for Design"
+    ]
+    assert not any(line.startswith("# Page ") for line in text.splitlines())
+    assert text.index("## Curiosity") < text.index("A conclusion wraps up the paper")
     assert "A Study of Fun Games" not in text  # running header stripped
     assert "page-break-after" not in text
     assert not any(line.strip() == "---" for line in text.splitlines())
+
+
+def test_pdf_chunking_follows_pdf_mode(monkeypatch):
+    from converter.pdf import PDFConverter
+
+    monkeypatch.setenv("PDF_MODE", "paper")
+    assert PDFConverter().chunking == "sections"
+    monkeypatch.setenv("PDF_MODE", "slide")
+    assert PDFConverter().chunking == "slides"
+    monkeypatch.delenv("PDF_MODE", raising=False)
+    assert PDFConverter().chunking == "slides"
+
+
+def test_pdf_paper_mode_wires_section_chunking(tmp_path, monkeypatch):
+    """convert_file hands the converter's chunking to the format + summary
+    passes, so a paper is restructured/indexed per `##` section (ADR-0052)."""
+    import converter as pkg
+
+    calls: dict[str, str] = {}
+
+    def fake_polish(md, warnings=None, source="", allow_llm=True, chunking="slides"):
+        calls["format"] = chunking
+        return md
+
+    def fake_summary(md_path, source_path, warnings, chunking="slides"):
+        calls["summary"] = chunking
+
+    monkeypatch.setattr(pkg, "polish_text", fake_polish)
+    monkeypatch.setattr(pkg, "prepend_summary", fake_summary)
+    monkeypatch.setenv("PDF_MODE", "paper")
+
+    result = convert_file(PAPER, tmp_path)
+    assert result.error is None
+    assert calls == {"format": "sections", "summary": "sections"}
+
+    calls.clear()
+    monkeypatch.setenv("PDF_MODE", "slide")
+    result = convert_file(PAPER, tmp_path / "slide")
+    assert result.error is None
+    assert calls == {"format": "slides", "summary": "slides"}
 
 
 def test_pdf_paper_mode_column_order(tmp_path, monkeypatch):

@@ -1,6 +1,6 @@
 # 0011. Paper-mode document-structure LLM pass
 
-- Status: Accepted
+- Status: Amended by [0052](0052-paper-continuous-document.md)
 - Date: 2026-09-01
 
 ## Context

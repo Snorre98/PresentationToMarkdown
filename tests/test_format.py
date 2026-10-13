@@ -3,9 +3,12 @@ import pytest
 
 import converter.config as config
 from converter.format import (
+    _PAPER_PROMPT,
     _deterministic_pass,
     _is_structural,
+    _iter_sections,
     _peel_trailer,
+    _reformat_chunk,
     _reformat_slide,
     _verify_preserved,
     polish_text,
@@ -149,6 +152,69 @@ def test_reformat_slide_keeps_original_on_omission(monkeypatch):
         lambda messages, **kw: "# Slide — Page 1\n\n## The course topics\n- Modelling",
     )
     assert _reformat_slide(slide) == slide
+
+
+# --- paper sections (ADR-0052) ----------------------------------------------
+
+
+def test_iter_sections_splits_at_h2_only():
+    md = (
+        "# Title\n\n*authors*\n\n"
+        "## One\n\nfirst\n\n"
+        "## Two\n\nsecond\n\n"
+        "### Sub\n\nthird"
+    )
+    sections = _iter_sections(md)
+    assert len(sections) == 3
+    assert sections[0].startswith("# Title")
+    assert sections[1].startswith("## One")
+    assert sections[2].startswith("## Two")
+    assert "### Sub" in sections[2]
+
+
+def test_reformat_chunk_paper_prompt_rejects_omission(monkeypatch):
+    section = "## Challenge\n\nThe first challenge is keeping players engaged."
+    monkeypatch.setattr(
+        "converter.format._chat_completion",
+        lambda messages, **kw: "## Challenge\n\nThe first challenge is keeping.",
+    )
+    assert _reformat_chunk(section, _PAPER_PROMPT, "Section", 1, "") == section
+
+
+def test_polish_text_sections_runs_per_section(monkeypatch):
+    config.set_enabled("format", True)
+    calls: list[str] = []
+
+    def fake(messages, **kw):
+        calls.append(messages[0]["content"])
+        body = messages[0]["content"].split("Section:\n\n", 1)[1]
+        return body.replace("players\nengaged", "players engaged")
+
+    monkeypatch.setattr("converter.format._chat_completion", fake)
+    md = (
+        "# The Paper\n\n"
+        "*Authors*\n\n"
+        "## Challenge\n\n"
+        "The first challenge is keeping players\nengaged through uncertain goals.\n\n"
+        "## Fantasy\n\n"
+        "Fantasy can make a game more\ncompelling."
+    )
+    out = polish_text(md, warnings=[], chunking="sections")
+    assert len(calls) == 3  # preamble + two sections
+    assert "players engaged" in out
+    assert "## Challenge" in out and "## Fantasy" in out
+    assert "Never add or promote headings" in calls[0]
+
+
+def test_polish_text_sections_keeps_headings_on_rejected_rewrite(monkeypatch):
+    config.set_enabled("format", True)
+    md = "## Challenge\n\nThe first challenge is keeping players engaged."
+    monkeypatch.setattr(
+        "converter.format._chat_completion",
+        lambda messages, **kw: "## Challenge\n\nA totally different rewrite.",
+    )
+    out = polish_text(md, warnings=[], chunking="sections")
+    assert "keeping players engaged" in out
 
 
 def test_polish_text_disabled_llm_is_deterministic_only():

@@ -57,6 +57,13 @@ class Converter(ABC):
     # converter that must stay deterministic (e.g. LaTeX) narrows this set.
     ai_passes: frozenset[str] = frozenset({"format", "summary"})
 
+    # How the Markdown post-passes chunk this converter's output (ADR-0052).
+    # ``"slides"`` — top-level ``# `` headings delimit slides (one per page);
+    # ``"sections"`` — the output is one continuous document whose ``## ``
+    # headings delimit sections (paper-mode PDFs, LaTeX projects). The format
+    # (restructure) and summary (RAG) passes read this to chunk correctly.
+    chunking: str = "slides"
+
     # Project formats: a directory (not a single file) that this converter can
     # turn into one Markdown document. ``project_extensions`` lists the file
     # extensions that mark such a project; ``project_entry`` returns the entry

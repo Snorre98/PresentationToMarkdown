@@ -112,8 +112,9 @@ class PageData:
     """One paper-mode page: the deterministic Markdown lines plus raw metadata.
 
     ``md_lines`` are exactly the lines ``PDFConverter.convert`` would write for
-    the page (including the ``# `` heading, any legacy ``[Page N](...)`` link
-    and any trailing blank line). ``line_meta`` carries the raw per-line text +
+    the page (page 1 may carry the ``# Title`` heading; later pages carry no
+    top-level heading — ADR-0052) including any legacy ``[Page N](...)`` link
+    and any trailing blank line. ``line_meta`` carries the raw per-line text +
     coordinates/size/bold in reading order (text regime input and coverage).
     ``png`` is the rendered page image (image regime), ``pno`` the 1-based page
     number.
@@ -214,8 +215,10 @@ _AMEND_PROMPT = (
     "- Rejoin wrapped lines into paragraphs and, where multi-column linearization "
     "interleaved two columns' lines, reorder lines into the correct reading "
     "order.\n"
-    "- Keep the `# ` page heading, any `[Page N](...)` image link, all pipe "
-    "tables, blockquotes, `<details>` blocks and fenced code exactly as they are.\n\n"
+    "- Never add a top-level `# ` heading: only page 1 carries the paper title "
+    "(`# ...`); later pages begin directly with body text or a `## ` heading. "
+    "Keep the page-1 title, any `[Page N](...)` image link, all pipe tables, "
+    "blockquotes, `<details>` blocks and fenced code exactly as they are.\n\n"
     "Numbered lines with metadata:\n{numbered}\n\n"
     "Current Markdown:\n{md}\n\n"
     "Output only the amended Markdown, with no commentary or code fences."
@@ -230,8 +233,9 @@ _IMAGE_PROMPT = (
     "- Transcribe text verbatim from the image; do not invent text you cannot "
     "read; do not add commentary.\n"
     "- Keep any `[Page N](...)` image link line, if present, exactly as it is.\n"
-    "- Include exactly one `# ` page heading line (on pages after the first you "
-    "may replace `# Page N` with the real page title).\n"
+    "- Use at most one `# ` top-level heading, and only on the paper's first "
+    "page (the title read from the image). A later page must contain no `# ` "
+    "line at all — a section heading it starts with is a `## ` heading.\n"
     "- Render tables as pipe tables and preserve bold/italic where present.\n\n"
     "Output only the Markdown, with no commentary or code fences."
 )
@@ -239,6 +243,18 @@ _IMAGE_PROMPT = (
 
 def _heading_count(text: str) -> int:
     return sum(1 for line in text.splitlines() if line.startswith("# "))
+
+
+def _top_level_heading_ok(reply: str, pno: int) -> bool:
+    """The per-page top-level ``#`` heading contract (ADR-0052).
+
+    Page 1 may carry at most one ``# `` line — the paper title, the amendment
+    target — and may gain one when the deterministic pass found none. A later
+    page must carry none: its content belongs under the paper's last real
+    ``##`` section, and a reply that adds a page/top-level heading is rejected.
+    """
+    count = _heading_count(reply)
+    return count <= 1 if pno == 1 else count == 0
 
 
 def _link_line(text: str) -> str | None:
@@ -353,7 +369,7 @@ def _amend_page_text(page: PageData, warnings: list[str], source: str) -> list[s
         _reject(page, warnings, "dropped structural lines")
         _log(source, page, model=model, base_url=base_url, decision="rejected", error="anchors dropped", latency_ms=_ms(t0))
         return None
-    if _heading_count(reply) != 1:
+    if not _top_level_heading_ok(reply, page.pno):
         _reject(page, warnings, "heading invariant")
         _log(source, page, model=model, base_url=base_url, decision="rejected", error="heading invariant", latency_ms=_ms(t0))
         return None
@@ -412,7 +428,7 @@ def _amend_page_image(page: PageData, warnings: list[str], source: str) -> list[
             )
         _log(source, page, decision="rejected", error=f"quality gate: {reason}", latency_ms=_ms(t0))
         return None
-    if _heading_count(reply) != 1:
+    if not _top_level_heading_ok(reply, page.pno):
         _reject(page, warnings, "heading invariant")
         _log(source, page, decision="rejected", error="heading invariant", latency_ms=_ms(t0))
         return None

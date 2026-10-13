@@ -1,8 +1,9 @@
 """Per-presentation RAG index and standardized summary header.
 
 After conversion and polish, this opt-in pass (``SUMMARY_ENABLED``) indexes the
-presentation's slides into ``ptm.sqlite`` — one chunk per slide, embedded with a
-local embeddings endpoint and stored in a sqlite-vec table partitioned by
+presentation's chunks into ``ptm.sqlite`` — one chunk per slide, or one chunk
+per ``##`` section for continuous paper/LaTeX output (ADR-0052) — embedded with
+a local embeddings endpoint and stored in a sqlite-vec table partitioned by
 document — then retrieves the most salient chunks and has a dedicated chat model
 write a standardized English summary, prepended to the Markdown file.
 
@@ -45,7 +46,7 @@ import numpy as np
 
 from converter import config, inference
 from converter.db import repos
-from converter.format import _iter_slides
+from converter.format import _iter_sections, _iter_slides
 from converter.logstore import _lock, record
 from converter.vision import _chat_completion, strip_code_fences
 from converter.write import WRITE_API_KEY
@@ -87,9 +88,21 @@ _PROMPT_HEADER = (
     "Summarize this lecture presentation for a study header. Write in English.\n\n"
     "Return EXACTLY these Markdown sections, in this order, with no other text:\n\n"
 )
+_PROMPT_HEADER_SECTIONS = (
+    "Summarize this academic paper for a study header. Write in English.\n\n"
+    "Return EXACTLY these Markdown sections, in this order, with no other text:\n\n"
+)
 _PROMPT_FOOTER = (
     "\nRules:\n"
     "- Ground every point in the provided slides; do not invent facts or numbers.\n"
+    "- Keep each bullet short and specific.\n"
+    "- Use '- ' bullets only. No headings other than the ones listed.\n"
+    "- Do not merge distinct points into one bullet; list each important point separately.\n"
+    "- Output only the sections, with no preamble, no code fences, no commentary."
+)
+_PROMPT_FOOTER_SECTIONS = (
+    "\nRules:\n"
+    "- Ground every point in the provided sections; do not invent facts or numbers.\n"
     "- Keep each bullet short and specific.\n"
     "- Use '- ' bullets only. No headings other than the ones listed.\n"
     "- Do not merge distinct points into one bullet; list each important point separately.\n"
@@ -192,25 +205,43 @@ def _source_hash(path: Path) -> str:
     return h.hexdigest()
 
 
-def _slide_title(slide_md: str) -> str:
-    for line in slide_md.splitlines():
+def _heading_title(md: str, prefix: str) -> str:
+    """Return the first heading line's title matching ``prefix`` (``""`` if none)."""
+    for line in md.splitlines():
         s = line.strip()
-        if s.startswith("# "):
-            title = _SLIDE_SUFFIX_RE.sub("", s[2:].strip()).strip()
+        if s.startswith(prefix):
+            title = _SLIDE_SUFFIX_RE.sub("", s[len(prefix):].strip()).strip()
             if _BARE_SLIDE_RE.match(title):
                 return ""
             return title
     return ""
 
 
-def _chunk_records(slides: list[str]) -> list[dict]:
+def _slide_title(slide_md: str) -> str:
+    """Title of a slide chunk: its ``# `` heading (``""`` if none)."""
+    return _heading_title(slide_md, "# ")
+
+
+def _chunk_title(chunk_md: str, chunking: str = "slides") -> str:
+    """Title of a chunk under the document's chunking (ADR-0052).
+
+    Slides use the ``# `` heading. A paper section chunk uses its ``## ``
+    heading, falling back to the ``# `` title when the chunk is the preamble
+    (title/authors block before the first section).
+    """
+    if chunking == "sections":
+        return _heading_title(chunk_md, "## ") or _heading_title(chunk_md, "# ")
+    return _heading_title(chunk_md, "# ")
+
+
+def _chunk_records(chunks: list[str], chunking: str = "slides") -> list[dict]:
     out: list[dict] = []
-    for i, slide in enumerate(slides, start=1):
-        content = slide.strip()
+    for i, chunk in enumerate(chunks, start=1):
+        content = chunk.strip()
         out.append(
             {
                 "chunk_index": i,
-                "title": _slide_title(slide),
+                "title": _chunk_title(chunk, chunking),
                 "content": content,
                 "content_hash": hashlib.md5(content.encode("utf-8")).hexdigest(),
             }
@@ -218,12 +249,12 @@ def _chunk_records(slides: list[str]) -> list[dict]:
     return out
 
 
-def _upsert_document(source_path: Path, source_hash: str, slide_count: int) -> int:
-    return repos.upsert_document(source_path, source_hash, slide_count)
+def _upsert_document(source_path: Path, source_hash: str, chunk_count: int) -> int:
+    return repos.upsert_document(source_path, source_hash, chunk_count)
 
 
-def _index(source_path: Path, slides: list[str]) -> tuple[int, list[dict]]:
-    """Index slides into SQLite, re-embedding only changed chunks.
+def _index(source_path: Path, chunks: list[str], chunking: str = "slides") -> tuple[int, list[dict]]:
+    """Index chunks into SQLite, re-embedding only changed chunks.
 
     Returns ``(document_id, [chunk, ...])`` where each chunk holds ``id``,
     ``chunk_index``, ``title`` and ``content``. The ``deck_documents`` /
@@ -233,7 +264,7 @@ def _index(source_path: Path, slides: list[str]) -> tuple[int, list[dict]]:
     if sqlite_vec is None:
         raise RuntimeError("sqlite-vec is not installed")
     source_hash = _source_hash(source_path)
-    records = _chunk_records(slides)
+    records = _chunk_records(chunks, chunking)
 
     with _lock:
         with repos.raw_connection() as conn:
@@ -241,7 +272,7 @@ def _index(source_path: Path, slides: list[str]) -> tuple[int, list[dict]]:
                 raise RuntimeError("could not load the sqlite-vec extension")
         _ensure_base_tables()
         dim = _known_dim()
-        doc_id = _upsert_document(source_path, source_hash, len(slides))
+        doc_id = _upsert_document(source_path, source_hash, len(chunks))
         existing = repos.existing_chunk_hashes(doc_id)
 
     to_embed = [r for r in records if existing.get(r["chunk_index"]) != r["content_hash"]]
@@ -379,10 +410,11 @@ def _summary_targets(slides: list[str]) -> tuple[int, int, int]:
     return n_topics, n_takeaways, n_terms
 
 
-def _metadata(source_path: Path, slide_count: int) -> list[str]:
+def _metadata(source_path: Path, chunk_count: int, chunking: str = "slides") -> list[str]:
+    label = "Sections" if chunking == "sections" else "Slides"
     return [
         f"Source: {source_path.name}",
-        f"Slides: {slide_count}",
+        f"{label}: {chunk_count}",
         f"Converted: {datetime.now(timezone.utc).date().isoformat()}",
     ]
 
@@ -486,7 +518,7 @@ def _build_header(
     return "\n".join(lines)
 
 
-def _prompt(n_topics: int, n_takeaways: int, n_terms: int) -> str:
+def _prompt(n_topics: int, n_takeaways: int, n_terms: int, chunking: str = "slides") -> str:
     sections = ["## Abstract\n<one sentence>"]
     if n_topics:
         sections.append(
@@ -498,7 +530,11 @@ def _prompt(n_topics: int, n_takeaways: int, n_terms: int) -> str:
         )
     if n_terms:
         sections.append(f"## Key Terms\n- **<term>** — <definition>\n... (up to {n_terms} bullets)")
-    return _PROMPT_HEADER + "\n\n".join(sections) + "\n" + _PROMPT_FOOTER
+    if chunking == "sections":
+        header, footer = _PROMPT_HEADER_SECTIONS, _PROMPT_FOOTER_SECTIONS
+    else:
+        header, footer = _PROMPT_HEADER, _PROMPT_FOOTER
+    return header + "\n\n".join(sections) + "\n" + footer
 
 
 def _fallback_header(
@@ -517,23 +553,28 @@ def _generate_summary(
     counts: tuple[int, int, int],
     warnings: list[str],
     outcomes: dict | None = None,
+    chunking: str = "slides",
 ) -> str:
     n_topics, n_takeaways, n_terms = counts
-    prompt = _prompt(n_topics, n_takeaways, n_terms)
+    prompt = _prompt(n_topics, n_takeaways, n_terms, chunking)
+    noun = "Section" if chunking == "sections" else "Slide"
+    plural = "sections" if chunking == "sections" else "slides"
+
+    def _label(chunk: dict) -> str:
+        return chunk["title"] or f"{noun} {chunk['chunk_index']}"
+
     if chunks:
-        titles_text = "\n".join(
-            "- " + (c["title"] or "Slide " + str(c["chunk_index"])) for c in chunks
-        )
+        titles_text = "\n".join("- " + _label(c) for c in chunks)
     else:
         titles_text = "\n".join("- " + t for t in titles)
     context = "\n\n---\n\n".join(
-        f"### {c['title'] or 'Slide ' + str(c['chunk_index'])}\n{c['content']}" for c in chunks
+        f"### {_label(c)}\n{c['content']}" for c in chunks
     )
     user = (
         prompt
-        + "\n\nSlide titles:\n"
+        + f"\n\n{noun} titles:\n"
         + (titles_text or "(none)")
-        + "\n\nMost relevant slides (context):\n"
+        + f"\n\nMost relevant {plural} (context):\n"
         + context
     )
     for attempt in range(2):
@@ -573,25 +614,33 @@ def _generate_summary(
     return _fallback_header(titles, metadata, counts)
 
 
-def prepend_summary(md_path: Path, source_path: Path, warnings: list[str]) -> None:
+def prepend_summary(
+    md_path: Path,
+    source_path: Path,
+    warnings: list[str],
+    chunking: str = "slides",
+) -> None:
     """Index the presentation and prepend a standardized summary header.
 
-    No-op unless ``SUMMARY_ENABLED``; never raises.
+    No-op unless ``SUMMARY_ENABLED``; never raises. ``chunking`` selects how the
+    Markdown is split for the RAG index (ADR-0052): ``"slides"`` (top-level
+    ``#`` per slide) or ``"sections"`` (a continuous paper chunked at ``##``
+    section headings).
     """
     if not config.is_enabled("summary"):
         return
     try:
         text = md_path.read_text(encoding="utf-8")
-        slides = _iter_slides(text)
-        if not slides:
+        chunks = _iter_sections(text) if chunking == "sections" else _iter_slides(text)
+        if not chunks:
             return
-        titles = [_slide_title(s) for s in slides]
-        counts = _summary_targets(slides)
-        metadata = _metadata(source_path, len(slides))
+        titles = [_chunk_title(c, chunking) for c in chunks]
+        counts = _summary_targets(chunks)
+        metadata = _metadata(source_path, len(chunks), chunking)
 
         context_chunks: list[dict] = []
         try:
-            doc_id, chunks = _index(source_path, slides)
+            doc_id, chunks_indexed = _index(source_path, chunks, chunking)
             queries = [
                 "main topics and learning objectives of this presentation",
                 "key takeaways, conclusions, and most important points",
@@ -611,13 +660,13 @@ def prepend_summary(md_path: Path, source_path: Path, warnings: list[str]) -> No
             context_chunks = _bounded_sample(
                 [
                     {"chunk_index": i, "title": t, "content": s}
-                    for i, (t, s) in enumerate(zip(titles, slides), start=1)
+                    for i, (t, s) in enumerate(zip(titles, chunks), start=1)
                 ]
             )
 
         header = _generate_summary(
             context_chunks, titles, metadata, counts, warnings,
-            outcomes := {}
+            outcomes := {}, chunking,
         )
         if outcomes.get("decision") == "model":
             # A model-written header, not the deterministic fallback (ADR-0050).

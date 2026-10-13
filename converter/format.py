@@ -1,4 +1,4 @@
-"""Markdown polish post-pass for converted slides.
+"""Markdown polish post-pass for converted documents.
 
 Applied after the deterministic converters produce their output, this module
 improves the *formatting* of the generated Markdown without changing its
@@ -9,6 +9,9 @@ content:
 - **LLM restructure** (opt-in) — hand each slide to a local OpenAI-compatible
   chat model to reflow wrapped lines into paragraphs and promote heading-like
   bullets into ``##``/``###`` headings, while keeping every word verbatim.
+  Continuous paper documents (``chunking="sections"``, ADR-0052) are instead
+  restructured one ``##`` section at a time with a conservative prompt that
+  never adds or changes headings (the structure pass owns those).
 
 A restructure that survives the verbatim word gate and lands in the file is
 recorded in the per-conversion inference ledger (ADR-0050); the conversion is
@@ -56,6 +59,22 @@ _PROMPT = (
     "- Fix list nesting and blank-line spacing.\n\n"
     "Keep the slide title, any image or page links, tables, blockquotes, "
     "`<details>` blocks, fenced code, and the page-break `<div>` exactly as-is.\n\n"
+    "Output only the Markdown, with no commentary or code fences."
+)
+
+# Paper mode is one continuous document (ADR-0052): the restructure pass runs
+# per ``##`` section and stays conservative — reflow only, never headings, which
+# the document-structure pass owns.
+_PAPER_PROMPT = (
+    "Reformat this section of an academic paper into cleaner Markdown while "
+    "keeping every word exactly as it is.\n\n"
+    "Do NOT add, remove, reword, reorder, or translate any text, numbers, or URLs.\n\n"
+    "Only these structural changes are allowed:\n"
+    "- Rejoin lines that were wrapped mid-sentence into single paragraphs.\n"
+    "- Fix list nesting and blank-line spacing.\n\n"
+    "Keep all `# ` and `## ` headings, any image or page links, tables, "
+    "blockquotes, `<details>` blocks, fenced code, and horizontal rules exactly "
+    "as they are. Never add or promote headings.\n\n"
     "Output only the Markdown, with no commentary or code fences."
 )
 
@@ -126,6 +145,29 @@ def _iter_slides(md: str) -> list[str]:
     return ["\n".join(s) for s in slides]
 
 
+def _iter_sections(md: str) -> list[str]:
+    """Split a continuous document into sections at ``## `` headings (fence-aware).
+
+    The preamble — the ``# Title``, authors and any content before the first
+    ``## `` heading — is the first chunk (ADR-0052). ``###`` subsections stay
+    with their parent section.
+    """
+    sections: list[list[str]] = []
+    current: list[str] = []
+    fence = False
+    for line in md.split("\n"):
+        if line.lstrip().startswith("```"):
+            fence = not fence
+        if not fence and line.startswith("## ") and current:
+            sections.append(current)
+            current = [line]
+        else:
+            current.append(line)
+    if current:
+        sections.append(current)
+    return ["\n".join(s) for s in sections]
+
+
 def _peel_trailer(lines: list[str]) -> tuple[list[str], list[str]]:
     """Return ``(body, trailer)`` where ``trailer`` is the page-break + ``---`` block."""
     for i in range(len(lines) - 1, -1, -1):
@@ -157,15 +199,15 @@ def _verify_preserved(original: str, reformatted: str) -> list[str]:
     return problems
 
 
-def _reformat_slide(slide: str, index: int = 1, source: str = "") -> str:
-    body, trailer = _peel_trailer(slide.split("\n"))
+def _reformat_chunk(chunk: str, prompt: str, label: str, index: int, source: str) -> str:
+    body, trailer = _peel_trailer(chunk.split("\n"))
     if not body or not any(_is_editable(line) for line in body):
-        return slide
+        return chunk
     anchors = [line.strip() for line in body if _is_structural(line)]
     original = "\n".join(body)
     t0 = time.perf_counter()
     reformatted = _chat_completion(
-        [{"role": "user", "content": _PROMPT + "\n\nSlide:\n\n" + original}],
+        [{"role": "user", "content": f"{prompt}\n\n{label}:\n\n{original}"}],
         base_url=FORMAT_BASE_URL,
         model=FORMAT_MODEL,
         api_key=FORMAT_API_KEY,
@@ -184,7 +226,7 @@ def _reformat_slide(slide: str, index: int = 1, source: str = "") -> str:
             latency_ms=latency_ms,
             base_url=FORMAT_BASE_URL,
         )
-        return slide
+        return chunk
     problems = _verify_preserved(original, reformatted)
     if problems:
         record(
@@ -197,7 +239,7 @@ def _reformat_slide(slide: str, index: int = 1, source: str = "") -> str:
             latency_ms=latency_ms,
             base_url=FORMAT_BASE_URL,
         )
-        return slide
+        return chunk
     result = reformatted.rstrip()
     if trailer:
         result += "\n\n" + "\n".join(trailer)
@@ -221,17 +263,23 @@ def _reformat_slide(slide: str, index: int = 1, source: str = "") -> str:
     return result
 
 
-def _need_set(slides: list[str], source: str) -> set[int]:
-    """Slide indices needing the writer restructure (ADR-0039 cascade).
+def _reformat_slide(slide: str, index: int = 1, source: str = "") -> str:
+    """Reformat one slide chunk with the slide restructure prompt."""
+    return _reformat_chunk(slide, _PROMPT, "Slide", index, source)
+
+
+def _need_set(chunks: list[str], source: str, kind: str = "slides") -> set[int]:
+    """Chunk indices needing the writer restructure (ADR-0039 cascade).
 
     Deterministic ``format_clean`` first (free), then a batched cheap-model call
     over the ambiguous remainder. Returns the indices to run the expensive pass
     on; a failed gate resolves to "all ambiguous" (never "all clean"), so it can
-    only ever skip work, never change output.
+    only ever skip work, never change output. ``kind`` (``slides``/``sections``)
+    selects the gate prompt matching the chunking (ADR-0052).
     """
-    clean = [i for i, s in enumerate(slides) if format_clean(s)]
+    clean = [i for i, s in enumerate(chunks) if format_clean(s)]
     clean_set = set(clean)
-    candidates = [i for i in range(len(slides)) if i not in clean_set]
+    candidates = [i for i in range(len(chunks)) if i not in clean_set]
     for i in clean:
         record(
             source=source,
@@ -243,28 +291,33 @@ def _need_set(slides: list[str], source: str) -> set[int]:
         )
     if not candidates:
         return set()
-    need = needs_reformat([slides[i] for i in candidates], source=source)
+    need = needs_reformat([chunks[i] for i in candidates], source=source, kind=kind)
     if need is None:
         return set(candidates)
     return {candidates[i] for i in need}
 
 
-def _llm_pass(md: str, warnings: list[str], source: str = "") -> str:
+def _llm_pass(md: str, warnings: list[str], source: str = "", chunking: str = "slides") -> str:
     try:
-        slides = _iter_slides(md)
+        if chunking == "sections":
+            chunks = _iter_sections(md)
+            prompt, label, kind = _PAPER_PROMPT, "Section", "sections"
+        else:
+            chunks = _iter_slides(md)
+            prompt, label, kind = _PROMPT, "Slide", "slides"
         mode = need_gate()
         if mode == "off":
-            run: set[int] = set(range(len(slides)))
+            run: set[int] = set(range(len(chunks)))
         elif mode == "on":
-            run = _need_set(slides, source)
+            run = _need_set(chunks, source, kind)
         else:  # shadow: run everything for output, log gate verdicts only
-            _need_set(slides, source)
-            run = set(range(len(slides)))
+            _need_set(chunks, source, kind)
+            run = set(range(len(chunks)))
         return "\n\n".join(
-            _reformat_slide(slide, index=idx, source=source)
+            _reformat_chunk(chunk, prompt, label, idx, source)
             if (idx - 1) in run
-            else slide
-            for idx, slide in enumerate(slides, start=1)
+            else chunk
+            for idx, chunk in enumerate(chunks, start=1)
         )
     except Exception as exc:  # noqa: BLE001 - degrade to deterministic-only output
         warnings.append(f"Markdown LLM reformat failed: {exc}; keeping deterministic output")
@@ -284,6 +337,7 @@ def polish_text(
     warnings: list[str] | None = None,
     source: str = "",
     allow_llm: bool = True,
+    chunking: str = "slides",
 ) -> str:
     """Normalise formatting of converted Markdown, optionally restructuring via an LLM.
 
@@ -294,8 +348,13 @@ def polish_text(
     ``allow_llm`` disables the LLM restructure pass for formats that declare it
     out of scope via ``Converter.ai_passes`` (e.g. LaTeX, ADR-0038); the
     deterministic whitespace pass still runs.
+
+    ``chunking`` selects how the LLM pass slices the document (ADR-0052):
+    ``"slides"`` (top-level ``#`` per slide) or ``"sections"`` (one continuous
+    paper chunked at ``##`` section headings, with the conservative paper
+    prompt that never touches headings).
     """
     text = _deterministic_pass(md)
     if allow_llm and config.is_enabled("format") and text:
-        text = _deterministic_pass(_llm_pass(text, warnings or [], source))
+        text = _deterministic_pass(_llm_pass(text, warnings or [], source, chunking))
     return text

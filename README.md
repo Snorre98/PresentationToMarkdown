@@ -61,7 +61,7 @@ slide deck:
 | --- | --- |
 | Title + subtitle + authors (page 1) | `# Title` + `*Authors · Affiliation*` metadata block |
 | Section headings | `## Heading` (bold / larger / centered standalone lines) |
-| Each page | `# Page N` heading |
+| Page boundaries | No per-page headings — later-page content flows under the paper's last real `##` section (ADR-0052) |
 | Running headers | Dropped (repeats at the top of every page) |
 | Page separators | None — pages flow continuously (no `---` / page-break divs) |
 
@@ -74,6 +74,7 @@ optional LLM pass then improves
 the structure: it fixes the page-1 title/authors block, blockquotes the
 abstract, adds `##` headings and a `## References` section, wraps footnotes, and
 repairs interleaved multi-column linearization — keeping every word verbatim.
+Later pages carry no top-level heading and the model may not add one (ADR-0052).
 Pages whose text layer is unusable (scans, garbage OCR) are instead reworded
 from the rendered page image. Any page the model gets wrong is left in its
 deterministic form with a warning. See
@@ -441,7 +442,9 @@ Every conversion finishes with a formatting post-pass (`converter/format.py`):
 - **LLM restructure (opt-in)** — hands each slide to a local OpenAI-compatible
   chat model to reflow mid-sentence line breaks into paragraphs and promote
   heading-like bullets into `##`/`###` headings, while a word cross-check keeps
-  the content verbatim.
+  the content verbatim. A continuous document (paper-mode PDF or LaTeX) is
+  instead restructured one `##` section at a time with a conservative prompt
+  that never adds or changes headings (ADR-0052).
 
 Enable it by reusing the vision endpoint (see [AI vision pass](#ai-vision-pass)) —
 toggle *Markdown restructure* in the TUI settings, or set `FORMAT_ENABLED=1` for
@@ -463,7 +466,9 @@ is produced by deterministic geometry heuristics. The optional **structure pass*
   abstract, adds `##` headings (never demoting existing ones), wraps footnotes,
   inserts a `## References` heading, and repairs interleaved multi-column
   linearization — while every content word must stay verbatim. A word
-  cross-check rejects any page that omits or invents prose.
+  cross-check rejects any page that omits or invents prose. The page-1 title is
+  the document's only `# ` heading; a later page may not gain one (ADR-0052),
+  so its content stays under the paper's own `##` sections.
 - **Image regime** — pages whose text layer is unusable (scans, garbage OCR;
   the raw-text `<details>` fallback) are reworded from the rendered page image,
   gated by image readability and transcription quality instead of the verbatim
@@ -500,20 +505,23 @@ slides through a **per-presentation RAG index** stored in `ptm.sqlite`.
 
 How it works:
 
-1. After conversion and polish, the Markdown is split back into per-slide chunks.
+1. After conversion and polish, the Markdown is split back into chunks: one per
+   slide for presentations, or one per `##` section for a continuous paper-mode
+   PDF or LaTeX project (ADR-0052).
 2. Each chunk is embedded (via an embeddings endpoint) and stored in a **sqlite-vec**
    table partitioned by document, alongside a plain-text copy in `deck_chunks`.
    Unchanged chunks are not re-embedded on re-conversion (content-hash cached).
-3. A few section queries retrieve the most salient chunks; those, plus the slide
+3. A few section queries retrieve the most salient chunks; those, plus the chunk
    titles, are passed to a dedicated summary chat model.
 4. The model writes the summary in a **deterministic format** — a `# Summary` block
    with `## Abstract`, `## Key Topics`, `## Key Takeaways`, `## Key Terms` and
    `## Metadata` sections. Bullet counts scale with the number of concepts detected
    in the content (topics capped at 16, takeaways at 12, terms at 8); `## Metadata`
-   (source, slide count, date) is always computed locally, never by the model.
+   (source, number of slides/sections, date) is always computed locally, never by
+   the model.
 5. If the model output is *garbled* (no parseable sections, a section with no
    bullets, or suspiciously low word diversity), it is retried once; otherwise a
-   deterministic extractive header (abstract = first slide title, topics = slide
+   deterministic extractive header (abstract = first chunk title, topics = chunk
    titles) is used. Any failure degrades gracefully — conversion never fails
    because of summaries.
 

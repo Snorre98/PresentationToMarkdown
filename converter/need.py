@@ -56,6 +56,14 @@ _REFORMAT_PROMPT = (
     "comma-separated (for example: 2, 5, 9). If none need it, answer exactly: none"
 )
 
+_REFORMAT_SECTIONS_PROMPT = (
+    "Here are the sections of a converted academic paper, numbered. Some still "
+    "need reformatting: wrapped lines to rejoin into paragraphs, or list nesting "
+    "to fix. Headings are never changed.\n\n{items}\n\n"
+    "Answer with only the numbers of the sections that need reformatting, "
+    "comma-separated (for example: 2, 5, 9). If none need it, answer exactly: none"
+)
+
 _RESTRUCTURE_PROMPT = (
     "Here are pages of a paper linearized from a multi-column PDF, numbered. Some "
     "pages still need restructuring: interleaved columns to reorder, missing "
@@ -183,14 +191,19 @@ def _classify(
     return need
 
 
-def needs_reformat(slides: list[str], source: str = "") -> set[int] | None:
-    """Indices of ``slides`` (0-based) that need the writer restructure.
+def needs_reformat(
+    chunks: list[str], source: str = "", kind: str = "slides"
+) -> set[int] | None:
+    """Indices of ``chunks`` (0-based) that need the writer restructure.
 
     Returns ``None`` when the gate could not decide (run the expensive pass on
-    all of them). ``slides`` are the slide Markdown strings; the returned indices
-    are positions into that list.
+    all of them). ``chunks`` are the chunk Markdown strings; the returned indices
+    are positions into that list. ``kind`` selects the prompt matching the
+    document's chunking: ``"slides"`` (a presentation) or ``"sections"`` (a
+    continuous paper, ADR-0052).
     """
-    return _classify(slides, _REFORMAT_PROMPT, "need-format", source)
+    template = _REFORMAT_SECTIONS_PROMPT if kind == "sections" else _REFORMAT_PROMPT
+    return _classify(chunks, template, "need-format", source)
 
 
 def needs_restructure(

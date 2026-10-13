@@ -240,6 +240,7 @@ def _convert_one(
                             warnings=result.warnings,
                             source=str(path),
                             allow_llm="format" in converter.ai_passes,
+                            chunking=converter.chunking,
                         )
                     rewritten = (polished + "\n") if polished else ""
                     if rewritten != original:
@@ -250,7 +251,10 @@ def _convert_one(
                 if "summary" in converter.ai_passes:
                     try:
                         with phase(run_id, "summary", 4):
-                            prepend_summary(result.md_path, path, result.warnings)
+                            prepend_summary(
+                                result.md_path, path, result.warnings,
+                                chunking=converter.chunking,
+                            )
                     except Exception as exc:  # noqa: BLE001 - summary never fails the conversion
                         result.warnings.append(f"Summary generation failed: {exc}")
                 release_writers()
