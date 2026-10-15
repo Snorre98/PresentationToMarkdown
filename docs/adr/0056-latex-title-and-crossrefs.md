@@ -1,6 +1,7 @@
 # 0056. LaTeX title page and pandoc leftovers normalized
 
-- Status: Accepted
+- Status: Accepted (amended by [0058](0058-latex-title-page-front-block.md) and
+  [0059](0059-latex-compiled-float-numbering.md))
 - Date: 2026-10-15
 
 ## Context

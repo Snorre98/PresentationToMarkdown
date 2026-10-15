@@ -96,18 +96,23 @@ or linked at all — only their AI descriptions appear.
 A LaTeX *project* is a folder containing `.tex` source; it converts to one `.md`
 named after the folder through [pandoc](https://pandoc.org) (a required binary
 for `.tex` input), with `\input`/`\include`/`\import` flattened, sections as
-`##` headings, and citations resolved by citeproc (ADR-0038/0056/0057):
+`##` headings, and citations resolved by citeproc with a bundled author-year
+style (ADR-0038/0056/0058/0059/0060/0061):
 
 | Source element | Markdown output |
 | --- | --- |
 | Title | `# Title` from `\title`, else the title page's biggest font line (`{\huge \bfseries …}`), else the folder name |
 | Authors | `*Authors*` from `\author` (`\and`/`\\` becomes ` · `) |
-| Title page, TOC, list of figures/tables, `\maketitle` | Dropped |
+| Title page content | A front block after the title: small-caps/`\large` lines joined with ` · `, `table` floats and bare `tabular`s as pipe tables with their `**Table N: …**` captions, `\IfFileExists` resolved (the word count); logo, rules and spacing dropped (ADR-0058) |
+| TOC, list of figures/tables, `\maketitle` | Dropped |
 | `\section` / `\subsection` | `##` / `###` headings with pandoc's `{#…}` attributes stripped |
 | `\autoref` / `\ref` / `\eqref` | `Section 3` / bare `3` / `(1)` — numbered from the source, so references and captions agree (labels whose prefix is unknown keep pandoc's anchor form) |
-| TikZ & pgfplots figures | Rendered to PNG and linked as `![Figure N](assets/<name>/…)` with `IMAGE_LINKS=on`; the caption is always kept as a bold `**Figure N: …**` line |
+| Float numbering | Matches the compiled document: floats in the stripped title page count (its members table is Table 1 in `main.lot`), labels there still resolve (ADR-0059) |
+| TikZ & pgfplots figures | Rendered to PNG and linked as `![Figure N](assets/<name>/…)` with `IMAGE_LINKS=on`; the caption is always kept as a bold `**Figure N: …**` line — and with no image, the drawing's own node/axis text is kept as a `*Figure content (from the TikZ source):*` note (ADR-0060) |
 | `\includegraphics` figures | Same numbered caption; the referenced image is extracted with `IMAGE_LINKS=on` (a PDF figure is rasterized) |
 | Tables | Pipe tables with a bold `**Table N: caption**` line |
+| Bibliography | Author-year entries close to biblatex's `authoryear`: `Author (Year). 'Title'. In: Journal 46.4, 44:1–44:37. Place: Publisher. url: … (visited on …)` — source-case titles, expanded en-dash ranges, publisher places, no serial comma (ADR-0061); `LATEX_CSL=<file.csl>` overrides the style |
+| Literal text | pandoc's defensive escapes are undone outside math: `\~18/yr` → `~18/yr`, `\[TBD\]` → `[TBD]` (ADR-0058) |
 | Display math | `$$…$$` passthrough, or a rendered PNG with `IMAGE_LINKS=on` |
 | Inline math | `$…$` passthrough (also inside captions) |
 
@@ -116,9 +121,11 @@ TikZ flowcharts and pgfplots charts are rendered from their own source with
 `\usetikzlibrary` declarations collected from its `.sty`/`.tex` files;
 `LATEX_FIGURE_PREAMBLE=<file.tex>` appends extra preamble for anything else.
 *Image links* off (the default) skips rendering entirely and keeps the numbered
-captions; a missing pdflatex or a failed compile does the same with a warning,
-and `LATEX_FIGURES=off` restores the plain pandoc output. LaTeX runs **no AI
-passes** except the RAG summary (ADR-0038).
+captions plus each figure's extracted text; a missing pdflatex or a failed
+compile does the same with a warning, and `LATEX_FIGURES=off` restores the
+plain pandoc output. LaTeX runs **no AI passes** except the RAG summary
+(ADR-0038). `.bib` files are passed to pandoc as case-protected copies (the
+project's files are never modified).
 
 ## How to use
 
@@ -191,9 +198,10 @@ the TUI dispatches (see [Audio transcription](#audio-transcription-optional)).
 It also carries the lazy output preferences: `--env PDF_REFLOW=off` keeps the
 legacy line-per-line paper output, and `--env PDF_BORDERLESS_TABLES=off`
 disables borderless-table reconstruction. For `.tex` projects,
-`--env LATEX_FIGURES=off` disables the TikZ/pgfplots figure pipeline and
+`--env LATEX_FIGURES=off` disables the TikZ/pgfplots figure pipeline,
 `--env LATEX_FIGURE_PREAMBLE=/path/preamble.tex` adds preamble lines to the
-standalone figure render.
+standalone figure render, and `--env LATEX_CSL=/path/style.csl` replaces the
+bundled author-year bibliography style.
 See the [ADR index](docs/adr/README.md) for the rationale.
 
 ### Library

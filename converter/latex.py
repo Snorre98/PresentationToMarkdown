@@ -35,7 +35,7 @@ import re
 import shutil
 import subprocess
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import pymupdf as fitz
@@ -461,6 +461,251 @@ def _title_from_titlepage(body: str | None) -> str:
     return ""
 
 
+_IF_FILE_EXISTS_RE = re.compile(r"\\IfFileExists\s*\{")
+
+
+def _expand_if_file_exists(text: str, base_dir: Path) -> str:
+    """Resolve ``\\IfFileExists{file}{then}{else}`` against the filesystem.
+
+    The standard kernel conditional survives flattening (an existing file's
+    ``\\input`` is inlined into its *then* branch), so evaluating it here keeps
+    a title page's conditional text — the NTNU template's word count — deterministic.
+    """
+    out: list[str] = []
+    index = 0
+    while True:
+        match = _IF_FILE_EXISTS_RE.search(text, index)
+        if match is None:
+            out.append(text[index:])
+            break
+        out.append(text[index : match.start()])
+        pos = match.end() - 1
+        args: list[str] = []
+        for _ in range(3):
+            bounds = _arg_bounds(text, pos)
+            if bounds is None:
+                break
+            args.append(text[bounds[0] + 1 : bounds[1] - 1])
+            pos = bounds[1]
+        if len(args) != 3:
+            out.append(text[match.start() : pos])
+        else:
+            name, then, otherwise = args
+            try:
+                exists = (base_dir / name).is_file()
+            except OSError:
+                exists = False
+            out.append(_expand_if_file_exists(then if exists else otherwise, base_dir))
+        index = pos
+    return "".join(out)
+
+
+# Layout-only commands a title-page text line never contributes content from.
+# Arguments may not cross a line or nest, so the match never swallows the text
+# line that follows the command.
+_FRONT_DROP_RE = re.compile(
+    r"\\(?:vspace|hspace|vskip|setlength|addtolength|rule|vbox|hbox|makebox|"
+    r"framebox|parbox|resizebox|scalebox|fontsize|selectfont|write18|immediate|"
+    r"newpage|clearpage|pagebreak|linebreak|newline|smallskip|medskip|bigskip|"
+    r"noindent|centering|raggedright|raggedleft|vfill|hfill|quad|qquad|par)\*?"
+    r"(?:[ \t]*(?:\[[^\]\n]*\]|\{[^{}\n]*\}))*",
+    re.IGNORECASE,
+)
+
+
+def _front_text(text: str, base_dir: Path) -> str:
+    """Plain text of a title-page line or caption (chrome commands dropped).
+
+    ``\\textsc{\\LARGE Department …}`` becomes ``Department …`` and
+    ``\\includegraphics``/rules/spacing disappear, while inline ``$…$`` math is
+    kept intact. Used for the front block of :func:`_front_items`.
+    """
+    text = "\n".join(_uncomment(line) for line in text.split("\n"))
+    text = _expand_if_file_exists(text, base_dir)
+    text = re.sub(r"\\(?:begin|end)\s*\{[^{}]*\}", " ", text)
+    text = re.sub(
+        r"\\includegraphics\s*(?:\[[^\]]*\]\s*)?\{[^{}]*\}", " ", text
+    )
+    text = _FRONT_DROP_RE.sub(" ", text)
+    text = re.sub(r"\\\\\s*(?:\[[^\]]*\])?", " ", text)
+    for _ in range(4):
+        unwrapped = re.sub(r"\\[a-zA-Z@]+\*?\s*\{([^{}]*)\}", r" \1 ", text)
+        if unwrapped == text:
+            break
+        text = unwrapped
+    text = re.sub(r"\\[a-zA-Z@]+\*?", " ", text)
+    text = text.replace("~", " ")
+    text = re.sub(r"[{}]", "", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _tabular_rows(latex: str, base_dir: Path) -> list[list[str]]:
+    """Rows of the first ``tabular`` environment in ``latex``, as plain cells.
+
+    The column specification is skipped, ``&`` splits cells, ``\\\\`` splits
+    rows and the booktabs/``\\hline`` rules disappear. Ragged rows are
+    tolerated by the caller, which pads them.
+    """
+    match = re.search(r"\\begin\{tabular\*?\}", latex)
+    if match is None:
+        return []
+    start = match.end()
+    spec = _arg_bounds(latex, start)
+    if spec is not None:
+        start = spec[1]
+    end = latex.find(r"\end{tabular}", start)
+    if end < 0:
+        end = len(latex)
+    body = re.sub(r"\\(?:hline|toprule|midrule|bottomrule)\b", " ", latex[start:end])
+    body = re.sub(r"\\cline\s*\{[^{}]*\}", " ", body)
+    rows: list[list[str]] = []
+    for raw in re.split(r"\\\\", body):
+        raw = raw.strip()
+        if not raw:
+            continue
+        cells = [_front_text(cell, base_dir) for cell in raw.split("&")]
+        rows.append([cell.replace("|", r"\|") for cell in cells])
+    return rows
+
+
+@dataclass(frozen=True)
+class _FrontTable:
+    """A title-page ``table`` float preserved in the front block (ADR-0058)."""
+
+    number: int | None
+    caption: str
+    rows: list[list[str]]
+
+
+_TABULAR_ENV_RE = re.compile(
+    r"\\begin\{tabular\*?\}.*?\\end\{tabular\*?\}", re.DOTALL
+)
+
+
+def _front_items(
+    flattened: str,
+    numbers: _Numbering,
+    base_dir: Path,
+    title: str,
+) -> list[str | _FrontTable]:
+    """The title page's content, in source order (ADR-0058).
+
+    Text lines become plain paragraphs (a run of consecutive lines joined with
+    ``·``, the title line itself dropped); ``table``/``tabular`` floats become
+    :class:`_FrontTable` items numbered like the compiled document. A LaTeX
+    line break (``\\\\``, its ``[…]`` spacing dropped) ends a line — a soft
+    source newline does not — so an inlined ``\\input`` never splits a line.
+    Chrome (logo, rules, spacing, ``\\write18``) contributes nothing.
+    """
+    match = _TITLEPAGE_RE.search(flattened)
+    if match is None:
+        return []
+    body = _expand_if_file_exists(match.group("body"), base_dir)
+    blanked = _blank_latex(body)
+    table_floats = [
+        float_
+        for float_ in numbers.floats
+        if float_.kind == "table" and match.start() <= float_.start < match.end()
+    ]
+    regions: list[tuple[int, int, _Float | None]] = [
+        (env.start(), env.end(), float_)
+        for env, float_ in zip(
+            (
+                env
+                for env in _FLOAT_ENV_RE.finditer(blanked)
+                if env.group("env") == "table"
+            ),
+            table_floats,
+        )
+    ]
+    # A bare ``tabular`` (no ``table`` float) carries no number but its rows
+    # still belong in the front block.
+    for tabular in _TABULAR_ENV_RE.finditer(blanked):
+        if not any(start <= tabular.start() < end for start, end, _ in regions):
+            regions.append((tabular.start(), tabular.end(), None))
+    regions.sort(key=lambda region: region[0])
+    items: list[str | _FrontTable] = []
+    run: list[str] = []
+
+    def flush() -> None:
+        if run:
+            items.append(" · ".join(run))
+            run.clear()
+
+    def scan(segment: str) -> None:
+        for chunk in re.split(r"\\\\\s*(?:\[[^\]]*\])?", segment):
+            text = _front_text(chunk, base_dir)
+            if text and text != title:
+                run.append(text)
+
+    def table_item(start: int, end: int, float_: _Float | None) -> _FrontTable:
+        caption = ""
+        caption_cmd = _CAPTION_CMD_RE.search(blanked, start, end)
+        if caption_cmd is not None:
+            bounds = _arg_bounds(blanked, caption_cmd.end())
+            if bounds is not None:
+                caption = _front_text(body[bounds[0] + 1 : bounds[1] - 1], base_dir)
+        return _FrontTable(
+            float_.number if float_ is not None else None,
+            caption,
+            _tabular_rows(body[start:end], base_dir),
+        )
+
+    cursor = 0
+    for start, end, float_ in regions:
+        scan(body[cursor:start])
+        flush()
+        items.append(table_item(start, end, float_))
+        cursor = end
+    scan(body[cursor:])
+    flush()
+    return items
+
+
+def _front_markdown(items: list[str | _FrontTable]) -> str:
+    """Render :func:`_front_items` as the Markdown front block (ADR-0058).
+
+    Text items become paragraphs; a table item becomes its numbered caption
+    line plus a pipe table (the first tabular row is the header).
+    """
+    blocks: list[str] = []
+    for item in items:
+        if isinstance(item, str):
+            blocks.append(item)
+            continue
+        if not item.rows:
+            continue
+        width = max(len(row) for row in item.rows)
+        grid = [row + [""] * (width - len(row)) for row in item.rows]
+        lines: list[str] = []
+        if item.number is not None and item.caption:
+            lines.extend([f"**Table {item.number}: {item.caption}**", ""])
+        lines.append("| " + " | ".join(grid[0]) + " |")
+        lines.append("| " + " | ".join("---" for _ in range(width)) + " |")
+        for row in grid[1:]:
+            lines.append("| " + " | ".join(row) + " |")
+        blocks.append("\n".join(lines))
+    return _unescape_literals("\n\n".join(blocks))
+
+
+def _stripped_float_seeds(flattened: str, numbers: _Numbering) -> dict[str, int]:
+    """Float counters consumed before the body begins (ADR-0059).
+
+    ``_strip_frontmatter`` removes the title page, but the compiled document
+    still counts the floats it held (the NTNU template's members table is
+    Table 1 in ``main.lot``). The seed continues the body scan from there, so
+    the Markdown's numbers match the compiled document's.
+    """
+    spans = [match.span() for match in _TITLEPAGE_RE.finditer(flattened)]
+    seeds = {"figure": 0, "table": 0}
+    for float_ in numbers.floats:
+        if float_.number is None:
+            continue
+        if any(start <= float_.start < end for start, end in spans):
+            seeds[float_.kind] += 1
+    return seeds
+
+
 @dataclass(frozen=True)
 class _Caption:
     """A numbered float caption found in the source."""
@@ -498,13 +743,20 @@ class _Numbering:
     floats: list[_Float]
 
 
-def _floats(blanked: str) -> list[_Float]:
+def _floats(blanked: str, seeds: dict[str, int] | None = None) -> list[_Float]:
     """Every ``figure``/``table`` environment with its caption and number.
 
     An uncaptioned float consumes no number, mirroring ``\\refstepcounter``
     (which ``\\caption`` calls); a ``\\caption*`` is unnumbered by definition.
+    ``seeds`` starts the per-kind counters at a value other than zero, for
+    floats the compiled document numbered before the text handed to pandoc
+    (a stripped title page's table; ADR-0059).
     """
     counters = {"figure": 0, "table": 0}
+    if seeds:
+        for kind, value in seeds.items():
+            if kind in counters:
+                counters[kind] = value
     floats: list[_Float] = []
     for match in _FLOAT_ENV_RE.finditer(blanked):
         kind = match.group("env")
@@ -540,7 +792,7 @@ def _section_string(state: list[int]) -> str | None:
     return ".".join(str(state[i]) for i in range(used[0], used[-1] + 1))
 
 
-def _numbering(blanked: str) -> _Numbering:
+def _numbering(blanked: str, seeds: dict[str, int] | None = None) -> _Numbering:
     """Number labels and captions the way the compiled PDF does (ADR-0056).
 
     Sections count level by level (``2``, ``2.1``); a label inside a float takes
@@ -548,9 +800,10 @@ def _numbering(blanked: str) -> _Numbering:
     display-math environments count in order. This is what makes ``\\autoref``
     into ``Section 3`` / ``Figure 1`` / ``Table 4`` / ``Equation 2`` without
     asking pandoc (whose counters cannot see a label that a replaced figure
-    environment removed, nor number an equation).
+    environment removed, nor number an equation). ``seeds`` continues the float
+    counters from a preceding scan (ADR-0059).
     """
-    floats = _floats(blanked)
+    floats = _floats(blanked, seeds)
     captions = [
         _Caption(float_.kind, float_.number, float_.caption[0], float_.caption[1])
         for float_ in floats
@@ -710,6 +963,120 @@ class _Figure:
     kind: str  # "render" (TikZ/pgfplots body) | "file" (project image)
     body: str = ""  # LaTeX rendered through standalone + pdflatex
     source: Path | None = None  # project image (kind == "file")
+    labels: list[str] = field(default_factory=list)  # TikZ text (ADR-0060)
+
+
+# A TikZ/pgfplots figure's text is extracted from its source so it survives
+# when no image is written (ADR-0060). The marker stays a plain paragraph.
+_FIGURE_NOTE = "ptmfignote-{n}"
+_FIGURE_NOTE_RE = re.compile(r"^ptmfignote-(?P<n>\d+)$", re.MULTILINE)
+
+_TIKZ_MATH_RE = re.compile(r"\$[^$]*\$")
+
+
+def _skip_space(text: str, index: int) -> int:
+    """Index of the first non-space character at or after ``index``."""
+    while index < len(text) and text[index] in " \t\n\r":
+        index += 1
+    return index
+
+
+def _skip_balanced(text: str, index: int, open_ch: str, close_ch: str) -> int:
+    """Index just past the ``close_ch`` matching the ``open_ch`` at ``index``."""
+    depth = 0
+    while index < len(text):
+        if text[index] == open_ch:
+            depth += 1
+        elif text[index] == close_ch:
+            depth -= 1
+            if depth == 0:
+                return index + 1
+        index += 1
+    return len(text)
+
+
+def _tikz_text(raw: str) -> str:
+    """One node/axis label as plain inline text, keeping ``$…$`` math intact."""
+    math: list[str] = []
+
+    def stash(match: re.Match[str]) -> str:
+        math.append(match.group(0))
+        return f"\x00{len(math) - 1}\x00"
+
+    text = _TIKZ_MATH_RE.sub(stash, raw)
+    text = text.replace("\\\\", "; ")
+    text = re.sub(r"\\[ ,;!:~]", " ", text)
+    for _ in range(3):
+        unwrapped = re.sub(r"\\[a-zA-Z@]+\*?\s*\{([^{}]*)\}", r"\1", text)
+        if unwrapped == text:
+            break
+        text = unwrapped
+    text = re.sub(r"\\[a-zA-Z@]+\*?", " ", text)
+    text = re.sub(r"[{}]", "", text)
+    text = re.sub(r";\s*$", "", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return re.sub(r"\x00(\d+)\x00", lambda m: math[int(m.group(1))], text)
+
+
+def _tikz_labels(body: str) -> list[str]:
+    """The text content of a TikZ/pgfplots body, in document order (ADR-0060).
+
+    Every ``\\node`` command and every ``node[…]`` attachment on a path is
+    collected — boxes, box text, edge labels — so a diagram whose image is not
+    written still contributes its content to the Markdown. pgfplots axis labels
+    and ``\\legend`` entries are picked up too. Inline ``$…$`` math is kept.
+    """
+    labels: list[str] = []
+    for match in re.finditer(r"\bnode\b", body):
+        start = match.start()
+        previous = start - 1
+        while previous >= 0 and body[previous] in " \t\n\r":
+            previous -= 1
+        if previous < 0:
+            continue
+        if body[previous] == "\\":
+            if previous != start - 1:
+                continue
+        elif body[previous] not in ")-":
+            continue
+        index = _skip_space(body, match.end())
+        if index < len(body) and body[index] == "[":
+            index = _skip_balanced(body, index, "[", "]")
+        while True:
+            index = _skip_space(body, index)
+            if body.startswith("at", index) and not re.match(
+                r"[a-zA-Z]", body[index + 2 : index + 3]
+            ):
+                index += 2
+                continue
+            if index < len(body) and body[index] == "(":
+                index = _skip_balanced(body, index, "(", ")")
+                continue
+            break
+        index = _skip_space(body, index)
+        if index >= len(body) or body[index] != "{":
+            continue
+        end = _balanced_end(body, index)
+        text = _tikz_text(body[index + 1 : end - 1])
+        if text:
+            labels.append(text)
+    for assign in re.finditer(r"\b(?:xlabel|ylabel|zlabel)\s*=\s*\{", body):
+        end = _balanced_end(body, assign.end() - 1)
+        text = _tikz_text(body[assign.end() : end - 1])
+        if text:
+            labels.append(text)
+    for legend in re.finditer(r"\\legend\s*\{", body):
+        end = _balanced_end(body, legend.end() - 1)
+        for entry in body[legend.end() : end - 1].split(","):
+            text = _tikz_text(entry)
+            if text:
+                labels.append(text)
+    return labels
+
+
+def _figure_note(figure: _Figure) -> str:
+    """The note line standing in for an unwritten figure image (ADR-0060)."""
+    return f"*Figure content (from the TikZ source):* {' · '.join(figure.labels)}"
 
 
 def _figures_enabled() -> bool:
@@ -826,15 +1193,20 @@ def _replace_figures(
             caption_text = text[float_.caption[0] : float_.caption[1]].strip()
             caption = f"\n\n\\textbf{{Figure {float_.number}: {caption_text}}}"
         body = ""
+        labels: list[str] = []
         if kind == "render":
             removals = [
                 (start - float_.inner_start, end - float_.inner_start)
                 for start, end in _float_removals(blanked, float_)
             ]
             body = _strip_spans(text[float_.inner_start : float_.inner_end], removals)
-        figures.append(_Figure(marker, float_.number, label, kind, body, source))
+            labels = _tikz_labels(body)
+        note = f"\n\n{_FIGURE_NOTE.format(n=len(figures) + 1)}" if labels else ""
+        figures.append(
+            _Figure(marker, float_.number, label, kind, body, source, labels)
+        )
         edits.append(
-            (float_.start, float_.end, f"\n\n\\includegraphics{{{marker}}}{caption}")
+            (float_.start, float_.end, f"\n\n\\includegraphics{{{marker}}}{caption}{note}")
         )
     return _apply_edits(text, edits), figures
 
@@ -990,23 +1362,37 @@ def _replace_figure_markers(
     dedup: dict[str, str] | None,
     warnings: list[str],
 ) -> str:
-    """Turn the ``![](ptmfig-N)`` markers into the figure's image (or nothing).
+    """Turn the ``![](ptmfig-N)`` markers into the figure's image (or a note).
 
     With image links on, each figure's bytes — the rendered TikZ body or the
     referenced project image — are written through :func:`write_image`
     (content-hash deduplicated, sharing the counter with the other assets) and
     referenced as ``![Figure N](assets/<stem>/…)``. With image links off the
     marker is dropped and the numbered caption line pandoc emitted stands
-    alone, with one warning per figure. Rendering is best-effort: a missing
-    pdflatex or a failed compile keeps the caption and never fails the
-    conversion.
+    alone, with one warning per figure — but a TikZ figure then keeps its text
+    as a ``*Figure content …*`` note (ADR-0060). Rendering is best-effort: a
+    missing pdflatex or a failed compile falls back to the same note and never
+    fails the conversion.
     """
     if not figures:
         return md
+
+    def notes(md_text: str, written: dict[str, str]) -> str:
+        """Replace the note markers with the unwritten figures' text."""
+        wanted = {
+            figure.marker: _figure_note(figure)
+            for figure in figures
+            if figure.labels and figure.marker not in written
+        }
+        return _FIGURE_NOTE_RE.sub(
+            lambda match: wanted.get(f"ptmfig-{match.group('n')}", ""), md_text
+        )
+
     by_marker = {figure.marker: figure for figure in figures}
     if assets_dir is None:
         for figure in figures:
             warnings.append(f"{_figure_name(figure)}: image omitted (IMAGE_LINKS=off)")
+        md = notes(md, {})
         return re.sub(r"\n{3,}", "\n\n", _FIGURE_MARKER_RE.sub("", md))
 
     can_render = latex_available()
@@ -1047,6 +1433,7 @@ def _replace_figure_markers(
         alt = f"Figure {figure.number}" if figure.number else "figure"
         return f"![{alt}]({dest})"
 
+    md = notes(md, written)
     return re.sub(r"\n{3,}", "\n\n", _FIGURE_MARKER_RE.sub(repl, md))
 
 
@@ -1074,6 +1461,258 @@ def _find_bibs(source: str, project_dir: Path) -> list[Path]:
     return bibs
 
 
+# The bibliography style (an author-year rendering close to biblatex's
+# ``authoryear``): source-case titles, ``In:``/``pp.``, expanded page ranges,
+# ``(visited on …)``, publisher places and ``et al.``; ADR-0061. Written into
+# pandoc's temp dir and passed with ``--csl``.
+_AUTHOR_YEAR_CSL = r"""<?xml version="1.0" encoding="utf-8"?>
+<style xmlns="http://purl.org/net/xbiblio/csl" class="in-text" version="1.0"
+       demote-non-dropping-particle="never" page-range-format="expanded"
+       default-locale="en-GB">
+  <info>
+    <title>PresentationToMarkdown author-year</title>
+    <title-short>PTM author-year</title-short>
+    <id>https://github.com/presentation-to-markdown/csl/author-year</id>
+    <updated>2026-10-15T00:00:00+00:00</updated>
+    <category citation-format="author-date"/>
+  </info>
+
+  <macro name="author">
+    <names variable="author">
+      <name name-as-sort-order="first" sort-separator=", " delimiter=", "
+            and="text" delimiter-precedes-last="never"
+            et-al-min="4" et-al-use-first="1"/>
+      <substitute>
+        <names variable="editor"/>
+        <text variable="title"/>
+      </substitute>
+    </names>
+  </macro>
+
+  <macro name="author-short">
+    <names variable="author">
+      <name form="short" delimiter=", " and="text" delimiter-precedes-last="never"
+            et-al-min="3" et-al-use-first="1"/>
+      <substitute>
+        <names variable="editor"/>
+        <text variable="title" form="short"/>
+      </substitute>
+    </names>
+  </macro>
+
+  <macro name="year">
+    <date variable="issued">
+      <date-part name="year"/>
+    </date>
+  </macro>
+
+  <macro name="url">
+    <choose>
+      <if variable="doi">
+        <group delimiter=" ">
+          <text value="doi:"/>
+          <text variable="doi"/>
+        </group>
+      </if>
+      <else-if variable="url">
+        <group delimiter=" ">
+          <text value="url:"/>
+          <text variable="url"/>
+          <group prefix="(" suffix=")" delimiter=" ">
+            <text value="visited on"/>
+            <date variable="accessed">
+              <date-part name="day" form="ordinal" suffix=" "/>
+              <date-part name="month" form="short" suffix=" "/>
+              <date-part name="year"/>
+            </date>
+          </group>
+        </group>
+      </else-if>
+    </choose>
+  </macro>
+
+  <macro name="head">
+    <group delimiter=" ">
+      <text macro="author"/>
+      <text macro="year" prefix="(" suffix=")"/>
+    </group>
+  </macro>
+
+  <citation et-al-min="3" et-al-use-first="1" disambiguate-add-year-suffix="true"
+            disambiguate-add-givenname="true" givenname-disambiguation-rule="by-cite">
+    <sort>
+      <key macro="author-short"/>
+      <key variable="issued"/>
+    </sort>
+    <layout prefix="(" suffix=")" delimiter="; ">
+      <group delimiter=" ">
+        <text macro="author-short"/>
+        <text macro="year"/>
+      </group>
+    </layout>
+  </citation>
+
+  <bibliography et-al-min="4" et-al-use-first="1" subsequent-author-substitute="&#8212;"
+                subsequent-author-substitute-rule="complete-all">
+    <sort>
+      <key macro="author"/>
+      <key variable="issued"/>
+      <key variable="title"/>
+    </sort>
+    <layout suffix=".">
+      <choose>
+        <if type="book">
+          <group delimiter=". ">
+            <text macro="head"/>
+            <text variable="title" font-style="italic"/>
+            <group delimiter=" ">
+              <number variable="edition" form="ordinal"/>
+              <text value="ed."/>
+            </group>
+            <group delimiter=": ">
+              <text variable="publisher-place"/>
+              <text variable="publisher"/>
+            </group>
+            <text macro="url"/>
+          </group>
+        </if>
+        <else-if type="article-journal article-magazine article-newspaper">
+          <group delimiter=". ">
+            <text macro="head"/>
+            <text variable="title" quotes="true"/>
+            <group delimiter=", ">
+              <group delimiter=" ">
+                <text value="In:"/>
+                <text variable="container-title" font-style="italic"/>
+                <group delimiter=".">
+                  <text variable="volume"/>
+                  <text variable="issue"/>
+                </group>
+              </group>
+              <text variable="page"/>
+            </group>
+            <text macro="url"/>
+          </group>
+        </else-if>
+        <else-if type="paper-conference chapter">
+          <group delimiter=". ">
+            <text macro="head"/>
+            <text variable="title" quotes="true"/>
+            <group delimiter=", ">
+              <group delimiter=" ">
+                <text value="In:"/>
+                <text variable="container-title" font-style="italic"/>
+              </group>
+              <group delimiter=" ">
+                <label variable="page" form="short"/>
+                <text variable="page"/>
+              </group>
+            </group>
+            <text macro="url"/>
+          </group>
+        </else-if>
+        <else>
+          <group delimiter=". ">
+            <text macro="head"/>
+            <text variable="title"/>
+            <text macro="url"/>
+          </group>
+        </else>
+      </choose>
+    </layout>
+  </bibliography>
+</style>
+"""
+
+# BibTeX fields pandoc's reader sentence-cases when they are not protected
+# with braces, so the author's capitalisation would be lost (ADR-0061).
+_BIB_PROTECT_FIELDS = r"title|booktitle|series|subtitle"
+
+_BIB_FIELD_RE = re.compile(
+    r"(?:(?<=\n)|(?<=[{,]))\s*(" + _BIB_PROTECT_FIELDS + r")\s*=\s*",
+    re.IGNORECASE,
+)
+
+
+def _bib_value_end(text: str, start: int) -> tuple[int, int] | None:
+    """Content span of a BibTeX field value at ``start`` (quoted or braced)."""
+    if start >= len(text):
+        return None
+    if text[start] == '"':
+        index = start + 1
+        while index < len(text):
+            if text[index] == "\\":
+                index += 2
+                continue
+            if text[index] == '"':
+                return start + 1, index
+            index += 1
+        return None
+    if text[start] == "{":
+        end = _balanced_end(text, start)
+        return start + 1, end - 1
+    return None
+
+
+def _protect_bib_cases(text: str) -> str:
+    """Brace-protect case-sensitive BibTeX values before pandoc reads them.
+
+    pandoc's BibTeX reader sentence-cases unprotected ``title``/``booktitle``/
+    ``series`` values, so even a bibliography style that never title-cases would
+    print ``The Foundations of Cost-Sensitive Learning`` as ``The foundations
+    of cost-sensitive learning`` — the author's capitals removed. Wrapping the
+    value in a brace group preserves the case exactly; the value's content is
+    unchanged (ADR-0061).
+    """
+    out: list[str] = []
+    index = 0
+    while True:
+        match = _BIB_FIELD_RE.search(text, index)
+        if match is None:
+            out.append(text[index:])
+            break
+        value_start = match.end()
+        if value_start < len(text) and text[value_start] == '"':
+            bounds = _bib_value_end(text, value_start)
+            if bounds is not None:
+                content = text[bounds[0] : bounds[1]]
+                if content.startswith("{") and content.endswith("}"):
+                    out.append(text[index : bounds[1] + 1])
+                else:
+                    out.append(text[index : bounds[0]] + "{" + content + "}" + '"')
+                index = bounds[1] + 1
+                continue
+        elif value_start < len(text) and text[value_start] == "{":
+            bounds = _bib_value_end(text, value_start)
+            if bounds is not None:
+                content = text[bounds[0] : bounds[1]]
+                if content.startswith("{") and content.endswith("}"):
+                    out.append(text[index : bounds[1] + 1])
+                else:
+                    out.append(text[index : value_start] + "{{" + content + "}}")
+                index = bounds[1] + 1
+                continue
+        out.append(text[index:value_start])
+        index = value_start
+    return "".join(out)
+
+
+def _bibliography_style(warnings: list[str]) -> str:
+    """The CSL pandoc renders citations and the bibliography with (ADR-0061).
+
+    ``LATEX_CSL=<file.csl>`` replaces the bundled author-year style, like
+    ``LATEX_FIGURE_PREAMBLE`` does for figures. Read lazily so an engine
+    ``--env`` flip applies to the next conversion.
+    """
+    override = os.environ.get("LATEX_CSL", "").strip()
+    if override:
+        try:
+            return Path(override).expanduser().read_text(encoding="utf-8")
+        except OSError as exc:
+            warnings.append(f"Could not read LATEX_CSL={override}: {exc}")
+    return _AUTHOR_YEAR_CSL
+
+
 def _run_pandoc(
     body: str,
     project_dir: Path,
@@ -1082,14 +1721,19 @@ def _run_pandoc(
 ) -> str:
     """Run pandoc on the flattened body; return the Markdown.
 
-    Raises :class:`RuntimeError` when pandoc itself fails (timeout / non-zero
-    exit), so the caller surfaces the pandoc message as the conversion error.
+    The bundled author-year CSL is passed for citations and the bibliography
+    (ADR-0061), and a case-protected copy of every ``.bib`` is handed to pandoc
+    (the real files are never modified). Raises :class:`RuntimeError` when
+    pandoc itself fails (timeout / non-zero exit), so the caller surfaces the
+    pandoc message as the conversion error.
     """
     with tempfile.TemporaryDirectory(prefix="ptm-latex-") as tmp:
         tmpd = Path(tmp)
         flat = tmpd / "flattened.tex"
         flat.write_text(body, encoding="utf-8")
         out = tmpd / "out.md"
+        csl = tmpd / "author-year.csl"
+        csl.write_text(_bibliography_style(warnings), encoding="utf-8")
         cmd = [
             PANDOC_PATH,
             "-f",
@@ -1099,9 +1743,18 @@ def _run_pandoc(
             "--wrap=none",
             "--shift-heading-level-by=1",
             "--citeproc",
+            "--csl",
+            str(csl),
         ]
-        for bib in bibs:
-            cmd += ["--bibliography", str(bib)]
+        for index, bib in enumerate(bibs):
+            try:
+                content = bib.read_text(encoding="utf-8", errors="replace")
+            except OSError as exc:
+                warnings.append(f"Could not read bibliography {bib}: {exc}")
+                continue
+            protected = tmpd / f"bib-{index}.bib"
+            protected.write_text(_protect_bib_cases(content), encoding="utf-8")
+            cmd += ["--bibliography", str(protected)]
         cmd += [str(flat), "-o", str(out)]
         try:
             proc = subprocess.run(
@@ -1160,6 +1813,57 @@ def _cleanup_bibliography(md: str) -> str:
     md = _BIB_BODY_RE.sub("## Bibliography", md)
     md = _FENCE_RE.sub("", md)
     return md
+
+
+def _polish_bibliography(md: str) -> str:
+    """Restore the dashes the Markdown writer escaped in the bibliography.
+
+    pandoc writes an en dash as ``--`` and the em dash of a repeated-author
+    substitute as ``---``; Obsidian shows both literally. Only the bibliography
+    block is touched, and only where the meaning is unambiguous: a ``--``
+    between digits is a page range, a leading ``---`` a repeated author
+    (ADR-0061).
+    """
+    start = md.rfind("## Bibliography")
+    if start < 0:
+        return md
+    head, block = md[:start], md[start:]
+    block = re.sub(r"(?<=\d)--(?=\d)", "\u2013", block)
+    block = re.sub(r"(?m)^(\s*-\s+)---(?=\s)", "\\1\u2014", block)
+    return head + block
+
+
+_MATH_SPAN_RE = re.compile(r"\$\$.*?\$\$|\$[^$\n]*\$", re.DOTALL)
+
+
+def _unescape_literals(md: str) -> str:
+    """Undo pandoc's over-escaping of literal text outside math (ADR-0058).
+
+    The Markdown writer escapes ``~`` and ``[``/``]`` even where no Markdown
+    meaning is at stake (``\\~18/yr`` in a table, ``\\[TBD\\]``), which shows
+    the backslash in Obsidian. Only those two unambiguous literal escapes are
+    undone, and never inside ``$…$``/``$$…$$`` math, where the backslash is TeX.
+    """
+
+    def chunk(text: str) -> str:
+        text = re.sub(r"\\~(?![{A-Za-z\\])", "~", text)
+
+        def brackets(match: re.Match[str]) -> str:
+            following = text[match.end() : match.end() + 1]
+            if following in ("(", "["):
+                return match.group(0)
+            return f"[{match.group(1)}]"
+
+        return re.sub(r"\\\[([^\[\]\n]{1,60})\\]", brackets, text)
+
+    parts: list[str] = []
+    last = 0
+    for match in _MATH_SPAN_RE.finditer(md):
+        parts.append(chunk(md[last : match.start()]))
+        parts.append(match.group(0))
+        last = match.end()
+    parts.append(chunk(md[last:]))
+    return "".join(parts)
 
 
 def _rewrite_images(
@@ -1385,6 +2089,12 @@ class LatexConverter(Converter):
             authors = _strip_latex(_braced(flattened, "author") or "")
 
             bibs = _find_bibs(flattened, project_dir)
+            # The compiled document numbers the floats in the title page too,
+            # so the whole flattened source is scanned for the counters the
+            # stripped front matter consumes (ADR-0059).
+            full_numbers = _numbering(_blank_latex(flattened))
+            seeds = _stripped_float_seeds(flattened, full_numbers)
+            front = _front_items(flattened, full_numbers, entry.parent, title)
             body = _strip_frontmatter(flattened)
 
             # One deterministic scan numbers sections, floats and equations
@@ -1393,7 +2103,12 @@ class LatexConverter(Converter):
             # label a replaced figure environment removed and cannot number an
             # equation at all.
             blanked = _blank_latex(body)
-            numbers = _numbering(blanked)
+            numbers = _numbering(blanked, seeds)
+            # A label only the stripped title page carries (its members table)
+            # still has a number, so a \autoref to it resolves.
+            labels = dict(full_numbers.labels)
+            labels.update(numbers.labels)
+            numbers = _Numbering(labels, numbers.captions, numbers.floats)
             body = _apply_edits(
                 body, _ref_edits(blanked, numbers) + _table_caption_edits(numbers)
             )
@@ -1403,14 +2118,16 @@ class LatexConverter(Converter):
                 # on spans of the current text (labels and numbers unchanged).
                 figure_blanked = _blank_latex(body)
                 body, figures = _replace_figures(
-                    body, figure_blanked, _numbering(figure_blanked), project_dir,
-                    result.warnings,
+                    body, figure_blanked, _numbering(figure_blanked, seeds),
+                    project_dir, result.warnings,
                 )
 
             md = _run_pandoc(body, project_dir, bibs, result.warnings)
             md = _rewrite_md_refs(md, numbers)
             md = _strip_attrs(md)
+            md = _unescape_literals(md)
             md = _cleanup_bibliography(md)
+            md = _polish_bibliography(md)
             md = _bold_table_captions(md)
 
             if config.image_links_enabled():
@@ -1433,6 +2150,9 @@ class LatexConverter(Converter):
             lines = [f"# {title}", ""]
             if authors:
                 lines.extend([f"*{authors}*", ""])
+            if front:
+                lines.append(_front_markdown(front))
+                lines.append("")
             lines.append(md.rstrip())
             lines.append("")
 

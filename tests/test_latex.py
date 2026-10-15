@@ -7,6 +7,7 @@ from converter import collect_inputs, config, convert_file
 from converter.latex import LatexConverter, latex_available, pandoc_available
 
 from tests.make_test_latex import (
+    build_bibliography_project,
     build_figure_project,
     build_project,
     build_titlepage_project,
@@ -184,22 +185,30 @@ def test_convert_latex_bibliography(tmp_path):
     assert "Knuth" in text
 
 
-# --- Title block (ADR-0056) ------------------------------------------------
+# --- Title block (ADR-0056/0058/0059) ----------------------------------------
 
 
 @needs_pandoc
 def test_latex_title_from_titlepage(tmp_path):
-    """No ``\\title``: the title page's biggest line becomes the title."""
+    """No ``\\title``: the biggest line is the title, the rest survives."""
     project = build_titlepage_project(tmp_path)
     result = convert_file(project, tmp_path)
     assert result.error is None
     text = result.md_path.read_text(encoding="utf-8")
-    assert text.startswith("# Assignment 7 - Problem D\n\n## Introduction\n")
-    # The rest of the title page is template chrome, not content.
-    assert "*Alice*" not in text  # no \author → no authors line
-    assert "Department of Computer Science" not in text
-    assert "Word count" not in text
-    assert "Autumn 2026" not in text
+    assert text.startswith(
+        "# Assignment 7 - Problem D\n\n"
+        "Department of Computer Science · TDT4259 Applied Data Science\n\n"
+        "**Table 1: Members**\n\n"
+        "| Given name | Familyname |\n"
+        "| --- | --- |\n"
+        "| Alice | Smith |\n\n"
+        "Word count: 1234 words · Autumn 2026\n\n"
+        "## Introduction\n"
+    )
+    # The compiled document counts the members table as Table 1, so the body's
+    # table is Table 2 and both \autoref forms agree (ADR-0059).
+    assert "**Table 2: Key figures**" in text
+    assert "See Table 2 and Table 1." in text
 
 
 @needs_pandoc
@@ -257,6 +266,7 @@ def test_latex_tikz_and_pgfplots_figures_rendered(tmp_path, monkeypatch):
     assert "**Figure 2: A pgfplots line.**" in text
     assert "**Figure 3: A picture.**" in text
     assert "**Table 1: Key figures**" in text
+    assert "*Figure content" not in text  # image written → no text substitute
     assert "<figure" not in text and "<math" not in text
     pngs = sorted((tmp_path / "assets" / "figs").glob("*.png"))
     assert len(pngs) == 4  # three figures plus the rendered display equation
@@ -270,7 +280,11 @@ def test_latex_tikz_and_pgfplots_figures_rendered(tmp_path, monkeypatch):
 
 @needs_pandoc
 def test_latex_figures_captions_only_without_image_links(tmp_path):
-    """``IMAGE_LINKS`` off: captions stand in, one warning per figure."""
+    """``IMAGE_LINKS`` off: captions stand in, one warning per figure.
+
+    A TikZ figure's text content survives as a note (ADR-0060); a pgfplots
+    chart without labels contributes no note.
+    """
     project = build_figure_project(tmp_path)
     result = convert_file(project, tmp_path)
     assert result.error is None
@@ -278,6 +292,11 @@ def test_latex_figures_captions_only_without_image_links(tmp_path):
     assert "**Figure 1: The $c_{FN} \\gg c_{FP}$ flow.**" in text
     assert "**Figure 2: A pgfplots line.**" in text
     assert "**Figure 3: A picture.**" in text
+    assert (
+        "*Figure content (from the TikZ source):* start · "
+        "finish; with $c_{FN} \\gg c_{FP}$ · above the line"
+    ) in text
+    assert text.count("*Figure content") == 1  # only the labelled flowchart
     assert "![Figure" not in text
     assert "<figure" not in text and "<math" not in text
     assert not (tmp_path / "assets").exists()
@@ -334,7 +353,7 @@ def test_latex_figure_preamble_env(tmp_path, monkeypatch):
     )
     preamble = tmp_path / "preamble.tex"
     preamble.write_text(
-        "\\tikzset{box/.style = {rectangle, draw, fill=green!20}}\n",
+        "\\tikzset{box/.style = {rectangle, draw, fill=green!20, align=center}}\n",
         encoding="utf-8",
     )
     monkeypatch.setenv("IMAGE_LINKS", "on")
@@ -356,3 +375,159 @@ def test_latex_figures_off_keeps_pandoc_output(tmp_path, monkeypatch):
     text = result.md_path.read_text(encoding="utf-8")
     assert "<figure" in text  # pandoc's own caption-only stub
     assert "![Figure" not in text
+
+
+# --- Literal unescaping (ADR-0058) ------------------------------------------
+
+
+@needs_pandoc
+def test_latex_literal_escapes_unescaped(tmp_path):
+    """``\\~18/yr`` and ``\\[TBD\\]`` lose pandoc's literal backslashes."""
+    project = build_project(tmp_path)
+    result = convert_file(project, tmp_path)
+    assert result.error is None
+    text = result.md_path.read_text(encoding="utf-8")
+    assert "(~18/yr)" in text
+    assert "[TBD]" in text
+    assert "\\~" not in text
+    assert "\\[TBD\\]" not in text
+
+
+# --- Bibliography style (ADR-0061) ------------------------------------------
+
+
+@needs_pandoc
+def test_latex_bibliography_style(tmp_path):
+    """The bundled CSL renders the bibliography close to biblatex's output."""
+    project = build_bibliography_project(tmp_path)
+    result = convert_file(project, tmp_path)
+    assert result.error is None
+    text = result.md_path.read_text(encoding="utf-8")
+    # In-text citations stay author-year, with year suffixes for same-author
+    # entries.
+    assert "(Elkan 2001)" in text
+    assert "(Hernán and Robins 2020)" in text
+    assert "(IBM 2025a" in text and "2025b)" in text
+    # Source-case titles (not title-cased), the title-cased booktitle intact,
+    # an expanded en-dash page range, ``In:``/``pp.``, the publisher place and
+    # the visited date.
+    assert (
+        "- Elkan, Charles (2001). 'The Foundations of Cost-Sensitive Learning'. "
+        "In: *Proceedings of the Seventeenth International Joint Conference on "
+        "Artificial Intelligence (IJCAI)*, pp. 973–978. "
+        "url: <https://example.org/elkan.pdf>."
+    ) in text
+    assert (
+        "- Hernán, Miguel A. and James M. Robins (2020). "
+        "*Causal Inference: What If*. Boca Raton: Chapman & Hall/CRC."
+    ) in text
+    assert (
+        "- IBM (2025a). Causal Inference. url: <https://example.org/causal> "
+        "(visited on 30th Sept. 2026)."
+    ) in text
+    assert "- — (2025b). What is human-in-the-loop?" in text
+    assert "973--" not in text  # ranges are expanded and use an en dash
+
+
+@needs_pandoc
+def test_latex_csl_env_override(tmp_path, monkeypatch):
+    """``LATEX_CSL`` replaces the bundled bibliography style."""
+    project = build_bibliography_project(tmp_path)
+    csl = tmp_path / "custom.csl"
+    csl.write_text(
+        '<?xml version="1.0" encoding="utf-8"?>\n'
+        '<style xmlns="http://purl.org/net/xbiblio/csl" class="in-text" '
+        'version="1.0">\n'
+        "  <info><title>Custom</title><id>custom</id>"
+        "<updated>2026-01-01T00:00:00+00:00</updated></info>\n"
+        '  <citation><layout><text variable="title"/></layout></citation>\n'
+        '  <bibliography><layout><text variable="title" prefix="CUSTOM: "/>'
+        "</layout></bibliography>\n"
+        "</style>\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("LATEX_CSL", str(csl))
+    result = convert_file(project, tmp_path)
+    assert result.error is None
+    text = result.md_path.read_text(encoding="utf-8")
+    assert "CUSTOM: Causal Inference" in text
+
+
+# --- Unit-level coverage for the new passes ---------------------------------
+
+
+def test_tikz_labels_include_attachments_and_math():
+    """Node text, path-attached labels and ``$…$`` math are all extracted."""
+    from converter.latex import _tikz_labels
+
+    body = (
+        "\\node [box] (a) at (0,0) {start};\n"
+        "\\node [box, right=of a] (b) {finish with $c_{FN} \\gg c_{FP}$};\n"
+        "\\draw [-{Latex}] (a) -- (b) node[midway, above] {two\\\\lines};\n"
+    )
+    assert _tikz_labels(body) == [
+        "start",
+        "finish with $c_{FN} \\gg c_{FP}$",
+        "two; lines",
+    ]
+
+
+def test_front_items_bare_tabular(tmp_path):
+    """A ``tabular`` outside a float still reaches the front block."""
+    from converter.latex import _blank_latex, _front_items, _numbering
+
+    text = (
+        "\\begin{titlepage}\n"
+        "{\\huge My Title}\\\\[1cm]\n"
+        "\\begin{tabular}{ll}\\hline\n"
+        "A & B \\\\ \\hline\n"
+        "\\end{tabular}\n"
+        "\\end{titlepage}\n"
+    )
+    items = _front_items(text, _numbering(_blank_latex(text)), tmp_path, "My Title")
+    tables = [item for item in items if not isinstance(item, str)]
+    assert len(tables) == 1
+    assert tables[0].number is None
+    assert tables[0].caption == ""
+    assert tables[0].rows == [["A", "B"]]
+
+
+def test_numbering_seeds_continue_counters():
+    """Seeded counters number after the floats a stripped region consumed."""
+    from converter.latex import _blank_latex, _numbering
+
+    text = (
+        "\\begin{table}\\caption{One}\\end{table}\n"
+        "\\begin{table}\\caption{Two}\\end{table}\n"
+    )
+    numbers = _numbering(_blank_latex(text), {"table": 1})
+    assert [caption.number for caption in numbers.captions] == [2, 3]
+
+
+def test_protect_bib_cases():
+    """BibTeX title-like values gain the brace group pandoc needs."""
+    from converter.latex import _protect_bib_cases
+
+    assert (
+        "@book{k, title = {{Causal Inference}}, year = {2020}}"
+        in _protect_bib_cases("@book{k, title = {Causal Inference}, year = {2020}}\n")
+    )
+    assert (
+        '@book{k, title = "{Causal Inference}"}'
+        in _protect_bib_cases('@book{k, title = "Causal Inference"}\n')
+    )
+    # A value that is already brace-protected stays as it is.
+    assert (
+        'title = "{{NIST/SEMATECH} e-Handbook}"'
+        in _protect_bib_cases('@misc{k, title = "{{NIST/SEMATECH} e-Handbook}"}\n')
+    )
+
+
+def test_unescape_literals_outside_math():
+    """Literal escapes are undone; math spans are untouched."""
+    from converter.latex import _unescape_literals
+
+    assert _unescape_literals(r"7\% (\~18/yr) and \[TBD\]") == r"7\% (~18/yr) and [TBD]"
+    assert _unescape_literals(r"$a \[x\] \~ b$") == r"$a \[x\] \~ b$"
+    # A bracket followed by an opening paren would become a link: left alone.
+    assert _unescape_literals(r"\[text\](url)") == r"\[text\](url)"

@@ -1,6 +1,6 @@
 # 0057. LaTeX figures: TikZ/pgfplots rendered to PNG
 
-- Status: Accepted
+- Status: Accepted (amended by [0060](0060-latex-tikz-text-without-image.md))
 - Date: 2026-10-15
 
 ## Context
