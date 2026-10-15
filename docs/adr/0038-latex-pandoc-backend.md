@@ -1,6 +1,7 @@
 # 0038. LaTeX project → Markdown converter via pandoc
 
-- Status: Accepted
+- Status: Accepted (amended by [0056](0056-latex-title-and-crossrefs.md) and
+  [0057](0057-latex-tikz-figures.md))
 - Date: 2026-09-08
 
 ## Context

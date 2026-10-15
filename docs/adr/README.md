@@ -37,7 +37,7 @@ Index of architectural decisions for PresentationToMarkdown, in
 | [0035](0035-audio-on-fleet-manifest.md) | Audio server on the fleet manifest | Accepted |
 | [0036](0036-terminal-tui.md) | Terminal UI (ptm-tui) — one native terminal surface for the whole app | Superseded by [0040](0040-native-go-tui.md) |
 | [0037](0037-pandoc-evaluated-deferred.md) | Pandoc evaluated; adoption deferred as documented future work | Accepted |
-| [0038](0038-latex-pandoc-backend.md) | LaTeX project → Markdown converter via pandoc | Accepted |
+| [0038](0038-latex-pandoc-backend.md) | LaTeX project → Markdown converter via pandoc | Amended by [0056](0056-latex-title-and-crossrefs.md), [0057](0057-latex-tikz-figures.md) |
 | [0039](0039-preflight-inference-gate.md) | Pre-flight inference gate before expensive rewrite passes | Amended by [0051](0051-tui-sole-surface.md) |
 | [0040](0040-native-go-tui.md) | Native Go TUI (`ptm-tui`) over the Python engine | Accepted |
 | [0041](0041-tui-transcription.md) | Audio transcription in the native Go TUI | Amended by [0051](0051-tui-sole-surface.md) |
@@ -55,3 +55,5 @@ Index of architectural decisions for PresentationToMarkdown, in
 | [0053](0053-tui-v2-charm-and-job-contract.md) | TUI v2: Charm v2 shell, fixed-frame layout, engine job contract | Accepted |
 | [0054](0054-borderless-pdf-tables.md) | Borderless PDF tables reconstructed from the text-layer stream | Accepted |
 | [0055](0055-pdf-paragraphs-and-headings.md) | Paper-mode paragraphs and headings from learned typography | Accepted |
+| [0056](0056-latex-title-and-crossrefs.md) | LaTeX title page and pandoc leftovers normalized | Accepted |
+| [0057](0057-latex-tikz-figures.md) | LaTeX figures: TikZ/pgfplots rendered to PNG | Accepted |

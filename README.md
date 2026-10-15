@@ -1,6 +1,6 @@
 # Presentation to Markdown
 
-Native terminal app and reusable Python library that converts PowerPoint presentations (`.pptx`) and PDF documents (`.pdf`) into Markdown. Personal-use tool built for feeding lecture slides into an Obsidian vault.
+Native terminal app and reusable Python library that converts PowerPoint presentations (`.pptx`), PDF documents (`.pdf`), and LaTeX projects (`.tex`) into Markdown. Personal-use tool built for feeding lecture slides into an Obsidian vault.
 
 - **TUI (`ptm-tui`)** — compiled Go terminal app: file discovery, batch conversion, live progress, history, and settings (ADR-0040). It is the only user interface (ADR-0051).
 - **Engine (`ptm-engine`)** — the local backend the TUI drives: filesystem access, conversion, engine-hosted transcription, settings (ADR-0025)
@@ -91,6 +91,35 @@ inline only on their first occurrence; later occurrences become a text hyperlink
 to the same asset instead of a repeated image. By default no images are extracted
 or linked at all — only their AI descriptions appear.
 
+### LaTeX projects (`.tex`)
+
+A LaTeX *project* is a folder containing `.tex` source; it converts to one `.md`
+named after the folder through [pandoc](https://pandoc.org) (a required binary
+for `.tex` input), with `\input`/`\include`/`\import` flattened, sections as
+`##` headings, and citations resolved by citeproc (ADR-0038/0056/0057):
+
+| Source element | Markdown output |
+| --- | --- |
+| Title | `# Title` from `\title`, else the title page's biggest font line (`{\huge \bfseries …}`), else the folder name |
+| Authors | `*Authors*` from `\author` (`\and`/`\\` becomes ` · `) |
+| Title page, TOC, list of figures/tables, `\maketitle` | Dropped |
+| `\section` / `\subsection` | `##` / `###` headings with pandoc's `{#…}` attributes stripped |
+| `\autoref` / `\ref` / `\eqref` | `Section 3` / bare `3` / `(1)` — numbered from the source, so references and captions agree (labels whose prefix is unknown keep pandoc's anchor form) |
+| TikZ & pgfplots figures | Rendered to PNG and linked as `![Figure N](assets/<name>/…)` with `IMAGE_LINKS=on`; the caption is always kept as a bold `**Figure N: …**` line |
+| `\includegraphics` figures | Same numbered caption; the referenced image is extracted with `IMAGE_LINKS=on` (a PDF figure is rasterized) |
+| Tables | Pipe tables with a bold `**Table N: caption**` line |
+| Display math | `$$…$$` passthrough, or a rendered PNG with `IMAGE_LINKS=on` |
+| Inline math | `$…$` passthrough (also inside captions) |
+
+TikZ flowcharts and pgfplots charts are rendered from their own source with
+`standalone` + pdflatex, reusing the project's own `\tikzset`/
+`\usetikzlibrary` declarations collected from its `.sty`/`.tex` files;
+`LATEX_FIGURE_PREAMBLE=<file.tex>` appends extra preamble for anything else.
+*Image links* off (the default) skips rendering entirely and keeps the numbered
+captions; a missing pdflatex or a failed compile does the same with a warning,
+and `LATEX_FIGURES=off` restores the plain pandoc output. LaTeX runs **no AI
+passes** except the RAG summary (ADR-0038).
+
 ## How to use
 
 The app is `ptm-tui` (ADR-0040/0051): a compiled, opencode-style Go terminal UI
@@ -161,7 +190,10 @@ the TUI dispatches (see [Audio transcription](#audio-transcription-optional)).
 `ptm-engine --vision --env VISION_MODEL=... --env VISION_LOG_DB=/tmp/ptm.sqlite`.
 It also carries the lazy output preferences: `--env PDF_REFLOW=off` keeps the
 legacy line-per-line paper output, and `--env PDF_BORDERLESS_TABLES=off`
-disables borderless-table reconstruction.
+disables borderless-table reconstruction. For `.tex` projects,
+`--env LATEX_FIGURES=off` disables the TikZ/pgfplots figure pipeline and
+`--env LATEX_FIGURE_PREAMBLE=/path/preamble.tex` adds preamble lines to the
+standalone figure render.
 See the [ADR index](docs/adr/README.md) for the rationale.
 
 ### Library
@@ -293,7 +325,7 @@ Slides are separated by an HTML page break (`<div style="page-break-after: alway
 
 ## Install
 
-Requires **Python 3.10+** and **Go 1.26+** (to build the TUI). Dependencies: `python-pptx`, `PyMuPDF` (PDF), `flask`/`flask-sock` + `simple-websocket` (engine), `SQLAlchemy` + `sqlite-vec` (log/settings/RAG store), and `numpy`. External binaries, all optional except where noted: `pandoc` (required for `.tex`), `soffice` (PPTX chart transcription), and `gs`/`qpdf` (PDF compression on archive; Ghostscript preferred, qpdf the lossless fallback — `brew install ghostscript qpdf`).
+Requires **Python 3.10+** and **Go 1.26+** (to build the TUI). Dependencies: `python-pptx`, `PyMuPDF` (PDF), `flask`/`flask-sock` + `simple-websocket` (engine), `SQLAlchemy` + `sqlite-vec` (log/settings/RAG store), and `numpy`. External binaries, all optional except where noted: `pandoc` (required for `.tex`), `pdflatex` (renders display math and TikZ/pgfplots figures for `.tex` with `IMAGE_LINKS=on`), `soffice` (PPTX chart transcription), and `gs`/`qpdf` (PDF compression on archive; Ghostscript preferred, qpdf the lossless fallback — `brew install ghostscript qpdf`).
 
 ### 1. Clone and set up a virtual environment
 
@@ -381,6 +413,7 @@ The model weights live on the external SSD under `HF_HOME` (see
   - `base.py` — shared `Converter` interface, registry, and reusable Markdown helpers
   - `pptx.py` — PowerPoint converter (python-pptx)
   - `pdf.py` — PDF converter (PyMuPDF), layout-aware text + table/bullet reconstruction
+  - `latex.py` — LaTeX project converter via pandoc: title-page/title derivation, cross-reference and caption normalization (ADR-0056), TikZ/pgfplots figure rendering (ADR-0057)
   - `borderless.py` — deterministic borderless-table detection from the PDF text layer (ADR-0054)
   - `vision.py` — optional local vision-LLM post-pass (OpenAI-compatible endpoint)
   - `format.py` — Markdown polish post-pass (deterministic whitespace cleanup + optional LLM restructure)
@@ -409,6 +442,7 @@ The model weights live on the external SSD under `HF_HOME` (see
 - `scripts/` — TUI launcher/installer, audio-model server, transcript QA harness
 - `tests/make_test_deck.py` — generates a synthetic deck covering all features
 - `tests/make_test_pdf.py` — generates a synthetic PDF for testing
+- `tests/make_test_latex.py` — generates synthetic LaTeX projects (title page, TikZ/pgfplots figures) for testing
 - `tests/test_converters.py` — pytest smoke tests for both converters
 
 ## Adding a new file format
