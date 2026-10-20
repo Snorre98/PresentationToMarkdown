@@ -181,6 +181,18 @@ def _import_converter():
     """Import converter lazily (after env is set); separate for test seams."""
     from converter import SUPPORTED_EXTENSIONS, config, convert_files
     from converter import settings  # noqa: F401
+    # Warm the pass modules used by config.feature_requirements(): the TUI
+    # fetches /api/config and /api/fleet concurrently, and concurrent *first*
+    # imports deadlock under Flask's thread pool (see create_app below).
+    from converter import (  # noqa: F401
+        classify,
+        format,
+        interpret,
+        need,
+        structure,
+        summary,
+        vision,
+    )
 
     return SUPPORTED_EXTENSIONS, config, convert_files
 

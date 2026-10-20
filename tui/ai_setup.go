@@ -107,6 +107,9 @@ func (m *model) aiSetupLines() []string {
 			lines,
 			fmt.Sprintf("  %-30s %-3s %s", truncate(label, 30), state, style.Render(glyph)),
 		)
+		if req.Scope == "paper" && m.cfg.PDFMode != "paper" {
+			lines = append(lines, th.subtle.Render("      paper mode is off — enable it in settings"))
+		}
 		for _, service := range req.Services {
 			serviceGlyph, serviceStyle := fleetGlyph(service.State)
 			optional := ""
@@ -132,9 +135,7 @@ func (m *model) aiSetupLines() []string {
 
 	if enabled == 0 {
 		lines = append(lines, th.subtle.Render("No AI passes are enabled. Turn one on in settings (s)."))
-	} else if missing := m.missingRequirementServices(); len(missing) == 0 {
-		lines = append(lines, th.ok.Render("All models required by the enabled passes are up."))
-	} else {
+	} else if missing := m.missingRequirementServices(); len(missing) > 0 {
 		lines = append(lines, th.warn.Render(fmt.Sprintf("%d model(s) needed by the enabled passes:", len(missing))))
 		for _, service := range missing {
 			lines = append(lines, fmt.Sprintf("  %s (%s)", service.Name, service.Key))
@@ -142,6 +143,13 @@ func (m *model) aiSetupLines() []string {
 				lines = append(lines, th.subtle.Render("    "+service.Start))
 			}
 		}
+	} else if pending := m.pendingRequirementServices(); len(pending) > 0 {
+		lines = append(lines, th.warn.Render("Starting the models required by the enabled passes:"))
+		for _, service := range pending {
+			lines = append(lines, fmt.Sprintf("  %s (%s) — %s", service.Name, service.Key, service.State))
+		}
+	} else {
+		lines = append(lines, th.ok.Render("All models required by the enabled passes are up."))
 	}
 
 	if m.fleet.OtherModels > 0 {
@@ -171,6 +179,38 @@ func (m *model) missingRequirementServices() []RequirementService {
 				continue
 			}
 			if service.State == "starting" || service.State == "stopping" || service.State == "provisioning" {
+				continue
+			}
+			key := service.Key
+			if key == "" {
+				key = service.Role
+			}
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			out = append(out, service)
+		}
+	}
+	return out
+}
+
+// pendingRequirementServices returns the unique non-optional services used by
+// an enabled pass that the fleet is still starting/stopping.
+func (m *model) pendingRequirementServices() []RequirementService {
+	seen := map[string]bool{}
+	var out []RequirementService
+	for _, req := range m.fleet.Requirements {
+		if !req.Enabled {
+			continue
+		}
+		for _, service := range req.Services {
+			if service.Optional {
+				continue
+			}
+			switch service.State {
+			case "starting", "stopping", "provisioning":
+			default:
 				continue
 			}
 			key := service.Key

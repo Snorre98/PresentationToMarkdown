@@ -37,7 +37,7 @@ the VPN. It needs no ML runtime — no torch/mlx/ollama.
 | Vector store / RAG DB | ✅ `sqlite-vec` + `ptm.sqlite` (in-process) | — |
 | Files + output | ✅ its own | — |
 | Chat/VLM inference | — | ✅ `mlx_vlm.server` `:8081` + `:8082` |
-| Embeddings | — | ✅ llama.cpp `nomic-embed-text-v1.5.q8-0` `:8090` |
+| Embeddings | — | ✅ llama.cpp `embeddinggemma-2-q8-0` `:8090` |
 
 ## Part 1 — Mac: bind the servers to the network
 

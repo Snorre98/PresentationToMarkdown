@@ -113,6 +113,12 @@ def test_feature_endpoints_format_falls_back_to_write():
     assert format_[0][1] == vision[0][1]
 
 
+def test_format_need_gate_off_drops_the_text_model(monkeypatch):
+    monkeypatch.setenv("NEED_GATE", "off")
+    assert [name for name, _url in config.feature_endpoints("format")] == ["transcriber"]
+    assert config.feature_requirements("format")[0]["optional"] is False
+
+
 def test_feature_endpoints_follow_write_not_vision(monkeypatch):
     monkeypatch.setenv("WRITE_BASE_URL", "http://127.0.0.1:9999/v1")
     monkeypatch.setenv("VISION_BASE_URL", "http://127.0.0.1:8081/v1")
@@ -220,6 +226,15 @@ def test_missing_servers_reports_enabled_down(monkeypatch):
         "http://127.0.0.1:8081/v1",
         "curl -X POST http://127.0.0.1:9300/start/qwen2.5-vl-7b-instruct-4bit",
     ) in missing
+
+
+def test_missing_servers_skips_optional_dependencies(monkeypatch):
+    monkeypatch.setattr(config, "probe", lambda url, timeout=1.5: False)
+    monkeypatch.setattr("converter.fleet.status_for_tags", lambda tags: "down")
+    monkeypatch.setattr("converter.fleet.status", lambda key: "down")
+    config.set_enabled("summary", True)
+    names = [name for name, _url, _command in config.missing_servers()]
+    assert names == ["summary"]  # embeddings is optional for the summary pass
 
 
 def test_missing_servers_empty_when_nothing_enabled(monkeypatch):

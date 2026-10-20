@@ -123,7 +123,7 @@ TikZ flowcharts and pgfplots charts are rendered from their own source with
 *Image links* off (the default) skips rendering entirely and keeps the numbered
 captions plus each figure's extracted text; a missing pdflatex or a failed
 compile does the same with a warning, and `LATEX_FIGURES=off` restores the
-plain pandoc output. LaTeX runs **no AI passes** except the RAG summary
+plain pandoc output. LaTeX runs **no AI passes** except the presentation summary
 (ADR-0038). `.bib` files are passed to pandoc as case-protected copies (the
 project's files are never modified).
 
@@ -179,10 +179,10 @@ pass below:
 | Flag | Enables |
 | --- | --- |
 | `--vision` | Vision transcription post-pass |
-| `--classify` | Classifier gate (implies `--vision`) |
+| `--classify` | Image classifier (implies `--vision`) |
 | `--interpret` | Grounded diagram-interpretation pass |
 | `--format` | LLM markdown-restructure pass |
-| `--summary` | Per-presentation RAG summary pass |
+| `--summary` | Presentation summary pass |
 | `--structure` | LLM document-structure pass (paper-mode PDFs only) |
 | `--all` | The five slide passes above (vision + classify + interpret + format + summary) |
 | `--paper` | Treat PDFs as multi-column whitepapers (continuous document layout) |
@@ -407,7 +407,7 @@ done
 | --- | --- | --- |
 | Qwen2.5-VL 7B Instruct (`qwen2.5-vl-7b-instruct-4bit`) | `:8081` | vision transcription, diagram interpretation, Markdown restructure, paper structure |
 | Qwen2.5-VL 3B Instruct (`qwen2.5-vl-3b-instruct-4bit`) | `:8082` | image classifier (optional; implies vision) |
-| Llama 3.2 3B Instruct (`llama-3.2-3b-instruct-4bit`) | `:8083` | presentation summary, paper structure text, Markdown need check |
+| Llama 3.2 3B Instruct (`llama-3.2-3b-instruct-4bit`) | `:8083` | presentation summary, paper structure text, Markdown need check (optional with `NEED_GATE=off`) |
 | EmbeddingGemma 2 (`embeddinggemma-2-q8-0`) | `:8090` | presentation summary embeddings |
 
 The 7B Qwen is the shared vision/rewrite model; the 3B Llama is the shared text
@@ -441,7 +441,7 @@ The model weights live on the external SSD under `HF_HOME` (see
   - `borderless.py` — deterministic borderless-table detection from the PDF text layer (ADR-0054)
   - `vision.py` — optional local vision-LLM post-pass (OpenAI-compatible endpoint)
   - `format.py` — Markdown polish post-pass (deterministic whitespace cleanup + optional LLM restructure)
-  - `classify.py` — cheap classifier gate for the vision pass (tiny VLM)
+  - `classify.py` — image classifier for the vision pass (tiny VLM)
   - `interpret.py` — grounded diagram-interpretation pass (typed relationships + prose)
   - `structure.py` — paper-mode document-structure LLM pass (verbatim text regime + image reword)
   - `organize.py` — default output layout: kebab-case naming, the `source/` archive, the `-inference-used` marker (ADR-0048/0050)
@@ -492,7 +492,7 @@ The model weights live on the external SSD under `HF_HOME` (see
 For diagrams, flowcharts and tables that appear as *images*, the converter can hand
 them to a local **MLX vision model** (`mlx-vlm`) for a structured Markdown
 transcription. It is off by default and fully deterministic without it. A cheap
-**classifier gate** (a small VLM such as Qwen2.5-VL-3B) classifies each image as
+**image classifier** (a small VLM such as Qwen2.5-VL-3B) classifies each image as
 *text* (transcribed verbatim), *diagram* (a short high-level prose *gist* — type
 and purpose, not its structure or labels — rendered as a blockquote), or
 *decorative* (skipped), and enables
@@ -684,18 +684,18 @@ and a second job is rejected while it runs. See
 
 Each AI pass is independently opt-in (off by default), so you can mix and match.
 The TUI settings screen toggles them (persisted through the engine and applied
-without a restart). To enable every pass — vision transcription + classifier
-gate, diagram interpretation, markdown restructure, and the RAG summary — at
-engine launch:
+without a restart). To enable every slide pass — vision transcription + image
+classifier, diagram interpretation, markdown restructure, and the presentation
+summary — at engine launch:
 
 ```bash
 VISION_ENABLED=1 VISION_CLASSIFY_ENABLED=1 INTERPRET_ENABLED=1 FORMAT_ENABLED=1 SUMMARY_ENABLED=1 \
   scripts/ptm-tui.sh
 ```
 
-This uses only what's already running: the vision transcriber (`:8081`), the
-classifier (`:8082`), the summary chat model (`:8083`), and the embeddings
-server (`nomic-embed-text-v1.5.q8-0`).
+This uses four fleet models: Qwen2.5-VL 7B (`:8081`), Qwen2.5-VL 3B
+(`:8082`), Llama 3.2 3B (`:8083`), and EmbeddingGemma 2 (`:8090`). See
+[docs/ai-requirements.md](docs/ai-requirements.md).
 
 Audio transcription is deliberately **not part of the slide-pass set** (it needs
 an audio file, ffmpeg and a running ASR daemon, and is a separate job anyway).

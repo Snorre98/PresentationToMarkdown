@@ -80,6 +80,30 @@ func TestRenderAISetupAllPassesOff(t *testing.T) {
 	}
 }
 
+func TestRenderAISetupStartingModel(t *testing.T) {
+	m := testApp()
+	m.fleetAt = time.Now()
+	m.fleet = FleetResult{
+		Source: "fleet",
+		Requirements: []FeatureRequirement{
+			{
+				Key: "vision", Label: "Vision transcription", Enabled: true,
+				Readiness: "pending",
+				Services: []RequirementService{
+					{Key: "qwen2.5-vl-7b-instruct-4bit", Name: "Qwen2.5-VL 7B", State: "starting"},
+				},
+			},
+		},
+	}
+	out := m.renderAISetupBox(100, 40)
+	if !strings.Contains(out, "Starting the models required") {
+		t.Fatalf("starting hint missing:\n%s", out)
+	}
+	if strings.Contains(out, "All models required by the enabled passes are up") {
+		t.Fatalf("starting model reported as up:\n%s", out)
+	}
+}
+
 func TestRenderAISetupAllRequiredModelsUp(t *testing.T) {
 	m := testApp()
 	m.fleetAt = time.Now()

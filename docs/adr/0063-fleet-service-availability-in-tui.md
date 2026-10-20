@@ -9,6 +9,12 @@
   [0053](0053-tui-v2-charm-and-job-contract.md),
   [0062](0062-asr-on-the-fleet-whisper-daemon.md)
 
+> **Amended by [0065](0065-ai-capability-labels-and-requirements.md):** the
+> settings fleet list moved to the read-only `a` AI setup view. Rows are the
+> models PtM resolves a role to, not every tag match; `needed` means required by
+> an enabled AI pass, and the selected ASR model is `selected`, not `needed`.
+> Readiness comes from the feature-centric requirements projection.
+
 ## Context
 
 The TUI is the sole user surface (ADR-0051), but its only availability display

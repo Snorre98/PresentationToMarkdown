@@ -153,11 +153,6 @@ def _required_by(cfg, features: list[str]) -> list[str]:
     return [key for key in features if _is_enabled(cfg, key)]
 
 
-def _needed(cfg, features: list[str]) -> bool:
-    """Whether an enabled AI pass needs this row."""
-    return bool(_required_by(cfg, features))
-
-
 def _host_port(base_url: str) -> tuple[str, int]:
     parsed = urllib.parse.urlparse(base_url)
     return parsed.hostname or "127.0.0.1", parsed.port or 0
@@ -340,16 +335,32 @@ def _requirements(
             row_key = resolved_by_role.get(role) or role_to_row.get(role) or role
             row = rows_by_key.get(row_key) or {}
             state = str(row.get("state") or "unknown")
+            override = False
+            # An explicit *_BASE_URL override points somewhere the fleet row
+            # does not describe; probe the endpoint the pass will actually hit.
+            if row and row.get("port"):
+                row_url = f"http://{row.get('host') or '127.0.0.1'}:{row['port']}/v1"
+                if req["base_url"] != row_url:
+                    override = True
+                    try:
+                        state = "up" if cfg.probe(req["base_url"]) else "down"
+                    except Exception:  # noqa: BLE001 - a probe must not hide the view
+                        state = "unknown"
             states.append(state)
             item = {
                 "role": role,
                 "label": req["label"],
                 "key": row.get("key") or req["key"],
-                "name": row.get("name") or req["name"],
+                "name": (
+                    req["model"]
+                    if override and req["model"]
+                    else row.get("name") or req["name"]
+                ),
                 "base_url": req["base_url"],
                 "model": req["model"],
                 "state": state,
-                "start": row.get("start") or req["start"],
+                # A start command only applies to the local fleet entry.
+                "start": "" if override else (row.get("start") or req["start"]),
                 "optional": bool(req["optional"]),
             }
             services.append(item)

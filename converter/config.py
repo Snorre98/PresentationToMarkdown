@@ -398,7 +398,12 @@ _FEATURE_OPTIONAL: dict[str, frozenset[int]] = {
 
 def feature_endpoints(key: str) -> list[tuple[str, str]]:
     """Return ``(server_name, base_url)`` for the servers ``key`` needs."""
-    return [(name, resolver()) for name, resolver in _FEATURE_ENDPOINTS[key]]
+    endpoints = _FEATURE_ENDPOINTS[key]
+    if key == "format" and (os.environ.get("NEED_GATE", "on").strip().lower() == "off"):
+        # The need-check gate is disabled: the pass rewrites every slide on the
+        # writer model and never touches the small text model.
+        endpoints = endpoints[:1]
+    return [(name, resolver()) for name, resolver in endpoints]
 
 
 def _pass_models(key: str) -> list[str | None]:
@@ -515,7 +520,11 @@ def missing_servers(keys: list[str] | None = None) -> list[tuple[str, str, str]]
     checked: set[str] = set()
     missing: list[tuple[str, str, str]] = []
     for key in keys:
-        for server_name, base_url in feature_endpoints(key):
+        optional = _FEATURE_OPTIONAL.get(key, frozenset())
+        for index, (server_name, base_url) in enumerate(feature_endpoints(key)):
+            if index in optional:
+                # Graceful-degradation dependency: the pass runs without it.
+                continue
             if base_url in checked:
                 continue
             checked.add(base_url)

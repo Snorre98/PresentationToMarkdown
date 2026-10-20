@@ -8,6 +8,11 @@
   [0063](0063-fleet-service-availability-in-tui.md)
 - Adopts: flaate ADR-0007 (model key / display name / tags)
 
+> **Amended by [0065](0065-ai-capability-labels-and-requirements.md):** a role's
+> tag matches are resolved to the first manifest entry; losing matches are
+> alternatives, not additional PtM server rows. User-facing role names come from
+> `Server.label`, and `nomic-embed` is renamed `embeddings`.
+
 ## Context
 
 flaate ADR-0007 split the fleet manifest's overloaded `Model.name` into a

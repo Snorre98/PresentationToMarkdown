@@ -72,6 +72,9 @@ func TestConfigRoundTrip(t *testing.T) {
 				"pdf_mode": "slide", "need_gate": "on", "duplicate": false,
 				"pdf_compress": true, "inference_overwrite": false,
 				"features": map[string]bool{"vision": true, "format": false},
+				"feature_info": []map[string]any{
+					{"key": "vision", "label": "Vision transcription", "scope": "all"},
+				},
 			})
 			return
 		}
@@ -92,6 +95,9 @@ func TestConfigRoundTrip(t *testing.T) {
 	}
 	if cfg.PDFMode != "slide" || cfg.Features["vision"] != true || !cfg.PDFCompress {
 		t.Fatalf("cfg = %+v", cfg)
+	}
+	if len(cfg.FeatureInfo) != 1 || cfg.FeatureInfo[0].Label != "Vision transcription" {
+		t.Fatalf("feature_info = %+v", cfg.FeatureInfo)
 	}
 	if cfg.InferenceOverwrite {
 		t.Fatalf("inference_overwrite = %v", cfg.InferenceOverwrite)
@@ -359,6 +365,15 @@ func TestFleetAvailability(t *testing.T) {
 				},
 			},
 			"other_models": 2,
+			"requirements": []map[string]any{
+				{
+					"key": "vision", "label": "Vision transcription", "enabled": true,
+					"readiness": "ready",
+					"services": []map[string]any{
+						{"key": "qwen2.5-vl-7b-instruct-4bit", "name": "Qwen2.5-VL 7B", "state": "up", "optional": false},
+					},
+				},
+			},
 		})
 	}))
 	defer srv.Close()
@@ -376,6 +391,12 @@ func TestFleetAvailability(t *testing.T) {
 	}
 	if len(res.Services[0].Features) != 3 || res.Services[0].Roles[0] != "summary" {
 		t.Fatalf("service = %+v", res.Services[0])
+	}
+	if len(res.Requirements) != 1 || res.Requirements[0].Label != "Vision transcription" {
+		t.Fatalf("requirements = %+v", res.Requirements)
+	}
+	if len(res.Requirements[0].Services) != 1 || res.Requirements[0].Services[0].State != "up" {
+		t.Fatalf("requirement services = %+v", res.Requirements[0].Services)
 	}
 }
 

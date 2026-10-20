@@ -1,9 +1,9 @@
 package main
 
-// settings.go — the settings modal: AI feature toggles, output preferences,
-// transcription settings (ADR-0043) and live fleet availability (ADR-0063).
-// Every change round-trips through the engine's /api/config so it persists in
-// the shared settings store (converter.settings).
+// settings.go — the settings modal: AI feature toggles, output preferences and
+// transcription settings (ADR-0043), plus a one-line pointer to the AI setup
+// view (ADR-0065). Every change round-trips through the engine's /api/config so
+// it persists in the shared settings store (converter.settings).
 
 import (
 	"context"
@@ -402,21 +402,39 @@ func (m *model) aiSetupHint() string {
 	if m.fleetAt.IsZero() {
 		return th.subtle.Render("AI setup: checking… · press a")
 	}
-	on, blocked := 0, 0
-	for _, req := range m.fleet.Requirements {
-		if !req.Enabled {
-			continue
+	on, blocked, pending := 0, 0, 0
+	if len(m.fleet.Requirements) == 0 {
+		// Older engine: the requirements projection is not in the payload yet.
+		for _, enabled := range m.cfg.Features {
+			if enabled {
+				on++
+			}
 		}
-		on++
-		if req.Readiness == "missing" || req.Readiness == "unknown" {
-			blocked++
+	} else {
+		for _, req := range m.fleet.Requirements {
+			if !req.Enabled {
+				continue
+			}
+			on++
+			switch req.Readiness {
+			case "missing", "unknown":
+				blocked++
+			case "pending":
+				pending++
+			}
 		}
 	}
 	if on == 0 {
 		return th.subtle.Render("AI setup: no passes on · press a")
 	}
-	if blocked == 0 {
+	if len(m.fleet.Requirements) == 0 {
+		return th.subtle.Render(fmt.Sprintf("AI setup: %d passes on · press a", on))
+	}
+	if blocked == 0 && pending == 0 {
 		return th.ok.Render(fmt.Sprintf("AI setup: %d passes on · models up · press a", on))
+	}
+	if blocked == 0 {
+		return th.warn.Render(fmt.Sprintf("AI setup: %d passes on · %d starting · press a", on, pending))
 	}
 	return th.warn.Render(fmt.Sprintf("AI setup: %d passes on · %d need models · press a", on, blocked))
 }

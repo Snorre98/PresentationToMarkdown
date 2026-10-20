@@ -58,7 +58,7 @@ exhaustive ranking. `mlx-vlm` supports a much wider range of models than just
 the default — including dedicated **OCR** models that are arguably a better fit
 for *lossless* slide transcription than a general-purpose VLM.
 
-> Note: the default transcriber is now `mlx-community/Qwen2.5-VL-7B-Instruct-4bit`
+> Note: the default vision + rewrite model is `mlx-community/Qwen2.5-VL-7B-Instruct-4bit`
 > (fast, document-optimised). Ornith, discussed below as the previous default, is
 > kept as a research reference and remains usable via `VISION_MODEL`.
 
@@ -146,10 +146,10 @@ via environment variables:
 | Var | Default | Purpose |
 | --- | --- | --- |
 | `VISION_ENABLED` | *(unset = off)* | Master switch — `1`/`true`/`yes`/`on` enables the pass |
-| `VISION_BASE_URL` | `http://127.0.0.1:8081/v1` | Transcriber server base URL |
-| `VISION_MODEL` | `mlx-community/Qwen2.5-VL-7B-Instruct-4bit` | Transcriber model id |
+| `VISION_BASE_URL` | `http://127.0.0.1:8081/v1` | Vision + rewrite server base URL |
+| `VISION_MODEL` | `mlx-community/Qwen2.5-VL-7B-Instruct-4bit` | Vision + rewrite model id |
 | `VISION_API_KEY` | *(unset)* | Optional bearer token (unused for local servers) |
-| `VISION_CLASSIFY_ENABLED` | *(unset = off)* | Enables the cheap classifier gate (and image-level transcription) |
+| `VISION_CLASSIFY_ENABLED` | *(unset = off)* | Enables the image classifier (and image-level transcription) |
 | `VISION_CLASSIFY_BASE_URL` | `http://127.0.0.1:8082/v1` | Classifier server base URL |
 | `VISION_CLASSIFY_MODEL` | `mlx-community/Qwen2.5-VL-3B-Instruct-4bit` | Classifier model id (switch to any mlx-vlm VLM) |
 | `VISION_MIN_CONTENT_AREA` | `150000` | A "decorative" verdict is overridden for images with at least this many native pixels |
@@ -176,9 +176,9 @@ When `VISION_ENABLED` is off (the default), conversion is fully deterministic an
 offline — diagrams fall back to a collapsed `<details>` block of the raw
 extracted text (no image link is emitted; ADR-0047).
 
-## The classifier gate (optional)
+## The image classifier (optional)
 
-The expensive transcriber (Qwen2.5-VL-7B) is wasteful on decorative images —
+The expensive vision + rewrite model (Qwen2.5-VL-7B) is wasteful on decorative images —
 lecture decks are full of photographs, logos and backgrounds that have no
 educational value to extract. A **second, small vision model** (Qwen2.5-VL-3B by
 default) sits in front of it and classifies each image into one of three
@@ -192,7 +192,7 @@ classifier (:8082) ───────┼─ DIAGRAM ─────▶ high-l
 
 - **TEXT** — a document, slide, screenshot or table whose text is worth
   transcribing verbatim.
-- **DIAGRAM** — a flowchart or conceptual figure. The transcriber produces a
+- **DIAGRAM** — a flowchart or conceptual figure. The vision model produces a
   short high-level *gist* — the diagram's type (process flow, layered
   architecture, org chart, …) and its purpose or main idea — plus any title or
   clearly-legible labels it can read. The result is rendered as a blockquote.
@@ -227,7 +227,7 @@ What the gate changes:
 The classifier is cheap and switchable — set `VISION_CLASSIFY_MODEL` to any
 mlx-vlm VLM. Its answer is parsed loosely (a decorative signal like "photograph"
 wins over "graph"), and any classifier error degrades to "skip the image" — no
-transcriber spend, and no output for that image.
+vision spend, and no output for that image.
 
 Because a false `decorative` verdict silently drops real content (data loss),
 while a false `text`/`diagram` verdict merely costs one transcription (caught by
@@ -242,7 +242,7 @@ decorative images almost never are. The override downgrades the image to
 Before *any* model call, an image is checked for **readability** — a VLM cannot
 read a blurry or tiny image, and will only hallucinate filler (e.g. a numbered
 list of invented "Data Source 1…111"). Skipping such images saves both the
-classifier *and* transcriber:
+image classifier *and* vision model:
 
 - **Resolution** — images whose smaller native side is below
   `VISION_MIN_IMAGE_DIM` (default `250` px) are skipped. This is pure metadata
@@ -324,7 +324,7 @@ text block.
 | `INTERPRET_MODEL` | `WRITE_MODEL` | Model id (`Qwen2.5-VL-7B` by default) |
 | `INTERPRET_API_KEY` | `WRITE_API_KEY` | Optional bearer token |
 
-To use a larger model for interpretation without changing the transcriber, serve
+To use a larger model for interpretation without changing the vision + rewrite model, serve
 `Qwen2.5-VL-32B-Instruct-8bit` on its own port and point `INTERPRET_BASE_URL` /
 `INTERPRET_MODEL` at it — the same override pattern `SUMMARY_*` uses. The pass is
 general-purpose: the relationship vocabulary comes from the diagram's own labels,
@@ -405,7 +405,7 @@ The `sqlite-vec` extension is a Python dependency (`pip install sqlite-vec`) and
 loads on its own; no separate server is needed for the vector store.
 
 All slide AI passes can be enabled together in one launch (vision + classifier,
-diagram interpretation, markdown restructure, and the RAG summary):
+diagram interpretation, markdown restructure, and the presentation summary):
 
 ```sh
 VISION_ENABLED=1 VISION_CLASSIFY_ENABLED=1 INTERPRET_ENABLED=1 \
