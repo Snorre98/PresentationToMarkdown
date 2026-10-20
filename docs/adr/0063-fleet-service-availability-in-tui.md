@@ -1,6 +1,6 @@
 # 0063. Fleet service availability in the TUI
 
-- Status: Accepted (identity shape amended by [0064](0064-fleet-model-identity-key-name-tags.md))
+- Status: Accepted (identity shape amended by [0064](0064-fleet-model-identity-key-name-tags.md); resolved rows and the requirements projection amended by [0065](0065-ai-capability-labels-and-requirements.md))
 - Date: 2026-10-20
 - Relates to: [0012](0012-runtime-ai-features.md),
   [0029](0029-serving-via-control-daemon.md),

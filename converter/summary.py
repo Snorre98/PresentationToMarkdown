@@ -27,8 +27,10 @@ Configuration (environment variables):
 - ``SUMMARY_MODEL`` — summary chat model id, defaults to the ``summary`` server's
   model (``Llama-3.2-3B-Instruct-4bit``).
 - ``SUMMARY_API_KEY`` — optional bearer token (unused for local servers).
-- ``EMBED_BASE_URL`` — embeddings server, default ``http://localhost:11434/v1``.
-- ``EMBED_MODEL`` — embeddings model id, default ``nomic-embed-text``.
+- ``EMBED_BASE_URL`` — embeddings server, defaulting to the fleet's
+  ``embeddings`` role (``:8090``).
+- ``EMBED_MODEL`` — embeddings model id, defaulting to the resolved fleet model
+  (``embeddinggemma-2-Q8_0.gguf`` on the current manifest).
 - ``EMBED_API_KEY`` — optional bearer token (unused for local servers).
 """
 from __future__ import annotations
@@ -64,8 +66,12 @@ SUMMARY_MODEL = os.environ.get(
 )
 SUMMARY_API_KEY = os.environ.get("SUMMARY_API_KEY", WRITE_API_KEY)
 
-EMBED_BASE_URL = os.environ.get("EMBED_BASE_URL", "http://localhost:11434/v1")
-EMBED_MODEL = os.environ.get("EMBED_MODEL", "nomic-embed-text")
+EMBED_BASE_URL = os.environ.get(
+    "EMBED_BASE_URL", config.SERVERS["embeddings"].base_url
+)
+EMBED_MODEL = os.environ.get(
+    "EMBED_MODEL", config.SERVERS["embeddings"].model
+)
 EMBED_API_KEY = os.environ.get("EMBED_API_KEY") or None
 
 SUMMARY_MAX_TOKENS = 900
@@ -148,6 +154,12 @@ def _embed_dim() -> int:
     unknown ``EMBED_MODEL`` ids.
     """
     known = _KNOWN_EMBED_DIMS.get(EMBED_MODEL)
+    if known is None:
+        lowered = EMBED_MODEL.lower()
+        for name, dim in _KNOWN_EMBED_DIMS.items():
+            if name in lowered:
+                known = dim
+                break
     if known is not None:
         return known
     return _probe_dim()

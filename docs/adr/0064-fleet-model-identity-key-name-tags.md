@@ -1,6 +1,6 @@
 # 0064. Fleet model identity in PtM — key, display name, tags
 
-- Status: Accepted
+- Status: Accepted (amended by [0065](0065-ai-capability-labels-and-requirements.md): only the resolved model per role is a PtM server row)
 - Date: 2026-10-20
 - Relates to: [0029](0029-serving-via-control-daemon.md),
   [0035](0035-audio-on-fleet-manifest.md),

@@ -48,6 +48,8 @@ func (m *model) render() string {
 		return overlayCenter(base, m.renderSettingsBox(m.width, m.height), m.width, m.height)
 	case overlayHelp:
 		return overlayCenter(base, m.renderHelpBox(), m.width, m.height)
+	case overlayAI:
+		return overlayCenter(base, m.renderAISetupBox(m.width, m.height), m.width, m.height)
 	}
 	return fitLines(base, m.width, m.height)
 }

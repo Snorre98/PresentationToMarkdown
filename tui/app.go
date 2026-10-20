@@ -28,6 +28,7 @@ const (
 	overlayNone overlay = iota
 	overlaySettings
 	overlayHelp
+	overlayAI
 )
 
 // engineAPI is the engine surface the app consumes; *Client implements it.
@@ -104,6 +105,7 @@ type model struct {
 	fleet     FleetResult
 	fleetAt   time.Time
 	fleetErr  string
+	aiScroll  int
 
 	overlay overlay
 	help    help.Model
@@ -405,6 +407,9 @@ func (m *model) onKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	}
+	if m.overlay == overlayAI {
+		return m.updateAISetup(msg)
+	}
 	if m.filtering && m.tab == tabFiles {
 		return m.updateFiles(msg)
 	}
@@ -427,6 +432,10 @@ func (m *model) onKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "s":
 		m.overlay = overlaySettings
 		return m, tea.Batch(m.fetchConfig(), m.fetchFleet())
+	case "a":
+		m.overlay = overlayAI
+		m.aiScroll = 0
+		return m, m.fetchFleet()
 	case "x":
 		if j := m.jobs.latest(); j != nil && j.running() {
 			return m, m.cancelCmd(j.id)

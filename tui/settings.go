@@ -19,6 +19,38 @@ import (
 
 var featureOrder = []string{"vision", "classify", "interpret", "format", "summary", "structure"}
 
+// fallbackFeatureLabels mirrors config.FEATURES for an older engine that does
+// not send feature_info yet. The engine's labels win (ADR-0065).
+var fallbackFeatureLabels = map[string]string{
+	"vision":    "Vision transcription",
+	"classify":  "Image classifier",
+	"interpret": "Diagram interpretation",
+	"format":    "Markdown restructure",
+	"summary":   "Presentation summary",
+	"structure": "Paper structure",
+}
+
+func (m *model) featureLabel(key string) string {
+	for _, info := range m.cfg.FeatureInfo {
+		if info.Key == key && info.Label != "" {
+			return info.Label
+		}
+	}
+	if label, ok := fallbackFeatureLabels[key]; ok {
+		return label
+	}
+	return key
+}
+
+func (m *model) featureScope(key string) string {
+	for _, info := range m.cfg.FeatureInfo {
+		if info.Key == key {
+			return info.Scope
+		}
+	}
+	return ""
+}
+
 // Rows after the features: pdf_mode, image_links, compress, inference
 // overwrite, duplicate, diarize, speakers, model, language, output_dir.
 const settingsExtraRows = 10
@@ -62,7 +94,7 @@ func (m *model) settingsRows() int {
 
 func (m *model) settingsLabel(i int) string {
 	if i < len(featureOrder) {
-		return featureOrder[i]
+		return m.featureLabel(featureOrder[i])
 	}
 	switch i - len(featureOrder) {
 	case 0:
@@ -80,7 +112,7 @@ func (m *model) settingsLabel(i int) string {
 	case 6:
 		return "speakers"
 	case 7:
-		return "model"
+		return "audio model"
 	case 8:
 		return "language"
 	default:
@@ -91,12 +123,12 @@ func (m *model) settingsLabel(i int) string {
 // modelShort renders a compact label for the current ASR model.
 func modelShort(id string) string {
 	if id == "nb-whisper-large" {
-		return "nb-whisper (no)"
+		return "NB-Whisper (Norwegian)"
 	}
 	if id == "whisper-large-v3-turbo-asr-fp16" {
-		return "turbo (fast)"
+		return "Whisper turbo (fast)"
 	}
-	return "large-v3 (max)"
+	return "Whisper large-v3 (best)"
 }
 
 func (m *model) settingsValue(i int) string {
@@ -192,6 +224,10 @@ func (m *model) updateSettings(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.setCursor++
 		}
 	case "r":
+		return m, m.fetchFleet()
+	case "a":
+		m.overlay = overlayAI
+		m.aiScroll = 0
 		return m, m.fetchFleet()
 	case "e":
 		return m.activateSetting(true)
@@ -344,9 +380,9 @@ func (m *model) renderSettingsBox(width, height int) string {
 			glyph, style := m.featureAvailability(featureOrder[i])
 			val += " " + style.Render(glyph)
 		}
-		line := fmt.Sprintf("%-16s %s", label, val)
+		line := fmt.Sprintf("%-22s %s", label, val)
 		if i == m.setCursor {
-			line = th.cursor.Render("> ") + fmt.Sprintf("%-16s %s", label, val)
+			line = th.cursor.Render("> ") + fmt.Sprintf("%-22s %s", label, val)
 		} else {
 			line = "  " + line
 		}
@@ -355,36 +391,59 @@ func (m *model) renderSettingsBox(width, height int) string {
 	}
 
 	b.WriteString("\n")
-	b.WriteString(truncate(th.subtle.Render("↑/↓ move · space toggle · e edit · r refresh fleet · esc close"), inner))
+	b.WriteString(truncate(th.subtle.Render("↑/↓ move · space toggle · e edit · r refresh · a AI setup · esc close"), inner))
 	b.WriteString("\n")
-	b.WriteString("\n")
-	b.WriteString(truncate(m.fleetHeader(), inner))
-	b.WriteString("\n")
-	if !m.fleetAt.IsZero() {
-		for _, s := range m.fleetRows() {
-			glyph, style := fleetGlyph(s.State)
-			line := fmt.Sprintf(
-				"  %s %-24s %-5s %s",
-				style.Render(glyph),
-				truncate(s.Name, 24),
-				s.State,
-				th.subtle.Render(serviceDetail(s)),
-			)
-			b.WriteString(truncate(line, inner))
-			b.WriteString("\n")
-		}
-		b.WriteString(truncate(th.subtle.Render(m.fleetSummary()), inner))
-		b.WriteString("\n")
-	}
+	b.WriteString(truncate(m.aiSetupHint(), inner))
 	return th.box.Render(strings.TrimRight(b.String(), "\n"))
 }
 
-// featureAvailability is the worst state among a feature's servers: all up ●,
-// transitional ◌, any down ○. "…" until the first fleet response arrives.
+// aiSetupHint is the one-line pointer to the feature-centric requirements view.
+func (m *model) aiSetupHint() string {
+	if m.fleetAt.IsZero() {
+		return th.subtle.Render("AI setup: checking… · press a")
+	}
+	on, blocked := 0, 0
+	for _, req := range m.fleet.Requirements {
+		if !req.Enabled {
+			continue
+		}
+		on++
+		if req.Readiness == "missing" || req.Readiness == "unknown" {
+			blocked++
+		}
+	}
+	if on == 0 {
+		return th.subtle.Render("AI setup: no passes on · press a")
+	}
+	if blocked == 0 {
+		return th.ok.Render(fmt.Sprintf("AI setup: %d passes on · models up · press a", on))
+	}
+	return th.warn.Render(fmt.Sprintf("AI setup: %d passes on · %d need models · press a", on, blocked))
+}
+
+// featureAvailability uses the server-computed readiness for the *resolved*
+// models, not the worst state among every tag match (ADR-0065).
 func (m *model) featureAvailability(key string) (string, lipgloss.Style) {
 	if m.fleetAt.IsZero() {
 		return "…", th.subtle
 	}
+	for _, req := range m.fleet.Requirements {
+		if req.Key != key {
+			continue
+		}
+		switch req.Readiness {
+		case "ready":
+			return "●", th.ok
+		case "pending":
+			return "◌", th.warn
+		case "missing":
+			return "○", th.err
+		default:
+			return "…", th.subtle
+		}
+	}
+	// Older engine without the requirements projection: fall back to the
+	// service rows so the glyph still means something.
 	found := false
 	worst := 0
 	for _, s := range m.fleet.Services {
@@ -427,27 +486,6 @@ func fleetGlyph(state string) (string, lipgloss.Style) {
 	}
 }
 
-// serviceDetail renders the roles a fleet row serves, marking the ASR target
-// and the rows the current toggles need.
-func serviceDetail(s FleetService) string {
-	var detail string
-	switch {
-	case s.Selected && s.Key == "audio":
-		detail = "ASR nb-whisper (selected)"
-	case s.Selected:
-		detail = "ASR (selected)"
-	case slices.Contains(s.Tags, "asr") || slices.Contains(s.Roles, "audio") ||
-		slices.Contains(s.Roles, "nb-whisper-large") || strings.HasPrefix(s.Key, "whisper-"):
-		detail = "ASR"
-	default:
-		detail = strings.Join(s.Roles, " · ")
-	}
-	if s.Needed {
-		detail += " · needed"
-	}
-	return detail
-}
-
 func (m *model) fleetHeader() string {
 	if m.fleetAt.IsZero() {
 		if m.fleetErr != "" {
@@ -462,34 +500,4 @@ func (m *model) fleetHeader() string {
 		return th.warn.Render("fleet (flaate ✗ static probes)")
 	}
 	return th.bold.Render("fleet") + " " + th.ok.Render("(flaate ●)")
-}
-
-// fleetRows is the PtM-consumable subset: manifest models that serve no PtM
-// role stay out of the settings modal (they are the "+N other models" count).
-func (m *model) fleetRows() []FleetService {
-	rows := make([]FleetService, 0, len(m.fleet.Services))
-	for _, s := range m.fleet.Services {
-		if len(s.Roles) == 0 {
-			continue
-		}
-		rows = append(rows, s)
-	}
-	return rows
-}
-
-func (m *model) fleetSummary() string {
-	rows := m.fleetRows()
-	up := 0
-	for _, s := range rows {
-		if s.State == "up" {
-			up++
-		}
-	}
-	return fmt.Sprintf(
-		"  %d/%d up · +%d other models · as of %s",
-		up,
-		len(rows),
-		m.fleet.OtherModels,
-		m.fleetAt.Format("15:04"),
-	)
 }

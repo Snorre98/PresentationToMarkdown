@@ -66,15 +66,54 @@ def _catalogue_roles(cfg) -> dict[str, list[str]]:
     return roles
 
 
-def _entry_roles(
-    entry: dict,
+def _role_label(cfg, role: str) -> str:
+    """The user-facing name for a PtM role (ADR-0065)."""
+    server = _servers(cfg).get(role)
+    if server is not None:
+        return server.label or server.name
+    if role == "audio" or role in audio.ASR_MODELS:
+        return "Audio transcription"
+    return role
+
+
+def _role_labels(cfg) -> dict[str, str]:
+    labels = {name: _role_label(cfg, name) for name in _servers(cfg)}
+    labels["audio"] = "Audio transcription"
+    for model in audio.ASR_MODELS:
+        labels[model] = "Audio transcription"
+    return labels
+
+
+def _resolve_roles(
+    models: dict[str, dict],
     server_roles: list[tuple[str, tuple[str, ...]]],
+) -> dict[str, str]:
+    """Resolve each PtM role to the first manifest entry carrying its tags.
+
+    This is the same rule as :func:`converter.fleet.find_by_tags` (manifest
+    order is the tiebreak), applied to the snapshot's ``models``. A tag match
+    that loses is an alternative, not a second server for the role (ADR-0065).
+    """
+    resolved: dict[str, str] = {}
+    for role, wanted in server_roles:
+        wanted_set = set(wanted)
+        if not wanted_set:
+            continue
+        for key, entry in models.items():
+            tags = set(entry.get("tags") or entry.get("modeTags") or [])
+            if wanted_set.issubset(tags):
+                resolved[role] = key
+                break
+    return resolved
+
+
+def _entry_roles(
+    key: str,
+    resolved_by_role: dict[str, str],
     asr_roles: dict[str, list[str]],
 ) -> list[str]:
-    """The PtM roles a manifest entry serves, from its tags + ASR identity."""
-    key = str(entry.get("key") or entry.get("name") or "")
-    tags = set(entry.get("tags") or entry.get("modeTags") or [])
-    roles = [role for role, wanted in server_roles if wanted and set(wanted).issubset(tags)]
+    """The PtM roles a manifest entry is the *resolved* model for."""
+    roles = [role for role, resolved_key in resolved_by_role.items() if resolved_key == key]
     roles.extend(asr_roles.get(key, []))
     return roles
 
@@ -105,19 +144,18 @@ def _is_enabled(cfg, key: str) -> bool:
         return False
 
 
-def _needed(
-    cfg,
-    features: list[str],
-    roles: list[str],
-    selected_service: str,
-    diarize: bool,
-) -> bool:
-    """Whether the current toggles or ASR choice need this row."""
-    if any(_is_enabled(cfg, key) for key in features):
-        return True
-    if selected_service in roles:
-        return True
-    return bool(diarize and "audio" in roles)
+def _required_by(cfg, features: list[str]) -> list[str]:
+    """The enabled AI passes that need this row.
+
+    ASR selection is deliberately not included: transcription is a separate
+    engine job, not a conversion dependency (ADR-0065).
+    """
+    return [key for key in features if _is_enabled(cfg, key)]
+
+
+def _needed(cfg, features: list[str]) -> bool:
+    """Whether an enabled AI pass needs this row."""
+    return bool(_required_by(cfg, features))
 
 
 def _host_port(base_url: str) -> tuple[str, int]:
@@ -157,7 +195,6 @@ def _catalogue_row(
     roles: list[str],
     features_by_server: dict[str, list[str]],
     selected_service: str,
-    diarize: bool,
     *,
     state: str,
 ) -> dict:
@@ -170,9 +207,11 @@ def _catalogue_row(
         if server is not None:
             tags = list(server.tags)
             break
+    required_by = _required_by(cfg, features)
+    label = _role_label(cfg, roles[0] if roles else service)
     return {
         "key": service,
-        "name": service,
+        "name": label,
         "tags": tags,
         "daemon": service,
         "host": host,
@@ -182,7 +221,9 @@ def _catalogue_row(
         "state": state,
         "roles": list(roles),
         "features": features,
-        "needed": _needed(cfg, features, roles, selected_service, diarize),
+        "required_by": required_by,
+        "available_for": list(features),
+        "needed": bool(required_by),
         "selected": service == selected_service,
         "in_manifest": False,
         "start": start,
@@ -197,7 +238,6 @@ def _manifest_rows(
     catalogue_roles: dict[str, list[str]],
     features_by_server: dict[str, list[str]],
     selected_service: str,
-    diarize: bool,
 ) -> list[dict]:
     """One row per manifest model, in manifest order, plus missing PtM roles."""
     rows: list[dict] = []
@@ -206,6 +246,7 @@ def _manifest_rows(
         roles = list(roles_by_key.get(key, ()))
         covered.update(roles)
         features = _service_features(roles, features_by_server)
+        required_by = _required_by(cfg, features)
         rows.append(
             {
                 "key": key,
@@ -219,7 +260,9 @@ def _manifest_rows(
                 "state": states.get(key, "unknown"),
                 "roles": roles,
                 "features": features,
-                "needed": _needed(cfg, features, roles, selected_service, diarize),
+                "required_by": required_by,
+                "available_for": list(features),
+                "needed": bool(required_by),
                 "selected": key == selected_service,
                 "in_manifest": True,
                 "start": fleet.start_command(key),
@@ -236,7 +279,6 @@ def _manifest_rows(
                 roles,
                 features_by_server,
                 selected_service,
-                diarize,
                 state="unknown",
             )
         )
@@ -248,7 +290,6 @@ def _static_rows(
     catalogue_roles: dict[str, list[str]],
     features_by_server: dict[str, list[str]],
     selected_service: str,
-    diarize: bool,
 ) -> list[dict]:
     """Catalogue + ASR rows with direct probes when flaate is unreachable."""
     rows: list[dict] = []
@@ -264,11 +305,83 @@ def _static_rows(
                 roles,
                 features_by_server,
                 selected_service,
-                diarize,
                 state=state,
             )
         )
     return rows
+
+
+def _requirements(
+    cfg,
+    rows: list[dict],
+    resolved_by_role: dict[str, str],
+) -> list[dict]:
+    """The feature-centric "what does this pass need?" projection (ADR-0065).
+
+    Each pass lists the models it will actually request, with the fleet state
+    and the on-demand start command. ``optional`` marks the graceful-degradation
+    dependencies (need-check gate, summary embeddings); they are reported but do
+    not make a pass unready.
+    """
+    rows_by_key = {row["key"]: row for row in rows}
+    role_to_row: dict[str, str] = {}
+    for key, row in rows_by_key.items():
+        for role in row["roles"]:
+            role_to_row.setdefault(role, key)
+
+    out: list[dict] = []
+    for key, feature in _features(cfg).items():
+        services: list[dict] = []
+        missing: list[str] = []
+        optional_missing: list[str] = []
+        states: list[str] = []
+        for req in cfg.feature_requirements(key):
+            role = req["role"]
+            row_key = resolved_by_role.get(role) or role_to_row.get(role) or role
+            row = rows_by_key.get(row_key) or {}
+            state = str(row.get("state") or "unknown")
+            states.append(state)
+            item = {
+                "role": role,
+                "label": req["label"],
+                "key": row.get("key") or req["key"],
+                "name": row.get("name") or req["name"],
+                "base_url": req["base_url"],
+                "model": req["model"],
+                "state": state,
+                "start": row.get("start") or req["start"],
+                "optional": bool(req["optional"]),
+            }
+            services.append(item)
+            if state != "up" and state not in ("starting", "stopping", "provisioning"):
+                if item["optional"]:
+                    optional_missing.append(item["key"])
+                else:
+                    missing.append(item["key"])
+
+        if missing:
+            readiness = "missing"
+        elif any(state in ("starting", "stopping", "provisioning") for state in states):
+            readiness = "pending"
+        elif not services:
+            readiness = "unknown"
+        else:
+            readiness = "ready"
+
+        out.append(
+            {
+                "key": key,
+                "label": feature.label,
+                "description": feature.description,
+                "scope": feature.scope,
+                "enabled": _is_enabled(cfg, key),
+                "readiness": readiness,
+                "services": services,
+                "missing": missing,
+                "optional_missing": optional_missing,
+            }
+        )
+    return out
 
 
 def _other_models(rows: list[dict]) -> int:
@@ -277,34 +390,36 @@ def _other_models(rows: list[dict]) -> int:
 
 
 def snapshot(cfg=None) -> dict:
-    """The TUI's fleet availability payload (ADR-0063).
+    """The TUI's fleet availability payload (ADR-0063/0065).
 
     Prefers flaate's ``status/all`` (the liveness check) and ``list``; when the
     daemon does not answer, returns direct-probe rows from the static
-    catalogue. Never raises — a broken override degrades to the static view.
+    catalogue. Rows are the models PtM resolves a role to, not every tag match;
+    the feature-centric ``requirements`` list answers "what does this pass need?".
+    Never raises — a broken override degrades to the static view.
     """
     cfg = cfg or _config
     server_roles = _server_roles(cfg)
     asr_roles = _asr_roles()
     catalogue_roles = _catalogue_roles(cfg)
     features_by_server = _features_by_server(cfg)
-    selected, diarize = _select(cfg)
+    selected, _diarize = _select(cfg)
     # An unknown persisted ASR name passes through settings; it must not mark
     # the NB-Whisper row as selected just because audio.asr_service() degrades.
     selected_service = audio.asr_service(selected) if selected in audio.ASR_MODELS else ""
 
     states = fleet.status_all()
     if states is None:
-        rows = _static_rows(
-            cfg, catalogue_roles, features_by_server, selected_service, diarize
-        )
+        rows = _static_rows(cfg, catalogue_roles, features_by_server, selected_service)
+        resolved_by_role = {name: name for name in _servers(cfg)}
         source = "static"
         reachable = False
     else:
         models = fleet.list_models(force=True)
+        resolved_by_role = _resolve_roles(models, server_roles)
         roles_by_key = {
-            key: _entry_roles(entry, server_roles, asr_roles)
-            for key, entry in models.items()
+            key: _entry_roles(key, resolved_by_role, asr_roles)
+            for key in models
         }
         rows = _manifest_rows(
             cfg,
@@ -314,7 +429,6 @@ def snapshot(cfg=None) -> dict:
             catalogue_roles,
             features_by_server,
             selected_service,
-            diarize,
         )
         source = "fleet"
         reachable = True
@@ -324,4 +438,6 @@ def snapshot(cfg=None) -> dict:
         "source": source,
         "services": rows,
         "other_models": _other_models(rows),
+        "role_labels": _role_labels(cfg),
+        "requirements": _requirements(cfg, rows, resolved_by_role),
     }

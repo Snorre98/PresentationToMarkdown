@@ -65,9 +65,19 @@ def test_manifest_projection_roles_features_and_selection(monkeypatch):
         "structure",
     ]
     assert rows[whisper_key]["selected"] is True
-    assert rows[whisper_key]["needed"] is True
+    assert rows[whisper_key]["needed"] is False  # ASR selection is not a conversion need
+    assert rows[whisper_key]["required_by"] == []
     assert rows[mistral_key]["roles"] == []
     assert snap["other_models"] == 1
+    assert rows[text_key]["required_by"] == ["summary"]
+    assert rows[text_key]["available_for"] == ["summary", "format", "structure"]
+
+    requirements = {item["key"]: item for item in snap["requirements"]}
+    assert requirements["summary"]["label"] == "Presentation summary"
+    assert requirements["summary"]["enabled"] is True
+    assert requirements["summary"]["readiness"] == "ready"
+    assert requirements["summary"]["optional_missing"] == ["embeddings"]
+    assert requirements["format"]["services"][1]["optional"] is True
 
     # A catalogue role absent from the manifest is visible, not hidden.
     assert rows["classifier"]["state"] == "unknown"
@@ -93,9 +103,35 @@ def test_static_fallback_probes_and_labels_itself(monkeypatch):
     assert rows["whisper-large-v3-asr-fp16"]["state"] == "down"
     assert rows["audio"]["state"] == "down"
     assert rows["audio"]["selected"] is True
-    assert rows["audio"]["needed"] is True
+    assert rows["audio"]["needed"] is False
     assert all(row["in_manifest"] is False for row in snap["services"])
     assert snap["other_models"] == 0
+
+
+def test_tag_match_alternatives_do_not_become_roles(monkeypatch):
+    """A losing tag match must not make an available feature look down (ADR-0065)."""
+    vision_key = "qwen2.5-vl-7b-instruct-4bit"
+    small_key = "qwen2.5-vl-3b-instruct-4bit"
+    models = {
+        vision_key: _model(vision_key, "Qwen2.5-VL 7B Instruct (4-bit)", vision_key, 8081, ["vision", "ocr", "transcriber"], "mlx-vlm"),
+        small_key: _model(small_key, "Qwen2.5-VL 3B Instruct (4-bit)", small_key, 8082, ["vision", "ocr", "classifier", "transcriber"], "mlx-vlm"),
+    }
+    monkeypatch.setattr(fleet, "list_models", lambda force=False: models)
+    monkeypatch.setattr(fleet, "status_all", lambda: {vision_key: "up", small_key: "down"})
+    monkeypatch.setattr(fleetview, "_select", lambda cfg: ("nb-whisper-large", False))
+
+    snap = fleetview.snapshot(config)
+    rows = {row["key"]: row for row in snap["services"]}
+
+    assert rows[vision_key]["roles"] == ["transcriber"]
+    assert rows[small_key]["roles"] == ["classifier"]
+    assert rows[small_key]["features"] == ["classify"]
+    assert rows[small_key]["available_for"] == ["classify"]
+
+    requirements = {item["key"]: item for item in snap["requirements"]}
+    assert requirements["vision"]["readiness"] == "ready"
+    assert [service["key"] for service in requirements["vision"]["services"]] == [vision_key]
+    assert requirements["classify"]["readiness"] == "missing"
 
 
 def test_needed_tracks_enabled_features(monkeypatch):

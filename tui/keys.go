@@ -14,6 +14,7 @@ type keyMap struct {
 	Cancel   key.Binding
 	Open     key.Binding
 	Settings key.Binding
+	AI       key.Binding
 	Help     key.Binding
 	Quit     key.Binding
 }
@@ -29,6 +30,7 @@ func defaultKeys() keyMap {
 		Cancel:   key.NewBinding(key.WithKeys("x"), key.WithHelp("x", "cancel job")),
 		Open:     key.NewBinding(key.WithKeys("o", "f"), key.WithHelp("o/f", "open · reveal")),
 		Settings: key.NewBinding(key.WithKeys("s"), key.WithHelp("s", "settings")),
+		AI:       key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "AI setup")),
 		Help:     key.NewBinding(key.WithKeys("?"), key.WithHelp("?", "help")),
 		Quit:     key.NewBinding(key.WithKeys("q", "ctrl+c"), key.WithHelp("q", "quit")),
 	}
@@ -37,13 +39,13 @@ func defaultKeys() keyMap {
 var keys = defaultKeys()
 
 func (k keyMap) ShortHelp() []key.Binding {
-	return []key.Binding{k.Up, k.Down, k.Select, k.Run, k.Filter, k.Tabs, k.Cancel, k.Settings, k.Help, k.Quit}
+	return []key.Binding{k.Up, k.Down, k.Select, k.Run, k.Filter, k.Tabs, k.Cancel, k.Settings, k.AI, k.Help, k.Quit}
 }
 
 func (k keyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
 		{k.Up, k.Down, k.Select, k.Run},
 		{k.Filter, k.Tabs, k.Cancel, k.Open},
-		{k.Settings, k.Help, k.Quit},
+		{k.Settings, k.AI, k.Help, k.Quit},
 	}
 }

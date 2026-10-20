@@ -1,7 +1,7 @@
 package main
 
-// settings_test.go — the fleet availability view (ADR-0063): state glyphs and
-// the settings section's rows.
+// settings_test.go — the settings modal labels and the feature availability
+// glyphs derived from the server-computed requirements (ADR-0065).
 
 import (
 	"strings"
@@ -9,20 +9,26 @@ import (
 	"time"
 )
 
-func TestFeatureAvailabilityWorstState(t *testing.T) {
+func TestFeatureAvailabilityUsesResolvedReadiness(t *testing.T) {
 	m := testApp()
 	m.fleetAt = time.Now()
-	m.fleet = FleetResult{Services: []FleetService{
-		{Name: "transcriber", State: "up", Features: []string{"vision"}},
-		{Name: "classifier", State: "down", Features: []string{"classify"}},
-		{Name: "text", State: "starting", Features: []string{"summary"}},
-	}}
+	m.fleet = FleetResult{
+		Services: []FleetService{
+			{Name: "Qwen2.5-VL 7B", State: "up", Features: []string{"vision"}},
+			{Name: "Qwen2.5-VL 3B", State: "down", Features: []string{"vision", "classify"}},
+		},
+		Requirements: []FeatureRequirement{
+			{Key: "vision", Label: "Vision transcription", Readiness: "ready"},
+			{Key: "classify", Label: "Image classifier", Readiness: "missing"},
+			{Key: "summary", Label: "Presentation summary", Readiness: "pending"},
+		},
+	}
 
 	cases := map[string]string{
 		"vision":    "●",
 		"classify":  "○",
 		"summary":   "◌",
-		"structure": "…", // no server advertises it
+		"structure": "…", // no requirement advertised
 	}
 	for key, want := range cases {
 		got, _ := m.featureAvailability(key)
@@ -39,54 +45,43 @@ func TestFeatureAvailabilityLoading(t *testing.T) {
 	}
 }
 
-func TestRenderSettingsShowsFleetSection(t *testing.T) {
+func TestRenderSettingsShowsLabelsAndAISetupHint(t *testing.T) {
 	m := testApp()
+	m.cfg.FeatureInfo = []FeatureInfo{
+		{Key: "vision", Label: "Vision transcription", Scope: "all"},
+		{Key: "classify", Label: "Image classifier", Scope: "all"},
+		{Key: "interpret", Label: "Diagram interpretation", Scope: "all"},
+		{Key: "format", Label: "Markdown restructure", Scope: "all"},
+		{Key: "summary", Label: "Presentation summary", Scope: "all"},
+		{Key: "structure", Label: "Paper structure", Scope: "paper"},
+	}
 	m.fleetAt = time.Now()
 	m.fleet = FleetResult{
 		Daemon:      FleetDaemon{URL: "http://127.0.0.1:9300", Reachable: true},
 		Source:      "fleet",
 		OtherModels: 2,
-		Services: []FleetService{
+		Requirements: []FeatureRequirement{
 			{
-				Key: "llama-3.2-3b-instruct-4bit", Name: "Llama 3.2 3B Instruct (4-bit)",
-				State: "up", Roles: []string{"summary", "structure-text"},
-				Features: []string{"summary", "format", "structure"}, Needed: true,
+				Key: "vision", Label: "Vision transcription", Enabled: true,
+				Readiness: "missing",
+				Services: []RequirementService{
+					{Key: "qwen2.5-vl-7b-instruct-4bit", Name: "Qwen2.5-VL 7B", State: "down"},
+				},
 			},
-			{
-				Key: "audio", Name: "Audio pipeline (NB-Whisper + pyannote)",
-				State: "down", Roles: []string{"audio", "nb-whisper-large"},
-				Tags: []string{"audio", "asr"}, Selected: true,
-			},
-			{Key: "mistral-24b", Name: "Mistral Small 3.1 Text 24B Instruct", State: "up"},
 		},
 	}
 	out := m.renderSettingsBox(100, 40)
 	for _, want := range []string{
-		"fleet", "flaate", "Llama 3.2 3B Instruct", "summary", "structure-text", "needed",
-		"Audio pipeline", "ASR nb-whisper (selected)", "+2 other models",
+		"Vision transcription", "Markdown restructure", "Presentation summary",
+		"Paper structure", "audio model", "AI setup", "a AI setup",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("settings box missing %q:\n%s", want, out)
 		}
 	}
-	if strings.Contains(out, "Mistral Small 3.1 Text 24B Instruct") {
-		t.Errorf("role-less manifest model leaked into the PtM view:\n%s", out)
-	}
-
-	m.fleet.Source = "static"
-	m.fleet.Daemon.Reachable = false
-	if out := m.renderSettingsBox(100, 40); !strings.Contains(out, "static probes") {
-		t.Errorf("static fallback not labelled:\n%s", out)
-	}
-}
-
-func TestServiceDetailSelectedWhisper(t *testing.T) {
-	got := serviceDetail(FleetService{
-		Key: "whisper-large-v3-asr-fp16", Name: "Whisper Large v3 (ASR fp16)",
-		Tags: []string{"asr", "audio"}, Selected: true,
-		Roles: []string{"whisper-large-v3-asr-fp16"},
-	})
-	if got != "ASR (selected)" {
-		t.Fatalf("detail = %q", got)
+	for _, unwanted := range []string{"transcriber", "structure-text", "nomic-embed"} {
+		if strings.Contains(out, unwanted) {
+			t.Errorf("settings box leaked internal label %q:\n%s", unwanted, out)
+		}
 	}
 }

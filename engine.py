@@ -1059,14 +1059,18 @@ def create_app() -> Flask:
                 if name in seen:
                     continue
                 seen.add(name)
+                server = config.SERVERS[name]
                 results.append(
-                    {"name": name, "up": config.probe(url), "url": url,
-                     "command": config.SERVERS[name].start_command}
+                    {"name": name, "label": server.label or name,
+                     "model": server.model, "up": config.probe(url), "url": url,
+                     "command": server.start_command}
                 )
         # missing_servers() returns (name, url, command) tuples; the TUI wants
         # the same object shape as `servers` (ADR-0053).
         missing = [
-            {"name": name, "url": url, "command": command, "up": False}
+            {"name": name, "label": config.SERVERS[name].label or name,
+             "model": config.SERVERS[name].model,
+             "url": url, "command": command, "up": False}
             for name, url, command in config.missing_servers()
         ]
         return jsonify({"servers": results, "missing": missing})

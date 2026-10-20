@@ -153,9 +153,11 @@ Audio rows are marked `♫`: transcription is an engine-hosted job (ADR-0045),
 which pairs a recording with its same-stem Markdown or writes a standalone
 `<stem>.transcript.md`. The settings modal (`s`) toggles the AI passes, paper
 layout, image links, PDF compression, inference overwrite, duplicate handling,
-output folder, and transcription options (diarization, speaker count, model,
-language) — persisted through the engine and applied to the next run without a
-restart — and shows live model-server health.
+output folder, and transcription options (diarization, speaker count, audio
+model, language) — persisted through the engine and applied to the next run
+without a restart. Press `a` for **AI setup**: each pass, the models PtM will
+actually use, their state, and the command to start anything that is down
+(ADR-0065).
 
 ```bash
 scripts/install-global.sh        # install ~/.local/bin/ptm-tui (once)
@@ -189,6 +191,10 @@ pass below:
 | `--no-compress` | Skip Ghostscript/qpdf compression of PDFs archived into `source/` (default: compress) |
 | `--overwrite-inference` | Replace an existing `<name>-inference-used.md` instead of writing `-2` (default: never overwrite inference output, ADR-0050) |
 | `--env KEY=VALUE` | Set any other env var (repeatable) — model ids, URLs, log DB |
+
+The pass labels, required models and start commands are in
+[docs/ai-requirements.md](docs/ai-requirements.md); the TUI's `a` view shows the
+live version.
 
 Audio transcription is **not** among these flags — it is a separate engine job
 the TUI dispatches (see [Audio transcription](#audio-transcription-optional)).
@@ -242,14 +248,18 @@ the projection PtM uses:
 
 | Port | Used by |
 | --- | --- |
-| `:8081` | `qwen2.5-vl-7b-instruct-4bit` (mlx-vlm, Qwen2.5-VL 7B Instruct) — transcriber |
-| `:8082` | `qwen2.5-vl-3b-instruct-4bit` (mlx-vlm, Qwen2.5-VL 3B Instruct) — classifier gate |
-| `:8083` | `llama-3.2-3b-instruct-4bit` (mlx-lm, Llama-3.2-3B) — serves the summary + structure passes |
+| `:8081` | `qwen2.5-vl-7b-instruct-4bit` (mlx-vlm, Qwen2.5-VL 7B Instruct) — vision transcription, diagram interpretation, Markdown restructure, paper structure |
+| `:8082` | `qwen2.5-vl-3b-instruct-4bit` (mlx-vlm, Qwen2.5-VL 3B Instruct) — image classifier |
+| `:8083` | `llama-3.2-3b-instruct-4bit` (mlx-lm, Llama-3.2-3B) — presentation summary + paper structure text |
 | `:8084` | `llama-3.2-1b-instruct-4bit` (writing assistant; not PtM) |
-| `:8085` | `mistral-small-3.1-text-24b-instruct-2503-4bit` daemon |
-| `:8089` | `audio` — audio pipeline (dereverb / enhance / isolate / diarize) |
-| `:8090` | `nomic-embed-text-v1.5.q8-0` embeddings daemon (llama.cpp) |
+| `:8085` | `mistral-small-3.1-text-24b-instruct-2503-4bit` daemon (not PtM) |
+| `:8089` | `audio` — audio pipeline (NB-Whisper / diarization / dereverb / enhance / isolate) |
+| `:8090` | `embeddinggemma-2-q8-0` embeddings daemon (llama.cpp) |
+| `:8099` | `whisper-large-v3-asr-fp16` / `whisper-large-v3-turbo-asr-fp16` (fleet `whisper` daemon) |
 | `:9091` | **Native engine default** (`PTM_ENGINE_PORT` overrides; the TUI spawns it here) |
+
+See [docs/ai-requirements.md](docs/ai-requirements.md) for the pass → model →
+start-command matrix and the “not used by PtM” notes.
 
 ## Output layout
 
@@ -372,41 +382,47 @@ runs from any directory.
 Library examples use the venv interpreter (`.venv/bin/python`);
 substitute your system `python3` if you install the dependencies globally instead.
 
-### Optional: AI vision pass
+### Optional: AI passes
 
-The vision post-pass (see [docs/ai-vision.md](docs/ai-vision.md)) has **no Python
-dependencies** — it talks to an OpenAI-compatible HTTP endpoint — but it needs one
-or two model servers running locally. `mlx_vlm.server` serves **one chat model per
-process**, so each model is its own server on its own port.
+The AI passes (see [docs/ai-vision.md](docs/ai-vision.md) and
+[docs/ai-requirements.md](docs/ai-requirements.md)) have **no Python
+dependencies** — they talk to OpenAI-compatible HTTP endpoints — but they need
+one or more model servers running locally. `mlx_vlm.server` serves **one chat
+model per process**, so each model is its own server on its own port.
 
-1. Install `mlx-vlm` (via `uv`, Python 3.12):
-   ```bash
-   brew install uv
-   uv tool install mlx-vlm --python 3.12
-   ```
+**The quickest answer:** in the TUI press `a`. It shows each pass, the model
+PtM will actually use, whether it is up, and the exact start command for anything
+down.
 
-2. Start the **vision transcriber** (required for any vision use; leave it running):
-   ```bash
-   curl -X POST http://127.0.0.1:9300/start/qwen2.5-vl-7b-instruct-4bit
-   ```
-   Enable the vision pass in the TUI settings (or launch with
-   `VISION_ENABLED=1 scripts/ptm-tui.sh`).
+For all five slide passes, start these four models:
 
-3. *(Optional)* Start the **classifier** — a second, small model that gates what
-   gets transcribed (skips photos/logos) and enables image-level transcription:
-   ```bash
-   curl -X POST http://127.0.0.1:9300/start/qwen2.5-vl-3b-instruct-4bit
-   ```
-   …then enable the classifier gate in the TUI settings (or launch with
-   `VISION_ENABLED=1 VISION_CLASSIFY_ENABLED=1 scripts/ptm-tui.sh`).
+```sh
+for m in qwen2.5-vl-7b-instruct-4bit qwen2.5-vl-3b-instruct-4bit \
+         llama-3.2-3b-instruct-4bit embeddinggemma-2-q8-0; do
+  curl -X POST "http://127.0.0.1:9300/start/$m"
+done
+```
 
 | Model | Port | Needed for |
 | --- | --- | --- |
-| Qwen2.5-VL 7B Instruct (key `qwen2.5-vl-7b-instruct-4bit`) | `:8081` | any vision transcription |
-| Qwen2.5-VL 3B Instruct (key `qwen2.5-vl-3b-instruct-4bit`) | `:8082` | the classifier gate + image-level transcription (optional) |
+| Qwen2.5-VL 7B Instruct (`qwen2.5-vl-7b-instruct-4bit`) | `:8081` | vision transcription, diagram interpretation, Markdown restructure, paper structure |
+| Qwen2.5-VL 3B Instruct (`qwen2.5-vl-3b-instruct-4bit`) | `:8082` | image classifier (optional; implies vision) |
+| Llama 3.2 3B Instruct (`llama-3.2-3b-instruct-4bit`) | `:8083` | presentation summary, paper structure text, Markdown need check |
+| EmbeddingGemma 2 (`embeddinggemma-2-q8-0`) | `:8090` | presentation summary embeddings |
 
-Running both uses ~8 GB of unified memory (~4 GB transcriber + ~4 GB classifier).
-Run each server in its own terminal, or in the background (`nohup`/`launchd`).
+The 7B Qwen is the shared vision/rewrite model; the 3B Llama is the shared text
+model. One model can serve several passes. Models carrying a matching tag but
+losing to the first manifest match (Llama 1B, GLM-OCR, Qwen 3B as a transcriber)
+are not used by PtM — see the requirements doc.
+
+Install `mlx-vlm` (via `uv`, Python 3.12) if needed:
+
+```bash
+brew install uv
+uv tool install mlx-vlm --python 3.12
+```
+
+Run each server in its own terminal, or via flaate's on-demand start commands.
 
 PPTX chart transcription additionally needs LibreOffice:
 `brew install --cask libreoffice`.
@@ -546,7 +562,7 @@ the TUI, or set `STRUCTURE_ENABLED=1` and `PDF_MODE=paper` for the engine.
 | `STRUCTURE_BASE_URL` | `FORMAT_BASE_URL` (then `WRITE_BASE_URL`) | Structure model server |
 | `STRUCTURE_MODEL` | `FORMAT_MODEL` (then `WRITE_MODEL`) | Structure model id (a VLM can read page images) |
 | `STRUCTURE_API_KEY` | `FORMAT_API_KEY` (then `WRITE_API_KEY`) | Optional bearer token (unused locally) |
-| `STRUCTURE_TEXT_BASE_URL` | `structure-text` server (`:8085`) | Small text model for the *text* regime (ADR-0024) |
+| `STRUCTURE_TEXT_BASE_URL` | `structure-text` server (`:8083`) | Small text model for the *text* regime (ADR-0024) |
 | `STRUCTURE_TEXT_MODEL` | `mlx-community/Llama-3.2-3B-Instruct-4bit` | Text-regime model id — no image is sent, so a VLM is unnecessary |
 | `STRUCTURE_TEXT_API_KEY` | `STRUCTURE_API_KEY` | Optional bearer token for the text-regime model |
 
@@ -592,17 +608,23 @@ summary pass in the TUI settings.
 | `SUMMARY_BASE_URL` | `http://127.0.0.1:8083/v1` | Summary chat model server (`llama-3.2-3b-instruct-4bit`) |
 | `SUMMARY_MODEL` | `mlx-community/Llama-3.2-3B-Instruct-4bit` | Summary chat model id (a small text model) |
 | `SUMMARY_API_KEY` | *(unset)* | Optional bearer token (unused locally) |
-| `EMBED_BASE_URL` | `http://127.0.0.1:8090/v1` | Embeddings server (`nomic-embed-text-v1.5.q8-0`) |
-| `EMBED_MODEL` | `nomic-embed-text-v1.5` | Embeddings model id |
+| `EMBED_BASE_URL` | `http://127.0.0.1:8090/v1` | Embeddings server (`embeddinggemma-2-q8-0`) |
+| `EMBED_MODEL` | `embeddinggemma-2-Q8_0.gguf` | Embeddings model id |
 | `EMBED_API_KEY` | *(unset)* | Optional bearer token (unused locally) |
 
 By default the summary uses the fleet's **Llama-3.2-3B text model**
 (`llama-3.2-3b-instruct-4bit`, `:8083`) — the same model the structure pass uses
 — rather than the writer VLM, so no 7B VLM is loaded for a short header.
-Embeddings come from the fleet's `nomic-embed-text-v1.5.q8-0` llama.cpp daemon
-(`:8090`). Start the text model with
-`curl -X POST http://127.0.0.1:9300/start/llama-3.2-3b-instruct-4bit`.
-Override `SUMMARY_*`/`EMBED_*` to point at different models if you prefer.
+Embeddings come from the fleet's **EmbeddingGemma 2** llama.cpp daemon
+(`embeddinggemma-2-q8-0`, `:8090`). Start them with:
+
+```sh
+curl -X POST http://127.0.0.1:9300/start/llama-3.2-3b-instruct-4bit
+curl -X POST http://127.0.0.1:9300/start/embeddinggemma-2-q8-0
+```
+
+Override `SUMMARY_*`/`EMBED_*` to point at different models if you prefer (for
+example Ollama's `nomic-embed-text` on `:11434`).
 
 ## Audio transcription (optional)
 

@@ -18,21 +18,26 @@ MLX/GGUF "lanes", SSD storage layout, and LAN serving. In short:
 
 - Vision models run on **MLX via `mlx-vlm`** (Apple-native, fastest on Apple
   Silicon). `mlx-vlm` is already installed (`~/.local/bin/mlx_vlm.server`).
-- The transcriber used here is `mlx-community/Qwen2.5-VL-7B-Instruct-4bit` (MLX,
-  qwen2_5_vl arch, 4-bit).
+- The **vision + rewrite model** used here is
+  `mlx-community/Qwen2.5-VL-7B-Instruct-4bit` (MLX, qwen2_5_vl arch, 4-bit).
+  The same server also handles diagram interpretation, Markdown restructure and
+  paper-structure image pages; it is not only a transcriber.
 
 Serve it (OpenAI-compatible API on `:8081`):
 
 ```sh
 # on-demand via the macos-dev-config control daemon (ADR-0029):
-curl -X POST http://127.0.0.1:9300/start/transcriber
+curl -X POST http://127.0.0.1:9300/start/qwen2.5-vl-7b-instruct-4bit
 
 # or the underlying command:
 mlx_vlm.server --model mlx-community/Qwen2.5-VL-7B-Instruct-4bit --port 8081
 ```
 
-`curl http://127.0.0.1:9300/reach/transcriber` prints the daemon's base URL for
-`VISION_BASE_URL`. Add `--host 0.0.0.0` (raw command) only if you need to reach
+`curl http://127.0.0.1:9300/reach/qwen2.5-vl-7b-instruct-4bit` prints the
+daemon's base URL for `VISION_BASE_URL`.
+
+In the TUI, press `a` for the live pass → model → start-command view. The full
+matrix is in [ai-requirements.md](ai-requirements.md). Add `--host 0.0.0.0` (raw command) only if you need to reach
 it from another device on the LAN — the daemon itself binds `127.0.0.1` and its
 pre-bind gate refuses ungated non-localhost binds (ADR-0021). The always-on
 `classifier`/`transcriber` LaunchAgents were retired; the daemon starts these
@@ -200,7 +205,7 @@ classifier (:8082) ───────┼─ DIAGRAM ─────▶ high-l
 Serve it on its own port (mlx-vlm runs one chat model per process):
 
 ```sh
-curl -X POST http://127.0.0.1:9300/start/classifier   # on-demand via the daemon, or:
+curl -X POST http://127.0.0.1:9300/start/qwen2.5-vl-3b-instruct-4bit  # on-demand via the daemon, or:
 mlx_vlm.server --model mlx-community/Qwen2.5-VL-3B-Instruct-4bit --port 8082
 ```
 
@@ -385,25 +390,31 @@ per-slide chunks and **sqlite-vec** embeddings in `ptm.sqlite`, retrieves the mo
 salient chunks, and has a dedicated summary chat model write the header.
 
 - **Summary model** — a dedicated small text model
-  (ADR-0021): `SUMMARY_BASE_URL`/`SUMMARY_MODEL` default to a `summary` server
-  (`mlx-community/Llama-3.2-3B-Instruct-4bit` on `:8084`) rather than the writer
-  VLM, so no 7B VLM is loaded for a short header. Override `SUMMARY_*` to use
-  another model.
-- **Embeddings** — served by Ollama (`EMBED_BASE_URL=http://localhost:11434/v1`,
-  `EMBED_MODEL=nomic-embed-text`). The dimension is derived from the actual
-  embedding output (and cached), so any embedding model works and there is no
-  separate probe call.
+  (ADR-0021/0029): `SUMMARY_BASE_URL`/`SUMMARY_MODEL` default to the fleet's
+  `summary` role (`mlx-community/Llama-3.2-3B-Instruct-4bit` on `:8083`) rather
+  than the writer VLM, so no 7B VLM is loaded for a short header. Override
+  `SUMMARY_*` to use another model. The manifest's 1B Llama (`:8084`) carries a
+  `summary` tag but is not used by PtM: the 3B wins by manifest order.
+- **Embeddings** — served by the fleet's `embeddings` role
+  (`EMBED_BASE_URL=http://127.0.0.1:8090/v1`,
+  `EMBED_MODEL=embeddinggemma-2-Q8_0.gguf`). The dimension is derived from the
+  actual embedding output (and cached), so any embedding model works. Set
+  `EMBED_BASE_URL`/`EMBED_MODEL` to use Ollama's `nomic-embed-text` instead.
 
 The `sqlite-vec` extension is a Python dependency (`pip install sqlite-vec`) and
 loads on its own; no separate server is needed for the vector store.
 
-All three AI passes can be enabled together in one launch (vision + classifier,
-markdown restructure, and the RAG summary):
+All slide AI passes can be enabled together in one launch (vision + classifier,
+diagram interpretation, markdown restructure, and the RAG summary):
 
 ```sh
-VISION_ENABLED=1 VISION_CLASSIFY_ENABLED=1 FORMAT_ENABLED=1 SUMMARY_ENABLED=1 \
-  scripts/ptm-tui.sh
+VISION_ENABLED=1 VISION_CLASSIFY_ENABLED=1 INTERPRET_ENABLED=1 \
+FORMAT_ENABLED=1 SUMMARY_ENABLED=1 scripts/ptm-tui.sh
 ```
+
+Paper structure is separate and paper-mode only (`STRUCTURE_ENABLED=1
+PDF_MODE=paper`). The required models and start commands are in
+[ai-requirements.md](ai-requirements.md).
 
 ## Logging
 

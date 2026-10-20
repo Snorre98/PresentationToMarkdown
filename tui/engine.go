@@ -66,6 +66,16 @@ type GlobEntry struct {
 	IsDir bool    `json:"is_dir"`
 }
 
+// FeatureInfo is one user-facing AI capability from config.feature_info() (ADR-0065).
+type FeatureInfo struct {
+	Key         string   `json:"key"`
+	Label       string   `json:"label"`
+	EnvVar      string   `json:"env_var"`
+	Description string   `json:"description"`
+	Implies     []string `json:"implies"`
+	Scope       string   `json:"scope"`
+}
+
 // Config is the subset of config.snapshot() the TUI renders/edits.
 type Config struct {
 	PDFMode            string          `json:"pdf_mode"`
@@ -76,6 +86,7 @@ type Config struct {
 	Duplicate          bool            `json:"duplicate"`
 	VaultRoot          string          `json:"vault_root"`
 	Features           map[string]bool `json:"features"`
+	FeatureInfo        []FeatureInfo   `json:"feature_info"`
 
 	// Transcription settings (ADR-0043): persisted by the engine; the TUI
 	// sends them with each engine-hosted transcription job (ADR-0045).
@@ -188,31 +199,61 @@ type FleetDaemon struct {
 	Reachable bool   `json:"reachable"`
 }
 
-// FleetService is one availability row from /api/fleet (ADR-0063).
+// FleetService is one availability row from /api/fleet (ADR-0063/0065).
 type FleetService struct {
-	Key        string   `json:"key"`
-	Name       string   `json:"name"`
-	Tags       []string `json:"tags"`
-	Daemon     string   `json:"daemon"`
-	Host       string   `json:"host"`
-	Port       int      `json:"port"`
-	Runner     string   `json:"runner"`
-	ModelID    string   `json:"modelId"`
-	State      string   `json:"state"`
-	Roles      []string `json:"roles"`
-	Features   []string `json:"features"`
-	Needed     bool     `json:"needed"`
-	Selected   bool     `json:"selected"`
-	InManifest bool     `json:"in_manifest"`
-	Start      string   `json:"start"`
+	Key          string   `json:"key"`
+	Name         string   `json:"name"`
+	Tags         []string `json:"tags"`
+	Daemon       string   `json:"daemon"`
+	Host         string   `json:"host"`
+	Port         int      `json:"port"`
+	Runner       string   `json:"runner"`
+	ModelID      string   `json:"modelId"`
+	State        string   `json:"state"`
+	Roles        []string `json:"roles"`
+	Features     []string `json:"features"`
+	RequiredBy   []string `json:"required_by"`
+	AvailableFor []string `json:"available_for"`
+	Needed       bool     `json:"needed"`
+	Selected     bool     `json:"selected"`
+	InManifest   bool     `json:"in_manifest"`
+	Start        string   `json:"start"`
+}
+
+// RequirementService is one model a pass needs, with the endpoint it will use.
+type RequirementService struct {
+	Role     string `json:"role"`
+	Label    string `json:"label"`
+	Key      string `json:"key"`
+	Name     string `json:"name"`
+	BaseURL  string `json:"base_url"`
+	Model    string `json:"model"`
+	State    string `json:"state"`
+	Start    string `json:"start"`
+	Optional bool   `json:"optional"`
+}
+
+// FeatureRequirement is one pass plus the models it needs (ADR-0065).
+type FeatureRequirement struct {
+	Key             string               `json:"key"`
+	Label           string               `json:"label"`
+	Description     string               `json:"description"`
+	Scope           string               `json:"scope"`
+	Enabled         bool                 `json:"enabled"`
+	Readiness       string               `json:"readiness"` // ready | pending | missing | unknown
+	Services        []RequirementService `json:"services"`
+	Missing         []string             `json:"missing"`
+	OptionalMissing []string             `json:"optional_missing"`
 }
 
 // FleetResult is the /api/fleet payload.
 type FleetResult struct {
-	Daemon      FleetDaemon    `json:"daemon"`
-	Source      string         `json:"source"`
-	Services    []FleetService `json:"services"`
-	OtherModels int            `json:"other_models"`
+	Daemon       FleetDaemon          `json:"daemon"`
+	Source       string               `json:"source"`
+	Services     []FleetService       `json:"services"`
+	OtherModels  int                  `json:"other_models"`
+	RoleLabels   map[string]string    `json:"role_labels"`
+	Requirements []FeatureRequirement `json:"requirements"`
 }
 
 // Health returns the engine's health.

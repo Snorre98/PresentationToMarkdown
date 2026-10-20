@@ -73,9 +73,36 @@ def test_server_catalog_maps_features_to_manifest_daemons():
     assert config.SERVERS["summary"].port == 8083
     assert config.SERVERS["structure-text"].model_key == "llama-3.2-3b-instruct-4bit"
     assert config.SERVERS["structure-text"].port == 8083  # was :8085 — collided with the old mistral daemon
-    assert config.SERVERS["nomic-embed"].port == 8090  # was ollama :11434
-    assert config.SERVERS["nomic-embed"].model_key == "nomic-embed-text-v1.5.q8-0"
-    assert config.SERVERS["classifier"].description == "Classifier gate (PresentationToMarkdown)"
+    assert config.SERVERS["embeddings"].port == 8090  # was ollama :11434
+    assert config.SERVERS["embeddings"].model_key == "embeddinggemma-2-q8-0"
+    assert config.SERVERS["classifier"].description == "Image classifier (PresentationToMarkdown)"
+    assert config.SERVERS["transcriber"].label == "Vision + rewrite model"
+    assert config.SERVERS["embeddings"].label == "Embeddings model"
+
+
+def test_feature_labels_and_scopes_are_user_facing():
+    assert config.FEATURES["vision"].label == "Vision transcription"
+    assert config.FEATURES["classify"].label == "Image classifier"
+    assert config.FEATURES["format"].label == "Markdown restructure"
+    assert config.FEATURES["summary"].label == "Presentation summary"
+    assert config.FEATURES["structure"].scope == "paper"
+    assert [item["key"] for item in config.feature_info()] == list(config.FEATURES)
+
+
+def test_feature_requirements_expose_optional_dependencies(monkeypatch):
+    def _entry(tags):
+        port = 8090 if "embeddings" in tags else 8083
+        return {"key": "fleet-key", "name": "Fleet model", "tags": list(tags), "port": port}
+
+    monkeypatch.setattr("converter.fleet.find_by_tags", _entry)
+    summary = config.feature_requirements("summary")
+    assert [item["role"] for item in summary] == ["summary", "embeddings"]
+    assert summary[1]["base_url"] == "http://127.0.0.1:8090/v1"
+    assert summary[1]["optional"] is True
+
+    format_ = config.feature_requirements("format")
+    assert [item["role"] for item in format_] == ["transcriber", "structure-text"]
+    assert format_[1]["optional"] is True
 
 
 def test_feature_endpoints_format_falls_back_to_write():
@@ -141,6 +168,32 @@ def test_summary_model_is_dedicated_not_write():
         cwd=root,
     )
     assert out.stdout.strip() == "mlx-community/Llama-3.2-3B-Instruct-4bit"
+
+
+def test_summary_embeddings_default_to_the_fleet_server():
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    env = {key: value for key, value in os.environ.items() if not key.startswith("EMBED_")}
+    script = (
+        "import converter.summary as m\n"
+        "print(m.EMBED_BASE_URL)\n"
+        "print(m.EMBED_MODEL)\n"
+    )
+    out = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        check=True,
+        cwd=root,
+        env=env,
+    )
+    lines = out.stdout.strip().splitlines()
+    assert lines[0] == "http://127.0.0.1:8090/v1"
+    assert "embeddinggemma" in lines[1].lower()
 
 
 def test_probe_up(monkeypatch):

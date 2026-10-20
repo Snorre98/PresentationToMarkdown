@@ -51,8 +51,9 @@ class Server:
     ``tags`` is the role/capability match resolved against the control daemon's
     ``list`` projection; ``key`` is the fallback manifest key when the daemon is
     unreachable. The static ``host``/``port``/``runner``/``model`` fields are the
-    offline fallback projection of the same entry. ``name`` is the feature label,
-    stable across the migration.
+    offline fallback projection of the same entry. ``name`` is the stable
+    internal role key; ``label`` is the user-facing capability name shown by the
+    TUI (ADR-0065).
     """
 
     name: str
@@ -63,6 +64,7 @@ class Server:
     port: int = 0
     model: str = ""
     description: str = ""
+    label: str = ""
 
     @property
     def model_key(self) -> str:
@@ -92,6 +94,7 @@ class Feature:
     env_var: str
     description: str = ""
     implies: tuple[str, ...] = ()
+    scope: str = "all"  # "all" | "paper" — paper features only run in paper mode
 
 
 # Built-in catalog — the fallback projection of the fleet manifest's PtM-serving
@@ -105,7 +108,8 @@ SERVERS: dict[str, Server] = {
         runner="mlx-vlm",
         port=8081,
         model="mlx-community/Qwen2.5-VL-7B-Instruct-4bit",
-        description="Vision transcriber (PresentationToMarkdown)",
+        description="Vision and rewrite model (PresentationToMarkdown)",
+        label="Vision + rewrite model",
     ),
     "classifier": Server(
         name="classifier",
@@ -114,7 +118,8 @@ SERVERS: dict[str, Server] = {
         runner="mlx-vlm",
         port=8082,
         model="mlx-community/Qwen2.5-VL-3B-Instruct-4bit",
-        description="Classifier gate (PresentationToMarkdown)",
+        description="Image classifier (PresentationToMarkdown)",
+        label="Image classifier",
     ),
     "summary": Server(
         name="summary",
@@ -127,7 +132,8 @@ SERVERS: dict[str, Server] = {
         runner="mlx-lm",
         port=8083,
         model="mlx-community/Llama-3.2-3B-Instruct-4bit",
-        description="Summary chat (PresentationToMarkdown)",
+        description="Summary chat model (PresentationToMarkdown)",
+        label="Summary model",
     ),
     "structure-text": Server(
         name="structure-text",
@@ -138,16 +144,18 @@ SERVERS: dict[str, Server] = {
         runner="mlx-lm",
         port=8083,
         model="mlx-community/Llama-3.2-3B-Instruct-4bit",
-        description="Small text model for the structure pass text regime (PresentationToMarkdown)",
+        description="Text model for summary + paper structure (PresentationToMarkdown)",
+        label="Text model (summary + paper structure)",
     ),
-    "nomic-embed": Server(
-        name="nomic-embed",
-        key="nomic-embed-text-v1.5.q8-0",
+    "embeddings": Server(
+        name="embeddings",
+        key="embeddinggemma-2-q8-0",
         tags=("embeddings",),
         runner="llama.cpp",
         port=8090,
-        model="nomic-embed-text-v1.5",
-        description="Embeddings daemon (nomic-embed-text GGUF)",
+        model="embeddinggemma-2-Q8_0.gguf",
+        description="Embeddings model (PresentationToMarkdown)",
+        label="Embeddings model",
     ),
 }
 
@@ -156,13 +164,13 @@ FEATURES: dict[str, Feature] = {
         key="vision",
         label="Vision transcription",
         env_var="VISION_ENABLED",
-        description="Transcribe diagrams, flowcharts and tables that appear as images",
+        description="Transcribe images, diagrams and charts that appear as pictures",
     ),
     "classify": Feature(
         key="classify",
-        label="Classifier gate",
+        label="Image classifier",
         env_var="VISION_CLASSIFY_ENABLED",
-        description="Cheap VLM gate that skips decorative images (implies vision)",
+        description="Skip decorative images before vision transcription (implies vision)",
         implies=("vision",),
     ),
     "interpret": Feature(
@@ -173,13 +181,13 @@ FEATURES: dict[str, Feature] = {
     ),
     "format": Feature(
         key="format",
-        label="LLM restructure",
+        label="Markdown restructure",
         env_var="FORMAT_ENABLED",
-        description="Reflow wrapped lines and promote heading-like bullets",
+        description="Reflow wrapped lines and promote heading-like bullets with a local model",
     ),
     "summary": Feature(
         key="summary",
-        label="RAG summary",
+        label="Presentation summary",
         env_var="SUMMARY_ENABLED",
         description="Prepend a standardized per-presentation summary header",
     ),
@@ -187,7 +195,8 @@ FEATURES: dict[str, Feature] = {
         key="structure",
         label="Paper structure",
         env_var="STRUCTURE_ENABLED",
-        description="LLM document-structure pass (paper-mode PDFs only)",
+        description="Improve the structure of paper-mode PDFs (paper PDFs only)",
+        scope="paper",
     ),
 }
 
@@ -366,7 +375,7 @@ def _summary_url() -> str:
 
 
 def _embed_url() -> str:
-    return os.environ.get("EMBED_BASE_URL", _resolve("nomic-embed", SERVERS["nomic-embed"].base_url))
+    return os.environ.get("EMBED_BASE_URL", _resolve("embeddings", SERVERS["embeddings"].base_url))
 
 
 _FEATURE_ENDPOINTS: dict[str, list[tuple[str, Callable[[], str]]]] = {
@@ -374,14 +383,109 @@ _FEATURE_ENDPOINTS: dict[str, list[tuple[str, Callable[[], str]]]] = {
     "classify": [("transcriber", _vision_url), ("classifier", _classify_url)],
     "interpret": [("transcriber", _interpret_url)],
     "format": [("transcriber", _format_url), ("structure-text", _need_url)],
-    "summary": [("summary", _summary_url), ("nomic-embed", _embed_url)],
+    "summary": [("summary", _summary_url), ("embeddings", _embed_url)],
     "structure": [("transcriber", _structure_url), ("structure-text", _structure_text_url)],
+}
+
+# Roles whose endpoint is an optimisation or a graceful fallback rather than a
+# hard requirement for the pass. The TUI marks these "optional" and does not
+# block readiness on them.
+_FEATURE_OPTIONAL: dict[str, frozenset[int]] = {
+    "format": frozenset({1}),   # need-check gate; without it every slide is rewritten
+    "summary": frozenset({1}),  # RAG embeddings; falls back to a bounded sample
 }
 
 
 def feature_endpoints(key: str) -> list[tuple[str, str]]:
     """Return ``(server_name, base_url)`` for the servers ``key`` needs."""
     return [(name, resolver()) for name, resolver in _FEATURE_ENDPOINTS[key]]
+
+
+def _pass_models(key: str) -> list[str | None]:
+    """Model ids the pass will request, aligned with ``feature_endpoints``.
+
+    Deferred imports keep ``config`` free of the pass modules (the same idiom as
+    :func:`_pass_model`); a partial import degrades to ``None`` rather than
+    raising.
+    """
+    try:
+        if key == "vision":
+            from converter.vision import VISION_MODEL
+
+            return [VISION_MODEL]
+        if key == "classify":
+            from converter.classify import VISION_CLASSIFY_MODEL
+            from converter.vision import VISION_MODEL
+
+            return [VISION_MODEL, VISION_CLASSIFY_MODEL]
+        if key == "interpret":
+            from converter.interpret import INTERPRET_MODEL
+
+            return [INTERPRET_MODEL]
+        if key == "format":
+            from converter.format import FORMAT_MODEL
+            from converter.need import NEED_MODEL
+
+            return [FORMAT_MODEL, NEED_MODEL]
+        if key == "summary":
+            from converter.summary import EMBED_MODEL, SUMMARY_MODEL
+
+            return [SUMMARY_MODEL, EMBED_MODEL]
+        if key == "structure":
+            from converter.structure import STRUCTURE_MODEL, STRUCTURE_TEXT_MODEL
+
+            return [STRUCTURE_MODEL, STRUCTURE_TEXT_MODEL]
+    except Exception:
+        return []
+    return []
+
+
+def feature_requirements(key: str) -> list[dict]:
+    """The models one pass needs, with the endpoint it will actually use.
+
+    This is the projection the TUI renders (ADR-0065). ``model`` is the id the
+    pass requests (the same constants the pass module uses); ``name``/``key``
+    are the resolved fleet entry when the daemon is reachable, otherwise the
+    static fallback. ``optional`` marks a graceful-degradation dependency (the
+    need-check gate and summary embeddings).
+    """
+    models = _pass_models(key)
+    optional = _FEATURE_OPTIONAL.get(key, frozenset())
+    out: list[dict] = []
+    for index, (server_name, base_url) in enumerate(feature_endpoints(key)):
+        server = SERVERS[server_name]
+        entry = fleet.find_by_tags(server.tags) if server.tags else None
+        entry_key = str(entry.get("key") or entry.get("name") or "") if entry else ""
+        key_name = entry_key or server.key or server.name
+        name = str(entry.get("name") or "") if entry else ""
+        out.append(
+            {
+                "role": server_name,
+                "label": server.label or server.name,
+                "key": key_name,
+                "name": name or server.model or server.label or server.name,
+                "base_url": base_url,
+                "model": models[index] if index < len(models) else server.model,
+                "start": fleet.start_command(key_name),
+                "optional": index in optional,
+            }
+        )
+    return out
+
+
+def feature_info() -> list[dict]:
+    """The user-facing capability list, in registration order (ADR-0065)."""
+    return [
+        {
+            "key": feature.key,
+            "label": feature.label,
+            "env_var": feature.env_var,
+            "description": feature.description,
+            "implies": list(feature.implies),
+            "scope": feature.scope,
+        }
+        for feature in FEATURES.values()
+    ]
 
 
 def probe(base_url: str, timeout: float = 1.5) -> bool:
@@ -588,6 +692,7 @@ def snapshot(probe: bool = True) -> dict:
         "audio_diarize": _audio_setting("diarize", "on").strip().lower() in _TRUE,
         "audio_speakers": _audio_int("speakers", 2),
         "features": {key: is_enabled(key) for key in FEATURES},
+        "feature_info": feature_info(),
         "passes": passes,
         "embed_model": _embed_model() if is_enabled("summary") else None,
         "missing_servers": missing,

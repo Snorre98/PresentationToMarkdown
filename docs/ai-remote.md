@@ -18,9 +18,10 @@ Linux client (own files)                      Mac (inference only)
 ────────────────────────                      ─────────────────────
 python-pptx / PyMuPDF / numpy
 sqlite-vec + ptm.sqlite (RAG DB)      ──┐
-LibreOffice soffice (PPTX charts)       │   base64 images / text   ┌─ mlx-vlm :8081  qwen2.5-vl-7b-instruct-4bit (transcriber/format/summary)
-own .pptx/.pdf + markdown output        └─────── Tailscale ─────▶ ├─ mlx-vlm :8082  qwen2.5-vl-3b-instruct-4bit (classifier gate)
-                                          (encrypted mesh VPN)     └─ llama.cpp :8090  nomic-embed-text-v1.5.q8-0
+LibreOffice soffice (PPTX charts)       │   base64 images / text   ┌─ mlx-vlm :8081  qwen2.5-vl-7b-instruct-4bit (vision/rewrite)
+own .pptx/.pdf + markdown output        └─────── Tailscale ─────▶ ├─ mlx-vlm :8082  qwen2.5-vl-3b-instruct-4bit (image classifier)
+                                          (encrypted mesh VPN)     ├─ mlx-lm  :8083  llama-3.2-3b-instruct-4bit (summary/structure)
+                                                                   └─ llama.cpp :8090  embeddinggemma-2-q8-0 (embeddings)
 ```
 
 The client is "dumb": it does all the deterministic work locally (parsing,
@@ -122,7 +123,7 @@ per invocation, or you can export them:
 ptm --all \
   --env VISION_BASE_URL=http://mac.tailXXXX.ts.net:8081/v1 \
   --env VISION_CLASSIFY_BASE_URL=http://mac.tailXXXX.ts.net:8082/v1 \
-  --env SUMMARY_BASE_URL=http://mac.tailXXXX.ts.net:8081/v1 \
+  --env SUMMARY_BASE_URL=http://mac.tailXXXX.ts.net:8083/v1 \
   --env EMBED_BASE_URL=http://mac.tailXXXX.ts.net:8090/v1 \
   /path/on/client/slides.pptx
 ```
@@ -134,12 +135,13 @@ ptm --all \
 | `EMBED_BASE_URL` | `http://127.0.0.1:8090/v1` | `http://<mac>:8090/v1` |
 | `WRITE_BASE_URL` | `http://127.0.0.1:8081/v1` | `http://<mac>:8081/v1` |
 | `FORMAT_BASE_URL` | `WRITE_BASE_URL` | follows automatically |
-| `SUMMARY_BASE_URL` | `WRITE_BASE_URL` | follows automatically |
+| `SUMMARY_BASE_URL` | `http://127.0.0.1:8083/v1` | `http://<mac>:8083/v1` |
 
-`FORMAT_*` and `SUMMARY_*` inherit `WRITE_*`, so they follow `WRITE_BASE_URL`
-with no extra setting. Point `WRITE_BASE_URL` at the Mac (or set
-`FORMAT_BASE_URL`/`SUMMARY_BASE_URL` individually) when you enable those passes.
-Models (`*_MODEL`) and optional `*_API_KEY` vars are unchanged from the defaults.
+`FORMAT_*` inherits `WRITE_*`, so it follows `WRITE_BASE_URL`. `SUMMARY_*` is a
+separate small text model on `:8083`, not the writer. Set
+`SUMMARY_BASE_URL` explicitly for the remote Mac. Models (`*_MODEL`) and
+optional `*_API_KEY` vars are unchanged from the defaults; see
+[ai-requirements.md](ai-requirements.md) for the full pass → model mapping.
 
 ## Caveats
 
@@ -147,9 +149,9 @@ Models (`*_MODEL`) and optional `*_API_KEY` vars are unchanged from the defaults
   classifier gate (see `docs/ai-vision.md`) already skips decorative images, and
   the 600 s request timeout is generous; still, large decks will be slower than
   local inference.
-- **Summary pass** — embeddings go to the Mac's `nomic-embed-text-v1.5.q8-0` llama.cpp daemon,
-  so a big deck means many small round-trips; correct, but the slowest pass over
-  a VPN.
+- **Summary pass** — embeddings go to the Mac's `embeddinggemma-2-q8-0`
+  llama.cpp daemon on `:8090` (or whichever `EMBED_*` you configure), so a big
+  deck means many small round-trips; correct, but the slowest pass over a VPN.
 - **No server auth** — Tailscale is the security boundary. Keep the ACL tight,
   and prefer binding to the Tailscale IP over `0.0.0.0` if the Mac ever joins a
   LAN you don't trust.
