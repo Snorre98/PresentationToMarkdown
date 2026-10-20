@@ -48,26 +48,28 @@ func TestRenderSettingsShowsFleetSection(t *testing.T) {
 		OtherModels: 2,
 		Services: []FleetService{
 			{
-				Name: "text", State: "up", Roles: []string{"summary", "structure-text"},
+				Key: "llama-3.2-3b-instruct-4bit", Name: "Llama 3.2 3B Instruct (4-bit)",
+				State: "up", Roles: []string{"summary", "structure-text"},
 				Features: []string{"summary", "format", "structure"}, Needed: true,
 			},
 			{
-				Name: "audio", State: "down", Roles: []string{"audio", "nb-whisper-large"},
-				Selected: true,
+				Key: "audio", Name: "Audio pipeline (NB-Whisper + pyannote)",
+				State: "down", Roles: []string{"audio", "nb-whisper-large"},
+				Tags: []string{"audio", "asr"}, Selected: true,
 			},
-			{Name: "mistral-24b", State: "up"},
+			{Key: "mistral-24b", Name: "Mistral Small 3.1 Text 24B Instruct", State: "up"},
 		},
 	}
 	out := m.renderSettingsBox(100, 40)
 	for _, want := range []string{
-		"fleet", "flaate", "text", "summary", "structure-text", "needed",
-		"audio", "ASR nb-whisper (selected)", "+2 other models",
+		"fleet", "flaate", "Llama 3.2 3B Instruct", "summary", "structure-text", "needed",
+		"Audio pipeline", "ASR nb-whisper (selected)", "+2 other models",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("settings box missing %q:\n%s", want, out)
 		}
 	}
-	if strings.Contains(out, "mistral-24b") {
+	if strings.Contains(out, "Mistral Small 3.1 Text 24B Instruct") {
 		t.Errorf("role-less manifest model leaked into the PtM view:\n%s", out)
 	}
 
@@ -80,7 +82,9 @@ func TestRenderSettingsShowsFleetSection(t *testing.T) {
 
 func TestServiceDetailSelectedWhisper(t *testing.T) {
 	got := serviceDetail(FleetService{
-		Name: "whisper-large-v3", Selected: true, Roles: []string{"whisper-large-v3"},
+		Key: "whisper-large-v3-asr-fp16", Name: "Whisper Large v3 (ASR fp16)",
+		Tags: []string{"asr", "audio"}, Selected: true,
+		Roles: []string{"whisper-large-v3-asr-fp16"},
 	})
 	if got != "ASR (selected)" {
 		t.Fatalf("detail = %q", got)

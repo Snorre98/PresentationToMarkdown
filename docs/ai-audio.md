@@ -19,8 +19,8 @@ extraction always runs first, and the transcript is appended as a
 | Role | Model | Runtime | Notes |
 | --- | --- | --- | --- |
 | ASR (Norwegian, default) | `NbAiLab/nb-whisper-large` (fleet `nb-whisper-large`, via `/v1/asr`) | audio server (PyTorch) | ~2× fewer Norwegian errors than stock Whisper (6.6%/2.2% vs 10.4%/6.8% WER); Apache-2.0 (ADR-0044) |
-| ASR (max quality) | `mlx-community/whisper-large-v3-asr-fp16` (fleet `whisper-large-v3`) | `whisper` daemon (`:8099`, MLX) | 1.55B params; `verbose_json` + word timestamps (ADR-0062) |
-| ASR (speed) | `mlx-community/whisper-large-v3-turbo-asr-fp16` (fleet `whisper-large-v3-turbo`) | `whisper` daemon (`:8099`, MLX) | 809M params, near-equal quality; one resident model at a time |
+| ASR (max quality) | `mlx-community/whisper-large-v3-asr-fp16` (fleet `whisper-large-v3-asr-fp16`) | `whisper` daemon (`:8099`, MLX) | 1.55B params; `verbose_json` + word timestamps (ADR-0062) |
+| ASR (speed) | `mlx-community/whisper-large-v3-turbo-asr-fp16` (fleet `whisper-large-v3-turbo-asr-fp16`) | `whisper` daemon (`:8099`, MLX) | 809M params, near-equal quality; one resident model at a time |
 | Enhancement | DeepFilterNet (denoise + dereverb) | PyTorch server (`:8089`, manifest `audio` daemon) | optional, ~8 MB, no gating |
 | Diarization | `pyannote/speaker-diarization-3.1` | PyTorch server (`:8089`, manifest `audio` daemon) | optional, gated HF model |
 
@@ -31,7 +31,7 @@ extraction always runs first, and the transcript is appended as a
 ```bash
 brew install ffmpeg
 # start the ASR daemon through the flaate control plane (not by hand):
-curl -s -X POST http://127.0.0.1:9300/start/whisper-large-v3
+curl -s -X POST http://127.0.0.1:9300/start/whisper-large-v3-asr-fp16
 ```
 
 The daemon is part of the machine's fleet manifest (`macos-dev-config/models.json`,
@@ -121,7 +121,7 @@ AUDIO_DIARIZE_ENABLED=1 AUDIO_DIARIZE_SPEAKERS=2 scripts/ptm-tui.sh
 
 # voice isolation / language hint / ASR model override
 AUDIO_ISOLATE_ENABLED=1 AUDIO_LANGUAGE=en scripts/ptm-tui.sh
-AUDIO_MODEL=whisper-large-v3-turbo scripts/ptm-tui.sh
+AUDIO_MODEL=whisper-large-v3-turbo-asr-fp16 scripts/ptm-tui.sh
 ```
 
 The audio pipeline is `ffmpeg clean → WPE dereverb → DeepFilterNet enhance →
@@ -169,16 +169,16 @@ controls:
 - Defaults: model `nb-whisper-large`, language `no`, diarize **on**, speakers
   `2` (interview-first). The `AUDIO_*` environment variables override them at
   engine launch.
-- NB-Whisper is Norwegian/English focused — pick `whisper-large-v3` (quality)
-  or `whisper-large-v3-turbo` (speed) for other languages. Start the daemon
-  first: `curl -X POST http://127.0.0.1:9300/start/whisper-large-v3`.
+- NB-Whisper is Norwegian/English focused — pick `whisper-large-v3-asr-fp16` (quality)
+  or `whisper-large-v3-turbo-asr-fp16` (speed) for other languages. Start the daemon
+  first: `curl -X POST http://127.0.0.1:9300/start/whisper-large-v3-asr-fp16-asr-fp16`.
 
 ## Configuration
 
 | Var | Default | Purpose |
 | --- | --- | --- |
 | `AUDIO_ENABLED` | *(unset = off)* | Master switch — `1`/`true`/`yes`/`on` |
-| `AUDIO_MODEL` | `nb-whisper-large` | Fleet ASR model name: `nb-whisper-large` (audio server `/v1/asr`), `whisper-large-v3` (max quality) or `whisper-large-v3-turbo` (speed), the latter two on the fleet `whisper` daemon (ADR-0062). Old HF ids are aliased |
+| `AUDIO_MODEL` | `nb-whisper-large` | Fleet ASR model name: `nb-whisper-large` (audio server `/v1/asr`), `whisper-large-v3-asr-fp16` (max quality) or `whisper-large-v3-turbo-asr-fp16` (speed), the latter two on the fleet `whisper` daemon (ADR-0062). The short `whisper-large-v3` names and old HF ids are aliased (ADR-0064) |
 | `AUDIO_FFMPEG_BIN` | `ffmpeg` | ffmpeg binary |
 | `AUDIO_LANGUAGE` | `no` | Whisper language hint (set to `auto` or empty for auto-detection) |
 | `AUDIO_HEARTBEAT_SECONDS` | `20` | Quiet-interval before a `still working …` heartbeat line (local subprocess phases) |
@@ -233,7 +233,7 @@ Transcript Markdown (speaker omitted when diarization is off):
 # Transcript
 
 <details>
-<summary>Auto-generated transcript (whisper-large-v3)</summary>
+<summary>Auto-generated transcript (whisper-large-v3-asr-fp16)</summary>
 
 [00:00:04] **Speaker A:** Welcome to today's lecture.
 [00:00:21] **Speaker A:** We'll cover three topics.

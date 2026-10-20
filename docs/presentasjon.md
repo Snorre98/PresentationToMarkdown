@@ -24,7 +24,7 @@
 - `macos-dev-config` er maskinens LLM-kontrollplan: manifestet `models.json` (daemons + models) leses **kun** av control-daemonen `fleetdaemon` (Go), på `127.0.0.1:9300` (`list/start/stop/status/provision`)
 - PtM snakker med modellene via daemonen (`converter/fleet.py`): env-override → daemon → statisk fallback
 - Runners: **mlx-lm** (tekst), **mlx-vlm** (visjon), **llama.cpp** (GGUF) — kun Apple Metal
-- Modeller: transcriber (Qwen2.5-VL-7B :8081), classifier (:8082), text (Llama-3.2-3B :8083), embeddings (:8090), audio (:8089)
+- Modeller: qwen2.5-vl-7b-instruct-4bit (Qwen2.5-VL 7B, :8081), qwen2.5-vl-3b-instruct-4bit (:8082), llama-3.2-3b-instruct-4bit (Llama-3.2-3B, :8083), nomic-embed-text-v1.5.q8-0 (:8090), audio (:8089)
 - **On-demand** start (wake-on-demand); modeller lastes av mellom pass (`lifecycle.py`) fordi M4-en mangler OOM-killer
 - Modellvekter på ekstern SSD (`HF_HOME`); eksponeres kun lokalt/LAN via Tailscale-ACL
 
@@ -89,10 +89,10 @@ flowchart TD
 
     subgraph CP["macos-dev-config: kontrollplan"]
         FD[fleetdaemon :9300<br/>leser models.json]
-        FD --> M1[mlx-vlm transcriber :8081]
-        FD --> M2[mlx-vlm classifier :8082]
+        FD --> M1[mlx-vlm qwen2.5-vl-7b-instruct-4bit :8081]
+        FD --> M2[mlx-vlm qwen2.5-vl-3b-instruct-4bit :8082]
         FD --> M3[mlx-lm text :8083]
-        FD --> M4[llama.cpp nomic-embed :8090]
+        FD --> M4[llama.cpp nomic-embed-text-v1.5.q8-0 :8090]
         FD --> M5[delegate audio :8089]
     end
 
@@ -129,7 +129,7 @@ sequenceDiagram
 
         CO->>FD: GET /status/<navn>
         alt server nede
-            FD->>MS: POST /start/<navn>
+            FD->>MS: POST /start/<key>
             MS-->>FD: klar
         end
 

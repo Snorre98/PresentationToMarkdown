@@ -18,9 +18,9 @@ Linux client (own files)                      Mac (inference only)
 ────────────────────────                      ─────────────────────
 python-pptx / PyMuPDF / numpy
 sqlite-vec + ptm.sqlite (RAG DB)      ──┐
-LibreOffice soffice (PPTX charts)       │   base64 images / text   ┌─ mlx-vlm :8081  transcriber / format / summary
-own .pptx/.pdf + markdown output        └─────── Tailscale ─────▶ ├─ mlx-vlm :8082  classifier gate
-                                          (encrypted mesh VPN)     └─ llama.cpp :8090  nomic-embed embeddings
+LibreOffice soffice (PPTX charts)       │   base64 images / text   ┌─ mlx-vlm :8081  qwen2.5-vl-7b-instruct-4bit (transcriber/format/summary)
+own .pptx/.pdf + markdown output        └─────── Tailscale ─────▶ ├─ mlx-vlm :8082  qwen2.5-vl-3b-instruct-4bit (classifier gate)
+                                          (encrypted mesh VPN)     └─ llama.cpp :8090  nomic-embed-text-v1.5.q8-0
 ```
 
 The client is "dumb": it does all the deterministic work locally (parsing,
@@ -36,12 +36,12 @@ the VPN. It needs no ML runtime — no torch/mlx/ollama.
 | Vector store / RAG DB | ✅ `sqlite-vec` + `ptm.sqlite` (in-process) | — |
 | Files + output | ✅ its own | — |
 | Chat/VLM inference | — | ✅ `mlx_vlm.server` `:8081` + `:8082` |
-| Embeddings | — | ✅ llama.cpp `nomic-embed` `:8090` |
+| Embeddings | — | ✅ llama.cpp `nomic-embed-text-v1.5.q8-0` `:8090` |
 
 ## Part 1 — Mac: bind the servers to the network
 
 The control daemon (`macos-dev-config`) starts these runners on demand
-(`curl -X POST http://127.0.0.1:9300/start/<name>`, ADR-0029) but binds them to
+(`curl -X POST http://127.0.0.1:9300/start/<key>`, ADR-0029) but binds them to
 `127.0.0.1` from its manifest, and its pre-bind gate refuses ungated
 non-localhost binds (ADR-0021 — fail-closed). For remote access today, run the
 raw commands bound to `0.0.0.0` so the Tailscale interface can reach them:
@@ -51,7 +51,7 @@ mlx_vlm.server --model mlx-community/Qwen2.5-VL-7B-Instruct-4bit --port 8081 --h
 mlx_vlm.server --model mlx-community/Qwen2.5-VL-3B-Instruct-4bit --port 8082 --host 0.0.0.0
 ```
 
-`transcriber` (Qwen2.5-VL-7B, `:8081`) and `classifier` (Qwen2.5-VL-3B, `:8082`)
+`qwen2.5-vl-7b-instruct-4bit` (Qwen2.5-VL 7B, `:8081`) and `qwen2.5-vl-3b-instruct-4bit` (Qwen2.5-VL 3B, `:8082`)
 are the same entries this project uses locally — their models/ports live in the
 fleet manifest (`macos-dev-config/models.json`, which the daemon serves and
 enforces).
@@ -73,7 +73,7 @@ brew services restart ollama
 
 ## Part 2 — Mac: keep them running (launchd)
 
-The always-on `classifier`/`transcriber` LaunchAgents that used to live in
+The always-on vision/classifier LaunchAgents that used to live in
 `macos-dev-config/launchd/` were **retired** (PtM ADR-0029): those runners are
 on-demand under the control daemon, which itself is the one always-on agent
 (`com.macosdev.fleetdaemon`). For a boot-persistent remote server, run the raw
@@ -147,7 +147,7 @@ Models (`*_MODEL`) and optional `*_API_KEY` vars are unchanged from the defaults
   classifier gate (see `docs/ai-vision.md`) already skips decorative images, and
   the 600 s request timeout is generous; still, large decks will be slower than
   local inference.
-- **Summary pass** — embeddings go to the Mac's `nomic-embed` llama.cpp daemon,
+- **Summary pass** — embeddings go to the Mac's `nomic-embed-text-v1.5.q8-0` llama.cpp daemon,
   so a big deck means many small round-trips; correct, but the slowest pass over
   a VPN.
 - **No server auth** — Tailscale is the security boundary. Keep the ACL tight,

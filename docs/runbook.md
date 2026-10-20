@@ -18,7 +18,7 @@ conversion (ADR-0009): `convert_files` never transcribes.
 | audio server (`audio` daemon) | `curl -sf http://127.0.0.1:8089/v1/models` | `scripts/audio_serve.sh install` + start (below) |
 
 Verify: `ffmpeg -version` and
-`curl -s -X POST http://127.0.0.1:9300/start/whisper-large-v3` both succeed.
+`curl -s -X POST http://127.0.0.1:9300/start/whisper-large-v3-asr-fp16` both succeed.
 
 > The whisper models download on their first load (to `HF_HOME`, your SSD) from
 > inside the daemon; the converter never downloads models itself. The stored
@@ -230,7 +230,7 @@ whenever the server is up (both default on, degrade to a `[WARN]` if it is
 down); voice isolation runs only with `--isolate` and writes a
 `<stem>.isolated.<N>.flac` that ASR transcribes instead of the cleaned file.
 ASR is an HTTP call to the audio server (`nb-whisper-large`) or the fleet
-`whisper` daemon (`whisper-large-v3` / `…-turbo`); a dead daemon fails the job
+`whisper` daemon (`whisper-large-v3-asr-fp16` / `whisper-large-v3-turbo-asr-fp16`); a dead daemon fails the job
 with a warning and there is no mlx-whisper fallback (ADR-0062).
 
 ### Progress output & the single-instance guard
@@ -274,7 +274,7 @@ Expected Markdown:
 ```markdown
 # Transcript
 <details>
-<summary>Auto-generated transcript (whisper-large-v3)</summary>
+<summary>Auto-generated transcript (whisper-large-v3-asr-fp16)</summary>
 
 [00:00:04] **Speaker A:** Welcome to today's lecture.
 [00:00:21] **Speaker A:** We'll cover three topics.
@@ -302,8 +302,8 @@ PTM_RUN_AUDIO_INTEGRATION=1 ./.venv/bin/python -m pytest tests/test_transcribe_i
 
 | Goal | Setting |
 | --- | --- |
-| Max ASR quality | `AUDIO_MODEL=whisper-large-v3` |
-| Speed (non-Norwegian) | `AUDIO_MODEL=whisper-large-v3-turbo` |
+| Max ASR quality | `AUDIO_MODEL=whisper-large-v3-asr-fp16` |
+| Speed (non-Norwegian) | `AUDIO_MODEL=whisper-large-v3-turbo-asr-fp16` |
 | Norwegian (avoid mis-detect on short clips) | `AUDIO_MODEL=nb-whisper-large` + `AUDIO_LANGUAGE=no` |
 | Skip enhancement (A/B check) | `AUDIO_PREPROCESS=0 AUDIO_ENHANCE_ENABLED=0` |
 | Skip dereverberation (very dry audio) | `AUDIO_DEREVERB_ENABLED=0` |
@@ -314,17 +314,17 @@ PTM_RUN_AUDIO_INTEGRATION=1 ./.venv/bin/python -m pytest tests/test_transcribe_i
 Start/stop the whisper daemon through flaate (model name, not daemon name):
 
 ```bash
-curl -s -X POST http://127.0.0.1:9300/start/whisper-large-v3
-curl -s -X POST http://127.0.0.1:9300/stop/whisper-large-v3
-/Users/snorresaether/Projects/macos-dev-config/tools/serve-whisper.sh warm whisper-large-v3
+curl -s -X POST http://127.0.0.1:9300/start/whisper-large-v3-asr-fp16
+curl -s -X POST http://127.0.0.1:9300/stop/whisper-large-v3-asr-fp16
+/Users/snorresaether/Projects/macos-dev-config/tools/serve-whisper.sh warm whisper-large-v3-asr-fp16
 ```
 
 ## 7. Troubleshooting
 
 | Symptom | Cause → Fix |
 | --- | --- |
-| `[WARN] Audio transcription failed: transcription returned HTTP …` / connection refused | Whisper daemon down → `curl -X POST http://127.0.0.1:9300/start/whisper-large-v3` (no fallback lane exists) |
-| `[WARN] … unknown ASR model` | `AUDIO_MODEL` is not a fleet name → use `nb-whisper-large`, `whisper-large-v3` or `whisper-large-v3-turbo` |
+| `[WARN] Audio transcription failed: transcription returned HTTP …` / connection refused | Whisper daemon down → `curl -X POST http://127.0.0.1:9300/start/whisper-large-v3-asr-fp16` (no fallback lane exists) |
+| `[WARN] … unknown ASR model` | `AUDIO_MODEL` is not a fleet name → use `nb-whisper-large`, `whisper-large-v3-asr-fp16` or `whisper-large-v3-turbo-asr-fp16` |
 | `[WARN] … ffmpeg not found` | `brew install ffmpeg` |
 | `[WARN] Audio enhancement failed: …` | Server down → `scripts/audio_serve.sh start` (daemon-managed `audio`, :8089), or set `AUDIO_ENHANCE_ENABLED=0` |
 | `[WARN] Audio dereverberation failed: …` | Server down → start it, or set `AUDIO_DEREVERB_ENABLED=0` |
@@ -332,7 +332,7 @@ curl -s -X POST http://127.0.0.1:9300/stop/whisper-large-v3
 | `[WARN] Diarization failed: …` | Server down → start it, or disable diarization |
 | Server logs a 401/403 "gated repo" on startup | Re-do §2.1: accept both model licenses + create a **Read** token |
 | No `# Transcript` appears | No same-stem audio found → select the Markdown whose audio you want attached |
-| Wrong language / gibberish | Set `AUDIO_LANGUAGE`, or use `whisper-large-v3` instead of NB-Whisper |
+| Wrong language / gibberish | Set `AUDIO_LANGUAGE`, or use `whisper-large-v3-asr-fp16` instead of NB-Whisper |
 | Long silence / music transcribed | Whisper hallucination → trim the recording, or set `WHISPER_CONDITION_ON_PREVIOUS_TEXT=1` where the whisper daemon starts |
 | `[WARN] Fallback re-decode is NB-Whisper only …` | Expected for whisper models: the OpenAI transcription form has no beam width (ADR-0062) |
 | First request is slow / times out | The daemon is loading ~3 GB → `serve-whisper.sh warm`, or use turbo / raise `AUDIO_TIMEOUT` |

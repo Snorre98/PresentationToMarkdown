@@ -155,7 +155,7 @@ def test_transcribe_audio_routes_to_fleet(monkeypatch, tmp_path):
     clean = tmp_path / "x.clean.flac"
     segs = t.transcribe_audio(tmp_path / "x.mp3", clean)
     assert segs == [{"start": 0.0, "end": 2.5, "text": "hello"}]
-    assert calls["model"] == "whisper-large-v3"
+    assert calls["model"] == "whisper-large-v3-asr-fp16"
     assert calls["language"] == "no"
     assert calls["word_timestamps"] is False
     assert Path(calls["path"]) == clean
@@ -174,7 +174,7 @@ def test_transcribe_audio_model_override_normalized(monkeypatch, tmp_path):
         tmp_path / "x.clean.flac",
         model="mlx-community/whisper-large-v3-turbo",
     )
-    assert calls["model"] == "whisper-large-v3-turbo"
+    assert calls["model"] == "whisper-large-v3-turbo-asr-fp16"
 
 
 def test_transcribe_audio_failure_raises_no_fallback(monkeypatch, tmp_path):

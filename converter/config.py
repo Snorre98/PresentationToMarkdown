@@ -21,11 +21,12 @@ conversion. Endpoint/model constants (``*_BASE_URL`` / ``*_MODEL`` /
 module only *resolves* their effective base URLs (with the same documented
 fallback chain) so the health probe can check the right endpoint.
 
-Serving control goes through the **macos-dev-config control daemon** (ADR-0029):
-the server catalog is a small built-in table whose entries mirror the daemon's
-fleet manifest (``models.json``), and endpoint resolution prefers the daemon's
-``list`` projection over those static defaults (``converter.fleet``). The static
-defaults remain as the offline fallback — never a second authority.
+Serving control goes through the **flaate control daemon** (ADR-0029): the
+server catalog is a small built-in table whose entries carry role tags
+(``vision``, ``transcriber``, ``summary``, …) and a fallback manifest key, and
+endpoint resolution prefers the daemon's ``list`` projection over those static
+defaults (``converter.fleet``, ADR-0064). The static defaults remain as the
+offline fallback — never a second authority.
 """
 from __future__ import annotations
 
@@ -45,17 +46,18 @@ def _env_true(value: str | None) -> bool:
 
 @dataclass(frozen=True)
 class Server:
-    """One local model server the AI passes depend on (ADR-0029).
+    """One local model server the AI passes depend on (ADR-0029, ADR-0064).
 
-    ``daemon`` names the manifest daemon/model this feature is served by (the
-    control daemon's fleet manifest, ``macos-dev-config/models.json``); the
-    static ``host``/``port``/``runner``/``model`` fields are the offline
-    fallback projection of the same entry, used only when the daemon is
-    unreachable. ``name`` is the feature label, stable across the migration.
+    ``tags`` is the role/capability match resolved against the control daemon's
+    ``list`` projection; ``key`` is the fallback manifest key when the daemon is
+    unreachable. The static ``host``/``port``/``runner``/``model`` fields are the
+    offline fallback projection of the same entry. ``name`` is the feature label,
+    stable across the migration.
     """
 
     name: str
-    daemon: str = ""
+    key: str = ""
+    tags: tuple[str, ...] = ()
     runner: str = ""
     host: str = "127.0.0.1"
     port: int = 0
@@ -63,9 +65,12 @@ class Server:
     description: str = ""
 
     @property
-    def daemon_name(self) -> str:
-        """The manifest name start/status/release target (defaults to ``name``)."""
-        return self.daemon or self.name
+    def model_key(self) -> str:
+        """The manifest key the role currently resolves to (or the fallback)."""
+        entry = fleet.find_by_tags(self.tags) if self.tags else None
+        if entry:
+            return str(entry.get("key") or entry.get("name") or self.key)
+        return self.key or self.name
 
     @property
     def base_url(self) -> str:
@@ -75,7 +80,7 @@ class Server:
     @property
     def start_command(self) -> str:
         """The on-demand start command via the control daemon's ``start`` verb."""
-        return fleet.start_command(self.daemon_name)
+        return fleet.start_command(self.model_key)
 
 
 @dataclass(frozen=True)
@@ -95,7 +100,8 @@ class Feature:
 SERVERS: dict[str, Server] = {
     "transcriber": Server(
         name="transcriber",
-        daemon="transcriber",
+        key="qwen2.5-vl-7b-instruct-4bit",
+        tags=("vision", "transcriber"),
         runner="mlx-vlm",
         port=8081,
         model="mlx-community/Qwen2.5-VL-7B-Instruct-4bit",
@@ -103,7 +109,8 @@ SERVERS: dict[str, Server] = {
     ),
     "classifier": Server(
         name="classifier",
-        daemon="classifier",
+        key="qwen2.5-vl-3b-instruct-4bit",
+        tags=("vision", "classifier"),
         runner="mlx-vlm",
         port=8082,
         model="mlx-community/Qwen2.5-VL-3B-Instruct-4bit",
@@ -111,10 +118,12 @@ SERVERS: dict[str, Server] = {
     ),
     "summary": Server(
         name="summary",
-        # Served by the manifest's `text` daemon (Llama-3.2-3B, :8083) — the same
-        # model PtM's summary pass always used; the manifest's own `summary`
-        # daemon (1B) belongs to the writing-assistant engine (ADR-0029).
-        daemon="text",
+        # Resolves the manifest entry carrying text+summary — today the
+        # Llama-3.2-3B (`llama-3.2-3b-instruct-4bit`, :8083). The manifest's
+        # 1B summary model is a different role and appears later in manifest
+        # order (flaate ADR-0007; ADR-0029).
+        key="llama-3.2-3b-instruct-4bit",
+        tags=("text", "summary"),
         runner="mlx-lm",
         port=8083,
         model="mlx-community/Llama-3.2-3B-Instruct-4bit",
@@ -122,9 +131,10 @@ SERVERS: dict[str, Server] = {
     ),
     "structure-text": Server(
         name="structure-text",
-        # Also served by the manifest's `text` daemon (:8083) — the pre-migration
-        # :8085 was a live port conflict with the manifest's mistral-24b daemon.
-        daemon="text",
+        # Same model as summary, different role tag. The pre-migration :8085 was
+        # a live port conflict with the old mistral daemon.
+        key="llama-3.2-3b-instruct-4bit",
+        tags=("text", "structure"),
         runner="mlx-lm",
         port=8083,
         model="mlx-community/Llama-3.2-3B-Instruct-4bit",
@@ -132,10 +142,11 @@ SERVERS: dict[str, Server] = {
     ),
     "nomic-embed": Server(
         name="nomic-embed",
-        daemon="nomic-embed",
+        key="nomic-embed-text-v1.5.q8-0",
+        tags=("embeddings",),
         runner="llama.cpp",
         port=8090,
-        model="nomic-embed-text",
+        model="nomic-embed-text-v1.5",
         description="Embeddings daemon (nomic-embed-text GGUF)",
     ),
 }
@@ -304,8 +315,13 @@ def enabled_features() -> list[Feature]:
 # static catalog fallback (ADR-0029). The daemon lookup is cached by
 # ``converter.fleet`` and never raises.
 def _resolve(server_name: str, fallback_url: str) -> str:
-    """Daemon-derived base URL for ``server_name``, else ``fallback_url``."""
-    url = fleet.base_url(SERVERS[server_name].daemon_name)
+    """Daemon-derived base URL for a role, else ``fallback_url``.
+
+    Role tags win (flaate ADR-0007 / PtM ADR-0064); the static key is the
+    one-release fallback for an old daemon manifest.
+    """
+    server = SERVERS[server_name]
+    url = fleet.base_url_for_tags(server.tags) or fleet.base_url(server.key)
     return url or fallback_url
 
 
@@ -399,7 +415,9 @@ def missing_servers(keys: list[str] | None = None) -> list[tuple[str, str, str]]
             if base_url in checked:
                 continue
             checked.add(base_url)
-            if fleet.status(SERVERS[server_name].daemon_name) == "up":
+            if fleet.status_for_tags(SERVERS[server_name].tags) == "up":
+                continue
+            if fleet.status(SERVERS[server_name].model_key) == "up":
                 continue
             if probe(base_url):
                 continue

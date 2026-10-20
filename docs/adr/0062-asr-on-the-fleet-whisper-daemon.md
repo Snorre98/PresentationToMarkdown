@@ -44,8 +44,9 @@ conversions. mlx-audio's whisper loader needs a Hugging Face processor in the
 same repo to build its tokenizer and fails with `ValueError: Processor not
 found`. The manifest therefore uses mlx-audio's documented whisper family,
 `mlx-community/whisper-large-v3-asr-fp16` and
-`mlx-community/whisper-large-v3-turbo-asr-fp16`. The manifest model names remain
-`whisper-large-v3` / `whisper-large-v3-turbo`.
+`mlx-community/whisper-large-v3-turbo-asr-fp16`. The manifest model keys are the full repo-derived
+`whisper-large-v3-asr-fp16` / `whisper-large-v3-turbo-asr-fp16` (flaate ADR-0007);
+PtM aliases the short names.
 
 ## Decision
 
@@ -54,12 +55,12 @@ found`. The manifest therefore uses mlx-audio's documented whisper family,
 - `127.0.0.1:8099`, runner `delegate`, wrapper
   `macos-dev-config/tools/serve-whisper.sh`, wrapping `mlx_audio.server` through
   the patched launcher.
-- Two manifest models on that daemon: `whisper-large-v3` (max quality) and
-  `whisper-large-v3-turbo` (speed), both `source.kind: "hf"` so flaate's `list`
+- Two manifest models on that daemon: `whisper-large-v3-asr-fp16` (max quality)
+  and `whisper-large-v3-turbo-asr-fp16` (speed), both `source.kind: "hf"` so flaate's `list`
   projects their real HF `modelId`.
 - The daemon keeps at most one model resident (`WHISPER_MAX_LOADED=1`); the
   other reloads from the HF cache on its next request. Start/status use the
-  **model** name (`POST /start/whisper-large-v3`), not the daemon name.
+  **model** key (`POST /start/whisper-large-v3-asr-fp16`), not the daemon name.
 
 ### 2. `converter.audio.transcribe_fleet()` hides two wire shapes
 

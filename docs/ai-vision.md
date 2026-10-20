@@ -432,6 +432,6 @@ FROM vision_events WHERE image_digest = ? ORDER BY id;
 
 - Serving, model formats, and storage: **`macos-dev-config/inference-readme.md`**
 - On-demand serving: **the `macos-dev-config` control daemon**
-  (`curl -X POST 127.0.0.1:9300/start/<name>`; contract in
+  (`curl -X POST 127.0.0.1:9300/start/<key>`; contract in
   `macos-dev-config/docs/contracts/daemon-http.md`)
 - Ollama daemon tuning: **`macos-dev-config/ollama/README.md`**

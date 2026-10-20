@@ -242,13 +242,13 @@ the projection PtM uses:
 
 | Port | Used by |
 | --- | --- |
-| `:8081` | Transcriber (mlx-vlm, Qwen2.5-VL-7B) |
-| `:8082` | Classifier gate (mlx-vlm, Qwen2.5-VL-3B) |
-| `:8083` | `text` daemon (mlx-lm, Llama-3.2-3B) — serves the summary + structure passes |
-| `:8084` | Manifest `summary` daemon (writing assistant; not PtM) |
-| `:8085` | `mistral-24b` daemon |
-| `:8089` | Audio server (dereverb / enhance / isolate / diarize; manifest `audio`) |
-| `:8090` | `nomic-embed` embeddings daemon (llama.cpp) |
+| `:8081` | `qwen2.5-vl-7b-instruct-4bit` (mlx-vlm, Qwen2.5-VL 7B Instruct) — transcriber |
+| `:8082` | `qwen2.5-vl-3b-instruct-4bit` (mlx-vlm, Qwen2.5-VL 3B Instruct) — classifier gate |
+| `:8083` | `llama-3.2-3b-instruct-4bit` (mlx-lm, Llama-3.2-3B) — serves the summary + structure passes |
+| `:8084` | `llama-3.2-1b-instruct-4bit` (writing assistant; not PtM) |
+| `:8085` | `mistral-small-3.1-text-24b-instruct-2503-4bit` daemon |
+| `:8089` | `audio` — audio pipeline (dereverb / enhance / isolate / diarize) |
+| `:8090` | `nomic-embed-text-v1.5.q8-0` embeddings daemon (llama.cpp) |
 | `:9091` | **Native engine default** (`PTM_ENGINE_PORT` overrides; the TUI spawns it here) |
 
 ## Output layout
@@ -385,9 +385,9 @@ process**, so each model is its own server on its own port.
    uv tool install mlx-vlm --python 3.12
    ```
 
-2. Start the **transcriber** (required for any vision use; leave it running):
+2. Start the **vision transcriber** (required for any vision use; leave it running):
    ```bash
-   mlx_vlm.server --model mlx-community/Qwen2.5-VL-7B-Instruct-4bit --port 8081
+   curl -X POST http://127.0.0.1:9300/start/qwen2.5-vl-7b-instruct-4bit
    ```
    Enable the vision pass in the TUI settings (or launch with
    `VISION_ENABLED=1 scripts/ptm-tui.sh`).
@@ -395,15 +395,15 @@ process**, so each model is its own server on its own port.
 3. *(Optional)* Start the **classifier** — a second, small model that gates what
    gets transcribed (skips photos/logos) and enables image-level transcription:
    ```bash
-   mlx_vlm.server --model mlx-community/Qwen2.5-VL-3B-Instruct-4bit --port 8082
+   curl -X POST http://127.0.0.1:9300/start/qwen2.5-vl-3b-instruct-4bit
    ```
    …then enable the classifier gate in the TUI settings (or launch with
    `VISION_ENABLED=1 VISION_CLASSIFY_ENABLED=1 scripts/ptm-tui.sh`).
 
 | Model | Port | Needed for |
 | --- | --- | --- |
-| Qwen2.5-VL-7B (transcriber) | `:8081` | any vision transcription |
-| Qwen2.5-VL-3B (classifier) | `:8082` | the classifier gate + image-level transcription (optional) |
+| Qwen2.5-VL 7B Instruct (key `qwen2.5-vl-7b-instruct-4bit`) | `:8081` | any vision transcription |
+| Qwen2.5-VL 3B Instruct (key `qwen2.5-vl-3b-instruct-4bit`) | `:8082` | the classifier gate + image-level transcription (optional) |
 
 Running both uses ~8 GB of unified memory (~4 GB transcriber + ~4 GB classifier).
 Run each server in its own terminal, or in the background (`nohup`/`launchd`).
@@ -589,21 +589,20 @@ summary pass in the TUI settings.
 | Var | Default | Purpose |
 | --- | --- | --- |
 | `SUMMARY_ENABLED` | *(unset = off)* | Master switch for the summary pass |
-| `SUMMARY_BASE_URL` | `http://127.0.0.1:8084/v1` | Summary chat model server (dedicated `summary` server) |
+| `SUMMARY_BASE_URL` | `http://127.0.0.1:8083/v1` | Summary chat model server (`llama-3.2-3b-instruct-4bit`) |
 | `SUMMARY_MODEL` | `mlx-community/Llama-3.2-3B-Instruct-4bit` | Summary chat model id (a small text model) |
 | `SUMMARY_API_KEY` | *(unset)* | Optional bearer token (unused locally) |
-| `EMBED_BASE_URL` | `http://localhost:11434/v1` | Embeddings server (Ollama) |
-| `EMBED_MODEL` | `nomic-embed-text` | Embeddings model id |
+| `EMBED_BASE_URL` | `http://127.0.0.1:8090/v1` | Embeddings server (`nomic-embed-text-v1.5.q8-0`) |
+| `EMBED_MODEL` | `nomic-embed-text-v1.5` | Embeddings model id |
 | `EMBED_API_KEY` | *(unset)* | Optional bearer token (unused locally) |
 
-By default the summary uses a **dedicated small text model** (ADR-0021) —
-`mlx_lm.server` serving `Llama-3.2-3B-Instruct-4bit` on `:8084` — rather than
-the writer VLM, so no 7B VLM is loaded for a short header. Embeddings come from
-**Ollama**. Start the summary model with
-`mlx_lm.server --model mlx-community/Llama-3.2-3B-Instruct-4bit --port 8084`
-(or `tools/serve.sh start summary` once the `summary` row is registered in
-`servers.conf`). Override `SUMMARY_*`/`EMBED_*` to point at different models if
-you prefer.
+By default the summary uses the fleet's **Llama-3.2-3B text model**
+(`llama-3.2-3b-instruct-4bit`, `:8083`) — the same model the structure pass uses
+— rather than the writer VLM, so no 7B VLM is loaded for a short header.
+Embeddings come from the fleet's `nomic-embed-text-v1.5.q8-0` llama.cpp daemon
+(`:8090`). Start the text model with
+`curl -X POST http://127.0.0.1:9300/start/llama-3.2-3b-instruct-4bit`.
+Override `SUMMARY_*`/`EMBED_*` to point at different models if you prefer.
 
 ## Audio transcription (optional)
 
@@ -611,7 +610,7 @@ A lecture recording can be transcribed **locally** into a timestamped,
 speaker-labelled transcript. Transcription is **decoupled from conversion**
 (ADR-0009) and runs as an **engine-hosted job** (ADR-0045), driven from the TUI:
 select an audio row (`♫`) and press Enter. ASR goes over HTTP to the fleet's
-`whisper` daemon (`whisper-large-v3`/`whisper-large-v3-turbo`, OpenAI multipart
+`whisper` daemon (`whisper-large-v3-asr-fp16`/`whisper-large-v3-turbo-asr-fp16`, OpenAI multipart
 with word timestamps) or the audio server (`nb-whisper-large`, `/v1/asr`), so
 `converter` stays MLX- and PyTorch-free (ADR-0062). Speaker diarization
 (optional) is served by the same PyTorch audio server. See
@@ -647,7 +646,7 @@ and a second job is rejected while it runs. See
 | Var | Default | Purpose |
 | --- | --- | --- |
 | `AUDIO_ENABLED` | *(unset = off)* | Master switch |
-| `AUDIO_MODEL` | `nb-whisper-large` | Fleet ASR name: `nb-whisper-large`, `whisper-large-v3` (quality) or `whisper-large-v3-turbo` (speed); old HF ids are aliased (ADR-0062) |
+| `AUDIO_MODEL` | `nb-whisper-large` | Fleet ASR name: `nb-whisper-large`, `whisper-large-v3-asr-fp16` (quality) or `whisper-large-v3-turbo-asr-fp16` (speed); the short `whisper-large-v3` names and old HF ids are aliased (ADR-0062/0064) |
 | `AUDIO_FFMPEG_BIN` | `ffmpeg` | ffmpeg binary |
 | `AUDIO_LANGUAGE` | `no` | Whisper language hint (`auto`/empty = auto-detect) |
 | `AUDIO_HEARTBEAT_SECONDS` | `20` | Quiet-interval before a `still working …` heartbeat line (local subprocess phases) |
@@ -673,8 +672,8 @@ VISION_ENABLED=1 VISION_CLASSIFY_ENABLED=1 INTERPRET_ENABLED=1 FORMAT_ENABLED=1 
 ```
 
 This uses only what's already running: the vision transcriber (`:8081`), the
-classifier (`:8082`), the summary chat model (`:8084`), and the embeddings
-server (`nomic-embed-text`).
+classifier (`:8082`), the summary chat model (`:8083`), and the embeddings
+server (`nomic-embed-text-v1.5.q8-0`).
 
 Audio transcription is deliberately **not part of the slide-pass set** (it needs
 an audio file, ffmpeg and a running ASR daemon, and is a separate job anyway).

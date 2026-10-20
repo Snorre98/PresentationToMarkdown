@@ -28,9 +28,9 @@ const settingsExtraRows = 10
 // (Norwegian, audio server /v1/asr); the whisper models are served by the
 // fleet's `whisper` daemon.
 var audioModels = []string{
-	"nb-whisper-large",       // norwegian (audio server ASR)
-	"whisper-large-v3",       // max quality (fleet whisper daemon)
-	"whisper-large-v3-turbo", // speed (fleet whisper daemon)
+	"nb-whisper-large",                // norwegian (audio server ASR)
+	"whisper-large-v3-asr-fp16",       // max quality (fleet whisper daemon)
+	"whisper-large-v3-turbo-asr-fp16", // speed (fleet whisper daemon)
 }
 
 type editField int
@@ -93,7 +93,7 @@ func modelShort(id string) string {
 	if id == "nb-whisper-large" {
 		return "nb-whisper (no)"
 	}
-	if id == "whisper-large-v3-turbo" {
+	if id == "whisper-large-v3-turbo-asr-fp16" {
 		return "turbo (fast)"
 	}
 	return "large-v3 (max)"
@@ -364,9 +364,9 @@ func (m *model) renderSettingsBox(width, height int) string {
 		for _, s := range m.fleetRows() {
 			glyph, style := fleetGlyph(s.State)
 			line := fmt.Sprintf(
-				"  %s %-18s %-5s %s",
+				"  %s %-24s %-5s %s",
 				style.Render(glyph),
-				s.Name,
+				truncate(s.Name, 24),
 				s.State,
 				th.subtle.Render(serviceDetail(s)),
 			)
@@ -432,12 +432,12 @@ func fleetGlyph(state string) (string, lipgloss.Style) {
 func serviceDetail(s FleetService) string {
 	var detail string
 	switch {
-	case s.Selected && s.Name == "audio":
+	case s.Selected && s.Key == "audio":
 		detail = "ASR nb-whisper (selected)"
 	case s.Selected:
 		detail = "ASR (selected)"
-	case slices.Contains(s.Roles, "audio") || slices.Contains(s.Roles, "nb-whisper-large") ||
-		strings.HasPrefix(s.Name, "whisper-"):
+	case slices.Contains(s.Tags, "asr") || slices.Contains(s.Roles, "audio") ||
+		slices.Contains(s.Roles, "nb-whisper-large") || strings.HasPrefix(s.Key, "whisper-"):
 		detail = "ASR"
 	default:
 		detail = strings.Join(s.Roles, " · ")

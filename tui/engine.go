@@ -190,7 +190,9 @@ type FleetDaemon struct {
 
 // FleetService is one availability row from /api/fleet (ADR-0063).
 type FleetService struct {
+	Key        string   `json:"key"`
 	Name       string   `json:"name"`
+	Tags       []string `json:"tags"`
 	Daemon     string   `json:"daemon"`
 	Host       string   `json:"host"`
 	Port       int      `json:"port"`

@@ -1,6 +1,6 @@
 # 0063. Fleet service availability in the TUI
 
-- Status: Accepted
+- Status: Accepted (identity shape amended by [0064](0064-fleet-model-identity-key-name-tags.md))
 - Date: 2026-10-20
 - Relates to: [0012](0012-runtime-ai-features.md),
   [0029](0029-serving-via-control-daemon.md),
@@ -23,7 +23,7 @@ This leaves three gaps:
    With every AI feature off the section disappears; there is no way to see what
    *could* be enabled, which is exactly the question the toggles raise.
 2. **Transcription is invisible.** `nb-whisper-large` (the `audio` daemon) and
-   `whisper-large-v3` / `-turbo` (the `whisper` daemon, ADR-0062) never appear.
+   `whisper-large-v3-asr-fp16` / `whisper-large-v3-turbo-asr-fp16` (the `whisper` daemon, ADR-0062) never appear.
    Downtime surfaces only as `Audio transcription failed: …` after a job.
 3. **The panel bypasses the fleet authority.** `probe()` is a direct HTTP call;
    `missing_servers()` already asks flaate first (ADR-0029), so the same panel
@@ -51,8 +51,10 @@ Add `fleet.status_all()` (one uncached `GET /status/all`, 1.5 s timeout; the
   "source": "fleet",
   "services": [
     {
-      "name": "text",
-      "daemon": "text",
+      "key": "llama-3.2-3b-instruct-4bit",
+      "name": "Llama 3.2 3B Instruct (4-bit)",
+      "tags": ["text", "summary", "structure"],
+      "daemon": "llama-3.2-3b-instruct-4bit",
       "host": "127.0.0.1",
       "port": 8083,
       "runner": "mlx-lm",
@@ -63,16 +65,18 @@ Add `fleet.status_all()` (one uncached `GET /status/all`, 1.5 s timeout; the
       "needed": true,
       "selected": false,
       "in_manifest": true,
-      "start": "curl -X POST http://127.0.0.1:9300/start/text"
+      "start": "curl -X POST http://127.0.0.1:9300/start/llama-3.2-3b-instruct-4bit"
     }
   ],
   "other_models": 0
 }
 ```
 
-- `services` covers every manifest entry in manifest order. `roles` is the
-  reverse projection of `config.SERVERS[*].daemon_name` plus the ASR roles, so
-  the one `text` row carries both `summary` and `structure-text`.
+- `services` covers every manifest entry in manifest order. `key` is the stable
+  identity, `name` is the display label, and `tags` is the fleet tag list.
+  `roles` is the reverse projection of `config.SERVERS[*].tags` plus the ASR
+  roles (ADR-0064), so the one Llama-3.2-3B row carries both `summary` and
+  `structure-text`.
 - `features` lists every feature that references the row (enabled or not).
   `needed` is true when one of them is enabled, when the row is the selected
   ASR target, or when the row is `audio` and diarization is on.
@@ -80,7 +84,7 @@ Add `fleet.status_all()` (one uncached `GET /status/all`, 1.5 s timeout; the
 - A catalogue role absent from the manifest is still emitted with
   `state: "unknown"` and `in_manifest: false`, so a renamed or removed entry is
   visible instead of silently disappearing.
-- `start` is flaate's `POST /start/{name}` command — the report-and-run
+- `start` is flaate's `POST /start/{key}` command — the report-and-run
   contract of ADR-0029 — not an action.
 - `other_models` counts manifest entries that serve no PtM role.
 
@@ -97,14 +101,14 @@ keeps its shape, so the ADR-0053 contract and its tests do not break.
 The settings modal's `model servers` section becomes a `fleet` section:
 
 ```text
-fleet (flaate ●)                          r refresh
-  ● transcriber        up    vision · interpret · structure
-  ○ classifier         down  classify (needed)
-  ● text               up    summary · structure · format
-  ● nomic-embed        up    summary
-  ● whisper-large-v3   up    ASR (selected)
-  ○ whisper-large-v3-turbo down ASR
-  ○ audio              down  ASR nb-whisper · diarization
+fleet (flaate ●)                              r refresh
+  ● Qwen2.5-VL 7B Instruct   up    vision · interpret · structure
+  ○ Qwen2.5-VL 3B Instruct   down  classify (needed)
+  ● Llama 3.2 3B Instruct    up    summary · structure · format
+  ● Nomic Embed Text v1.5    up    summary
+  ● Whisper Large v3         up    ASR (selected)
+  ○ Whisper Large v3 Turbo   down  ASR
+  ○ Audio pipeline           down  ASR nb-whisper · diarization
   4/7 up · +2 other models · as of 12:04
 ```
 

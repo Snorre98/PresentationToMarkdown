@@ -2,12 +2,12 @@
 
 The settings modal asks one question — "which AI services are up, and which can
 I turn on?" — so this module folds flaate's ``list`` and ``status/all``
-projections into rows keyed by manifest model name. It is read-only: it never
+projections into rows keyed by manifest model key (display names are rendered; ADR-0007/0064). It is read-only: it never
 starts, stops, or provisions a service; ``start`` is the command a user runs.
 
 The projection prefers the fleet's own state (including ``starting`` and
 ``provisioning``). When the daemon is unreachable it falls back to the static
-``config.SERVERS`` catalogue plus direct probes, exactly like ADR-0029's
+``config.SERVERS`` catalogue (resolved by role tags) plus direct probes, exactly like ADR-0029's
 offline path. That fallback is labelled ``source="static"`` so the UI never
 presents a guess as fleet truth.
 """
@@ -39,20 +39,43 @@ def _features_by_server(cfg) -> dict[str, list[str]]:
     return out
 
 
-def _roles_by_service(cfg) -> dict[str, list[str]]:
-    """Map a fleet service name to the PtM roles it serves.
+def _server_roles(cfg) -> list[tuple[str, tuple[str, ...]]]:
+    """PtM role name -> the tags that model must carry (flaate ADR-0007).
 
-    The AI-pass slots come from ``config.SERVERS[*].daemon_name`` (so the shared
-    ``text`` daemon carries both ``summary`` and ``structure-text``); the ASR
-    roles come from ``audio.ASR_MODELS`` (a whisper model is its own manifest
-    entry, NB-Whisper lives on the ``audio`` daemon; ADR-0062).
+    The AI-pass slots come from ``config.SERVERS`` (so the shared text model
+    can carry both ``summary`` and ``structure-text``); the ASR roles come from
+    ``audio.ASR_MODELS`` (a whisper model is its own manifest entry, NB-Whisper
+    lives on the ``audio`` service; ADR-0062).
     """
-    roles: dict[str, list[str]] = {}
-    for name, server in _servers(cfg).items():
-        roles.setdefault(server.daemon_name, []).append(name)
-    roles.setdefault("audio", []).append("audio")
+    return [(name, tuple(server.tags)) for name, server in _servers(cfg).items()]
+
+
+def _asr_roles() -> dict[str, list[str]]:
+    """Manifest key/service -> ASR role names (ADR-0062)."""
+    roles: dict[str, list[str]] = {"audio": ["audio"]}
     for model in audio.ASR_MODELS:
         roles.setdefault(audio.asr_service(model), []).append(model)
+    return roles
+
+
+def _catalogue_roles(cfg) -> dict[str, list[str]]:
+    """The static fallback rows: AI-pass roles + ASR service/model rows."""
+    roles: dict[str, list[str]] = {name: [name] for name in _servers(cfg)}
+    for service, names in _asr_roles().items():
+        roles.setdefault(service, []).extend(names)
+    return roles
+
+
+def _entry_roles(
+    entry: dict,
+    server_roles: list[tuple[str, tuple[str, ...]]],
+    asr_roles: dict[str, list[str]],
+) -> list[str]:
+    """The PtM roles a manifest entry serves, from its tags + ASR identity."""
+    key = str(entry.get("key") or entry.get("name") or "")
+    tags = set(entry.get("tags") or entry.get("modeTags") or [])
+    roles = [role for role, wanted in server_roles if wanted and set(wanted).issubset(tags)]
+    roles.extend(asr_roles.get(key, []))
     return roles
 
 
@@ -138,11 +161,19 @@ def _catalogue_row(
     *,
     state: str,
 ) -> dict:
-    """A row for a service that is absent from the manifest (or all of them)."""
+    """A row for a role that is absent from the manifest (or all of them)."""
     host, port, runner, model_id, _base_url, start = _service_meta(cfg, service, roles)
     features = _service_features(roles, features_by_server)
+    tags: list[str] = []
+    for role in roles:
+        server = _servers(cfg).get(role)
+        if server is not None:
+            tags = list(server.tags)
+            break
     return {
+        "key": service,
         "name": service,
+        "tags": tags,
         "daemon": service,
         "host": host,
         "port": port,
@@ -162,36 +193,41 @@ def _manifest_rows(
     cfg,
     models: dict[str, dict],
     states: dict[str, str],
-    roles_by_service: dict[str, list[str]],
+    roles_by_key: dict[str, list[str]],
+    catalogue_roles: dict[str, list[str]],
     features_by_server: dict[str, list[str]],
     selected_service: str,
     diarize: bool,
 ) -> list[dict]:
     """One row per manifest model, in manifest order, plus missing PtM roles."""
     rows: list[dict] = []
-    for name, entry in models.items():
-        roles = list(roles_by_service.get(name, ()))
+    covered: set[str] = set()
+    for key, entry in models.items():
+        roles = list(roles_by_key.get(key, ()))
+        covered.update(roles)
         features = _service_features(roles, features_by_server)
         rows.append(
             {
-                "name": name,
-                "daemon": entry.get("daemon") or name,
+                "key": key,
+                "name": entry.get("name") or key,
+                "tags": list(entry.get("tags") or entry.get("modeTags") or []),
+                "daemon": entry.get("daemon") or key,
                 "host": entry.get("host") or "127.0.0.1",
                 "port": entry.get("port") or 0,
                 "runner": entry.get("runner") or "",
                 "modelId": entry.get("modelId") or "",
-                "state": states.get(name, "unknown"),
+                "state": states.get(key, "unknown"),
                 "roles": roles,
                 "features": features,
                 "needed": _needed(cfg, features, roles, selected_service, diarize),
-                "selected": name == selected_service,
+                "selected": key == selected_service,
                 "in_manifest": True,
-                "start": fleet.start_command(name),
+                "start": fleet.start_command(key),
             }
         )
 
-    for service, roles in roles_by_service.items():
-        if service in models:
+    for service, roles in catalogue_roles.items():
+        if service in covered:
             continue
         rows.append(
             _catalogue_row(
@@ -209,14 +245,14 @@ def _manifest_rows(
 
 def _static_rows(
     cfg,
-    roles_by_service: dict[str, list[str]],
+    catalogue_roles: dict[str, list[str]],
     features_by_server: dict[str, list[str]],
     selected_service: str,
     diarize: bool,
 ) -> list[dict]:
     """Catalogue + ASR rows with direct probes when flaate is unreachable."""
     rows: list[dict] = []
-    for service, roles in roles_by_service.items():
+    for service, roles in catalogue_roles.items():
         _host, _port, _runner, _model_id, base_url, _start = _service_meta(
             cfg, service, roles
         )
@@ -248,7 +284,9 @@ def snapshot(cfg=None) -> dict:
     catalogue. Never raises — a broken override degrades to the static view.
     """
     cfg = cfg or _config
-    roles_by_service = _roles_by_service(cfg)
+    server_roles = _server_roles(cfg)
+    asr_roles = _asr_roles()
+    catalogue_roles = _catalogue_roles(cfg)
     features_by_server = _features_by_server(cfg)
     selected, diarize = _select(cfg)
     # An unknown persisted ASR name passes through settings; it must not mark
@@ -258,17 +296,22 @@ def snapshot(cfg=None) -> dict:
     states = fleet.status_all()
     if states is None:
         rows = _static_rows(
-            cfg, roles_by_service, features_by_server, selected_service, diarize
+            cfg, catalogue_roles, features_by_server, selected_service, diarize
         )
         source = "static"
         reachable = False
     else:
         models = fleet.list_models(force=True)
+        roles_by_key = {
+            key: _entry_roles(entry, server_roles, asr_roles)
+            for key, entry in models.items()
+        }
         rows = _manifest_rows(
             cfg,
             models,
             states,
-            roles_by_service,
+            roles_by_key,
+            catalogue_roles,
             features_by_server,
             selected_service,
             diarize,

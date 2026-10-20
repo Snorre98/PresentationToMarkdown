@@ -213,7 +213,7 @@ def test_engine_config_set_audio(client, monkeypatch):
         },
     ).get_json()
     # Writes are canonicalized too, so the store never regains old HF ids.
-    assert stored["audio_model"] == "whisper-large-v3-turbo"
+    assert stored["audio_model"] == "whisper-large-v3-turbo-asr-fp16"
     assert stored["audio_language"] == "auto"
     assert stored["audio_diarize"] == "off"
     assert stored["audio_speakers"] == "0"

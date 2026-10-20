@@ -63,17 +63,18 @@ def test_server_catalog_maps_features_to_manifest_daemons():
     # ADR-0029: the catalog is the offline projection of the fleet manifest
     # (macos-dev-config/models.json); each feature names the manifest daemon it
     # is served by, and health/start go through the control daemon.
-    assert config.SERVERS["transcriber"].daemon_name == "transcriber"
+    assert config.SERVERS["transcriber"].model_key == "qwen2.5-vl-7b-instruct-4bit"
     assert config.SERVERS["transcriber"].port == 8081
     assert (
         config.SERVERS["transcriber"].start_command
-        == "curl -X POST http://127.0.0.1:9300/start/transcriber"
+        == "curl -X POST http://127.0.0.1:9300/start/qwen2.5-vl-7b-instruct-4bit"
     )
-    assert config.SERVERS["summary"].daemon_name == "text"  # summary rides the `text` daemon
+    assert config.SERVERS["summary"].model_key == "llama-3.2-3b-instruct-4bit"
     assert config.SERVERS["summary"].port == 8083
-    assert config.SERVERS["structure-text"].daemon_name == "text"
-    assert config.SERVERS["structure-text"].port == 8083  # was :8085 — collided with mistral-24b
+    assert config.SERVERS["structure-text"].model_key == "llama-3.2-3b-instruct-4bit"
+    assert config.SERVERS["structure-text"].port == 8083  # was :8085 — collided with the old mistral daemon
     assert config.SERVERS["nomic-embed"].port == 8090  # was ollama :11434
+    assert config.SERVERS["nomic-embed"].model_key == "nomic-embed-text-v1.5.q8-0"
     assert config.SERVERS["classifier"].description == "Classifier gate (PresentationToMarkdown)"
 
 
@@ -164,7 +165,7 @@ def test_missing_servers_reports_enabled_down(monkeypatch):
     assert (
         "transcriber",
         "http://127.0.0.1:8081/v1",
-        "curl -X POST http://127.0.0.1:9300/start/transcriber",
+        "curl -X POST http://127.0.0.1:9300/start/qwen2.5-vl-7b-instruct-4bit",
     ) in missing
 
 
@@ -285,12 +286,12 @@ def test_snapshot_reports_audio_defaults(tmp_path, monkeypatch):
 def test_normalize_audio_model_aliases():
     from converter.audio import normalize_audio_model
 
-    assert normalize_audio_model("mlx-community/whisper-large-v3-mlx") == "whisper-large-v3"
+    assert normalize_audio_model("mlx-community/whisper-large-v3-mlx") == "whisper-large-v3-asr-fp16"
     assert (
         normalize_audio_model("mlx-community/whisper-large-v3-turbo")
-        == "whisper-large-v3-turbo"
+        == "whisper-large-v3-turbo-asr-fp16"
     )
-    assert normalize_audio_model("whisper-large-v3") == "whisper-large-v3"
+    assert normalize_audio_model("whisper-large-v3") == "whisper-large-v3-asr-fp16"
     assert normalize_audio_model("") == "nb-whisper-large"
     assert normalize_audio_model(None) == "nb-whisper-large"
     # Unknown names pass through so settings can still display them (ADR-0062).
@@ -305,9 +306,10 @@ def test_snapshot_migrates_old_audio_model_ids(tmp_path, monkeypatch):
     db_engine.reset()
     try:
         for old, canonical in {
-            "mlx-community/whisper-large-v3-mlx": "whisper-large-v3",
-            "mlx-community/whisper-large-v3-turbo": "whisper-large-v3-turbo",
-            "whisper-large-v3": "whisper-large-v3",
+            "mlx-community/whisper-large-v3-mlx": "whisper-large-v3-asr-fp16",
+            "mlx-community/whisper-large-v3-turbo": "whisper-large-v3-turbo-asr-fp16",
+            "whisper-large-v3": "whisper-large-v3-asr-fp16",
+            "whisper-large-v3-turbo": "whisper-large-v3-turbo-asr-fp16",
             "nb-whisper-large": "nb-whisper-large",
         }.items():
             settings.set_setting("audio_model", old)
@@ -329,7 +331,7 @@ def test_snapshot_reports_audio_settings(tmp_path, monkeypatch):
         settings.set_setting("audio_speakers", "0")
         snap = config.snapshot(probe=False)
         # Pre-ADR-0062 HF ids are aliased to the canonical fleet name on read.
-        assert snap["audio_model"] == "whisper-large-v3-turbo"
+        assert snap["audio_model"] == "whisper-large-v3-turbo-asr-fp16"
         assert snap["audio_language"] == "auto"
         assert snap["audio_diarize"] is False
         assert snap["audio_speakers"] == 0

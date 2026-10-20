@@ -156,12 +156,12 @@ class AsrModelSpec:
 
 
 ASR_MODELS: dict[str, AsrModelSpec] = {
-    "whisper-large-v3": AsrModelSpec(
+    "whisper-large-v3-asr-fp16": AsrModelSpec(
         repo="mlx-community/whisper-large-v3-asr-fp16",
         base_url="http://127.0.0.1:8099/v1",
         protocol="openai",
     ),
-    "whisper-large-v3-turbo": AsrModelSpec(
+    "whisper-large-v3-turbo-asr-fp16": AsrModelSpec(
         repo="mlx-community/whisper-large-v3-turbo-asr-fp16",
         base_url="http://127.0.0.1:8099/v1",
         protocol="openai",
@@ -176,8 +176,11 @@ ASR_MODELS: dict[str, AsrModelSpec] = {
 # Persisted settings from before the fleet cutover hold the old mlx-whisper HF
 # ids (ADR-0043/0044); aliasing keeps them working without a re-save.
 AUDIO_MODEL_ALIASES = {
-    "mlx-community/whisper-large-v3-mlx": "whisper-large-v3",
-    "mlx-community/whisper-large-v3-turbo": "whisper-large-v3-turbo",
+    # Pre-ADR-0007 friendly names and the old mlx-whisper HF ids.
+    "whisper-large-v3": "whisper-large-v3-asr-fp16",
+    "whisper-large-v3-turbo": "whisper-large-v3-turbo-asr-fp16",
+    "mlx-community/whisper-large-v3-mlx": "whisper-large-v3-asr-fp16",
+    "mlx-community/whisper-large-v3-turbo": "whisper-large-v3-turbo-asr-fp16",
 }
 
 

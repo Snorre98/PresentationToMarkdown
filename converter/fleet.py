@@ -40,12 +40,27 @@ def _get(path: str, timeout: float = _TIMEOUT) -> dict | None:
         return None
 
 
-def list_models(force: bool = False) -> dict[str, dict]:
-    """The daemon's ``list`` projection as ``{model name: entry}``, cached.
+def _identity(entry: dict) -> str:
+    """The entry's stable identity: ``key``, or the pre-ADR-0007 ``name``."""
+    return str(entry.get("key") or entry.get("name") or "")
 
-    ``entry`` carries ``name``, ``runner``, ``daemon``, ``host``, ``port``,
-    ``capabilities``, ``defaults``, ``modeTags`` (daemon-http.md §2). On daemon
-    failure the last good cache is kept (possibly empty).
+
+def effective_tags(entry: dict) -> list[str]:
+    """The entry's canonical tags, falling back to the deprecated alias."""
+    tags = entry.get("tags")
+    if tags:
+        return list(tags)
+    return list(entry.get("modeTags") or [])
+
+
+def list_models(force: bool = False) -> dict[str, dict]:
+    """The daemon's ``list`` projection as ``{key: entry}``, cached.
+
+    ``entry`` carries ``key``, display ``name``, ``tags`` (and the deprecated
+    ``modeTags`` alias), ``runner``, ``daemon``, ``host``, ``port``,
+    ``capabilities``, ``defaults`` and optional ``modelId``/``fingerprint``
+    (daemon-http.md §2, flaate ADR-0007). On daemon failure the last good cache
+    is kept (possibly empty).
     """
     global _cache, _cached_at
     now = time.monotonic()
@@ -54,18 +69,22 @@ def list_models(force: bool = False) -> dict[str, dict]:
     rsp = _get("/list")
     if rsp is None:
         return _cache
-    _cache = {entry["name"]: entry for entry in rsp.get("models", [])}
+    _cache = {
+        _identity(entry): entry
+        for entry in rsp.get("models", [])
+        if _identity(entry)
+    }
     _cached_at = now
     return _cache
 
 
-def status(name: str) -> str:
-    """One daemon/model's live state via ``GET /status/{name}``.
+def status(key: str) -> str:
+    """One model's live state via ``GET /status/{key}``.
 
-    ``"unknown"`` when the daemon is unreachable or the name is not in the
+    ``"unknown"`` when the daemon is unreachable or the key is not in the
     manifest.
     """
-    rsp = _get(f"/status/{name}")
+    rsp = _get(f"/status/{key}")
     if rsp is None:
         return "unknown"
     return str(rsp.get("state", "unknown"))
@@ -74,8 +93,8 @@ def status(name: str) -> str:
 def status_all() -> dict[str, str] | None:
     """Every model's live state via ``GET /status/all`` (ADR-0063), uncached.
 
-    Returns ``{model name: state}`` in manifest order, or ``None`` when the
-    daemon is unreachable. Unlike :func:`list_models`, this call is never
+    Returns ``{key: state}`` in manifest order, or ``None`` when the daemon is
+    unreachable. Unlike :func:`list_models`, this call is never
     cached: the settings panel's ``r`` must observe the fleet as it is now, and
     a stale state is worse than a fallback probe. States fold ``unknown →
     down`` in the daemon itself; a missing entry degrades to ``"unknown"``.
@@ -87,28 +106,62 @@ def status_all() -> dict[str, str] | None:
     for entry in rsp.get("states") or []:
         if not isinstance(entry, dict):
             continue
-        name = entry.get("name")
-        if name:
-            states[str(name)] = str(entry.get("state", "unknown"))
+        key = entry.get("key") or entry.get("name")
+        if key:
+            states[str(key)] = str(entry.get("state", "unknown"))
     return states
 
 
-def start_command(name: str) -> str:
-    """The command a user runs to start ``name`` via the daemon's ``start`` verb."""
-    return f"curl -X POST {DAEMON_URL}/start/{name}"
+def start_command(key: str) -> str:
+    """The command a user runs to start ``key`` via the daemon's ``start`` verb."""
+    return f"curl -X POST {DAEMON_URL}/start/{key}"
 
 
-def base_url(name: str) -> str | None:
-    """OpenAI-compatible base URL for a manifest daemon/model name, from ``list``.
+def base_url(key: str) -> str | None:
+    """OpenAI-compatible base URL for a manifest model key, from ``list``.
 
-    ``None`` when the daemon is unreachable or ``name`` is absent — callers fall
+    ``None`` when the daemon is unreachable or ``key`` is absent — callers fall
     back to their static default.
     """
-    entry = list_models().get(name)
+    entry = list_models().get(key)
     if not entry:
         return None
     host = entry.get("host") or "127.0.0.1"
     return f"http://{host}:{entry['port']}/v1"
+
+
+def find_by_tags(tags: tuple[str, ...] | list[str]) -> dict | None:
+    """First manifest entry carrying every tag, in manifest order.
+
+    This is the role-based resolution path (flaate ADR-0007 / PtM ADR-0064):
+    consumers ask for ``("vision", "transcriber")`` rather than hardcoding a
+    model key. Manifest order is the deterministic tiebreak (the ADR-0015
+    fallback rule).
+    """
+    wanted = set(tags)
+    if not wanted:
+        return None
+    for entry in list_models().values():
+        if wanted.issubset(set(effective_tags(entry))):
+            return entry
+    return None
+
+
+def base_url_for_tags(tags: tuple[str, ...] | list[str]) -> str | None:
+    """Base URL of the first model matching every tag, or ``None``."""
+    entry = find_by_tags(tags)
+    if not entry:
+        return None
+    host = entry.get("host") or "127.0.0.1"
+    return f"http://{host}:{entry['port']}/v1"
+
+
+def status_for_tags(tags: tuple[str, ...] | list[str]) -> str:
+    """Live state of the first model matching every tag, or ``"unknown"``."""
+    entry = find_by_tags(tags)
+    if not entry:
+        return "unknown"
+    return status(_identity(entry))
 
 
 def _normalize_host(host: str) -> str:
