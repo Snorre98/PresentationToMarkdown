@@ -182,6 +182,37 @@ type ServersResult struct {
 	Missing []ServerHealth `json:"missing"`
 }
 
+// FleetDaemon is the control daemon's reachability in /api/fleet (ADR-0063).
+type FleetDaemon struct {
+	URL       string `json:"url"`
+	Reachable bool   `json:"reachable"`
+}
+
+// FleetService is one availability row from /api/fleet (ADR-0063).
+type FleetService struct {
+	Name       string   `json:"name"`
+	Daemon     string   `json:"daemon"`
+	Host       string   `json:"host"`
+	Port       int      `json:"port"`
+	Runner     string   `json:"runner"`
+	ModelID    string   `json:"modelId"`
+	State      string   `json:"state"`
+	Roles      []string `json:"roles"`
+	Features   []string `json:"features"`
+	Needed     bool     `json:"needed"`
+	Selected   bool     `json:"selected"`
+	InManifest bool     `json:"in_manifest"`
+	Start      string   `json:"start"`
+}
+
+// FleetResult is the /api/fleet payload.
+type FleetResult struct {
+	Daemon      FleetDaemon    `json:"daemon"`
+	Source      string         `json:"source"`
+	Services    []FleetService `json:"services"`
+	OtherModels int            `json:"other_models"`
+}
+
 // Health returns the engine's health.
 func (c *Client) Health(ctx context.Context) (Health, error) {
 	var h Health
@@ -303,6 +334,15 @@ func (c *Client) Servers(ctx context.Context) (ServersResult, error) {
 	var r ServersResult
 	if err := c.getJSON(ctx, "/api/health/servers", &r); err != nil {
 		return ServersResult{}, err
+	}
+	return r, nil
+}
+
+// Fleet returns the read-only fleet availability projection (ADR-0063).
+func (c *Client) Fleet(ctx context.Context) (FleetResult, error) {
+	var r FleetResult
+	if err := c.getJSON(ctx, "/api/fleet", &r); err != nil {
+		return FleetResult{}, err
 	}
 	return r, nil
 }

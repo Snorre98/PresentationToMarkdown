@@ -1,6 +1,7 @@
 # 0044. NB-Whisper Norwegian ASR in the audio server
 
-- Status: Accepted
+- Status: Accepted; amended by [0062](0062-asr-on-the-fleet-whisper-daemon.md)
+  (no mlx-whisper fallback; NB keeps `/v1/asr`)
 - Date: 2026-09-22
 - Relates to: [0005](0005-asr-engine-and-model.md), [0006](0006-diarization-isolated-server.md), [0043](0043-quality-first-asr-defaults.md)
 
@@ -46,14 +47,15 @@ model sentinel.
 - `AUDIO_MODEL=nb-whisper-large` is a **sentinel**: `converter.transcribe`
   POSTs the cleaned audio to the audio server's `/v1/asr` instead of invoking
   the `mlx_whisper` subprocess. The actual HF model id stays on the server.
-- If the server ASR route fails (down, timeout), transcription **falls back to
-  `mlx_whisper` with the default MLX model** (large-v3-mlx) and a `[WARN]` —
-  never fails the run.
-- `converter.audio.asr()` is a thin client mirroring `diarize`.
-- The library default `AUDIO_MODEL` stays `mlx-community/whisper-large-v3-mlx`;
-  the **machine/TUI default** (`audio_model` setting, ADR-0043) becomes
-  `nb-whisper-large`, so the owner's transcripts are Norwegian-first by default
-  while the generic CLI remains language-agnostic.
+- ~~If the server ASR route fails (down, timeout), transcription falls back to
+  `mlx_whisper` with the default MLX model and a `[WARN]`.~~ **Amended by
+  ADR-0062**: the mlx-whisper subprocess lane is gone, so a failed ASR call
+  fails the job loudly; there is no fallback. NB-Whisper keeps `/v1/asr`.
+- `converter.audio.asr()` is a thin client mirroring `diarize`; it is now the
+  `audio_json` branch of `transcribe_fleet()`.
+- The library/CLI default `AUDIO_MODEL` is now `nb-whisper-large` (amended by
+  ADR-0062), so every surface is Norwegian-first by default; use
+  `whisper-large-v3` for max-quality generic ASR or `…-turbo` for speed.
 
 ## Consequences
 
@@ -67,8 +69,9 @@ model sentinel.
   crash/hang.
 - ASR through the server is slower than turbo (~1× realtime on MPS) but matches
   the large-v3-mlx default the ADR-0043 quality-first default already chose.
-- Non-Norwegian recordings should keep `AUDIO_MODEL` on an mlx-whisper model
-  (NB-Whisper is Norwegian/English focused).
+- Non-Norwegian recordings should use a fleet whisper model
+  (`whisper-large-v3` / `whisper-large-v3-turbo`; ADR-0062) — NB-Whisper is
+  Norwegian/English focused.
 
 ## Alternatives considered
 

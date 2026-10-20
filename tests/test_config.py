@@ -282,6 +282,40 @@ def test_snapshot_reports_audio_defaults(tmp_path, monkeypatch):
         db_engine.reset()
 
 
+def test_normalize_audio_model_aliases():
+    from converter.audio import normalize_audio_model
+
+    assert normalize_audio_model("mlx-community/whisper-large-v3-mlx") == "whisper-large-v3"
+    assert (
+        normalize_audio_model("mlx-community/whisper-large-v3-turbo")
+        == "whisper-large-v3-turbo"
+    )
+    assert normalize_audio_model("whisper-large-v3") == "whisper-large-v3"
+    assert normalize_audio_model("") == "nb-whisper-large"
+    assert normalize_audio_model(None) == "nb-whisper-large"
+    # Unknown names pass through so settings can still display them (ADR-0062).
+    assert normalize_audio_model("future-model") == "future-model"
+
+
+def test_snapshot_migrates_old_audio_model_ids(tmp_path, monkeypatch):
+    from converter.db import engine as db_engine
+    from converter import settings
+
+    monkeypatch.setenv("VISION_LOG_DB", str(tmp_path / "config_audio_old.sqlite"))
+    db_engine.reset()
+    try:
+        for old, canonical in {
+            "mlx-community/whisper-large-v3-mlx": "whisper-large-v3",
+            "mlx-community/whisper-large-v3-turbo": "whisper-large-v3-turbo",
+            "whisper-large-v3": "whisper-large-v3",
+            "nb-whisper-large": "nb-whisper-large",
+        }.items():
+            settings.set_setting("audio_model", old)
+            assert config.snapshot(probe=False)["audio_model"] == canonical
+    finally:
+        db_engine.reset()
+
+
 def test_snapshot_reports_audio_settings(tmp_path, monkeypatch):
     from converter.db import engine as db_engine
     from converter import settings
@@ -294,7 +328,8 @@ def test_snapshot_reports_audio_settings(tmp_path, monkeypatch):
         settings.set_setting("audio_diarize", "off")
         settings.set_setting("audio_speakers", "0")
         snap = config.snapshot(probe=False)
-        assert snap["audio_model"] == "mlx-community/whisper-large-v3-turbo"
+        # Pre-ADR-0062 HF ids are aliased to the canonical fleet name on read.
+        assert snap["audio_model"] == "whisper-large-v3-turbo"
         assert snap["audio_language"] == "auto"
         assert snap["audio_diarize"] is False
         assert snap["audio_speakers"] == 0

@@ -341,6 +341,44 @@ func TestServersMissingIsObjectShaped(t *testing.T) {
 	}
 }
 
+func TestFleetAvailability(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/fleet" {
+			t.Errorf("path = %q", r.URL.Path)
+		}
+		json.NewEncoder(w).Encode(map[string]any{
+			"daemon": map[string]any{"url": "http://127.0.0.1:9300", "reachable": true},
+			"source": "fleet",
+			"services": []map[string]any{
+				{
+					"name": "text", "daemon": "text", "port": 8083, "state": "up",
+					"roles":    []string{"summary", "structure-text"},
+					"features": []string{"summary", "format", "structure"},
+					"needed":   true, "in_manifest": true,
+					"start": "curl -X POST http://127.0.0.1:9300/start/text",
+				},
+			},
+			"other_models": 2,
+		})
+	}))
+	defer srv.Close()
+
+	c := NewClient(srv.URL)
+	res, err := c.Fleet(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Daemon.Reachable || res.Source != "fleet" || res.OtherModels != 2 {
+		t.Fatalf("fleet = %+v", res)
+	}
+	if len(res.Services) != 1 || res.Services[0].State != "up" || !res.Services[0].Needed {
+		t.Fatalf("services = %+v", res.Services)
+	}
+	if len(res.Services[0].Features) != 3 || res.Services[0].Roles[0] != "summary" {
+		t.Fatalf("service = %+v", res.Services[0])
+	}
+}
+
 func TestOpenReveal(t *testing.T) {
 	var body map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

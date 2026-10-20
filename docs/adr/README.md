@@ -9,7 +9,7 @@ Index of architectural decisions for PresentationToMarkdown, in
 | [0002](0002-ai-flags-to-env.md) | Expose AI capabilities as flags mapped onto env vars | Accepted |
 | [0003](0003-convert-cli-gui-parity.md) | `ptm` mirrors the GUI conversion semantics | Superseded by [0051](0051-tui-sole-surface.md) |
 | [0004](0004-audio-transcription-pass.md) | Add an opt-in local audio-transcription post-pass | Accepted |
-| [0005](0005-asr-engine-and-model.md) | Use mlx-whisper (large-v3-turbo / large-v3) as the ASR engine | Accepted |
+| [0005](0005-asr-engine-and-model.md) | Use mlx-whisper (large-v3-turbo / large-v3) as the ASR engine | Superseded by [0062](0062-asr-on-the-fleet-whisper-daemon.md) for the serving lane |
 | [0006](0006-diarization-isolated-server.md) | Run speaker diarization in a dedicated PyTorch server | Accepted |
 | [0007](0007-transcript-to-markdown-relation.md) | Relate the transcript to the Markdown as a companion section | Accepted |
 | [0008](0008-audio-enhancement.md) | Enhance lecture-hall audio before ASR and persist a cleaned FLAC | Accepted |
@@ -61,3 +61,5 @@ Index of architectural decisions for PresentationToMarkdown, in
 | [0059](0059-latex-compiled-float-numbering.md) | LaTeX float numbering matches the compiled document | Accepted |
 | [0060](0060-latex-tikz-text-without-image.md) | TikZ figure text survives when no image is written | Accepted |
 | [0061](0061-latex-bibliography-author-year-csl.md) | LaTeX bibliography rendered through a bundled author-year CSL | Accepted |
+| [0062](0062-asr-on-the-fleet-whisper-daemon.md) | ASR on the fleet: one whisper daemon, no subprocess lane | Accepted |
+| [0063](0063-fleet-service-availability-in-tui.md) | Fleet service availability in the TUI | Accepted |

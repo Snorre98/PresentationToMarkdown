@@ -71,6 +71,28 @@ def status(name: str) -> str:
     return str(rsp.get("state", "unknown"))
 
 
+def status_all() -> dict[str, str] | None:
+    """Every model's live state via ``GET /status/all`` (ADR-0063), uncached.
+
+    Returns ``{model name: state}`` in manifest order, or ``None`` when the
+    daemon is unreachable. Unlike :func:`list_models`, this call is never
+    cached: the settings panel's ``r`` must observe the fleet as it is now, and
+    a stale state is worse than a fallback probe. States fold ``unknown →
+    down`` in the daemon itself; a missing entry degrades to ``"unknown"``.
+    """
+    rsp = _get("/status/all")
+    if rsp is None:
+        return None
+    states: dict[str, str] = {}
+    for entry in rsp.get("states") or []:
+        if not isinstance(entry, dict):
+            continue
+        name = entry.get("name")
+        if name:
+            states[str(name)] = str(entry.get("state", "unknown"))
+    return states
+
+
 def start_command(name: str) -> str:
     """The command a user runs to start ``name`` via the daemon's ``start`` verb."""
     return f"curl -X POST {DAEMON_URL}/start/{name}"

@@ -436,8 +436,8 @@ The model weights live on the external SSD under `HF_HOME` (see
   - `logstore.py` — conversion/vision telemetry façade over the SQLAlchemy ORM (`ptm.sqlite`)
   - `db/` — SQLAlchemy engine, declarative models, and repository layer (ADR-0026)
   - `summary.py` — per-presentation RAG index (sqlite-vec) + standardized summary header
-  - `transcribe.py` — standalone local audio→text (ffmpeg + mlx-whisper subprocess)
-  - `audio.py` — speaker-diarization client (isolated PyTorch server)
+  - `transcribe.py` — standalone local audio→text (ffmpeg + fleet ASR)
+  - `audio.py` — fleet ASR client + speaker-diarization/enhancement client (audio server)
 - `docs/ai-vision.md` — how to serve the vision model and enable the AI pass
 - `docs/ai-audio.md` — how to serve the ASR/diarization models and enable the audio pass
 - `docs/garbled-text-recovery.md` — the shared detect → classify → recover → gate → review pipeline across PDF/OCR/STT sources
@@ -610,11 +610,12 @@ you prefer.
 A lecture recording can be transcribed **locally** into a timestamped,
 speaker-labelled transcript. Transcription is **decoupled from conversion**
 (ADR-0009) and runs as an **engine-hosted job** (ADR-0045), driven from the TUI:
-select an audio row (`♫`) and press Enter. It runs via **mlx-whisper**
-(`mlx-community/whisper-large-v3-mlx` by default, the max-quality model;
-`…-large-v3-turbo` for speed), invoked as a subprocess so
-`converter` stays MLX-free. Speaker diarization (optional) is served by a
-separate PyTorch server. See **[docs/ai-audio.md](docs/ai-audio.md)** for setup.
+select an audio row (`♫`) and press Enter. ASR goes over HTTP to the fleet's
+`whisper` daemon (`whisper-large-v3`/`whisper-large-v3-turbo`, OpenAI multipart
+with word timestamps) or the audio server (`nb-whisper-large`, `/v1/asr`), so
+`converter` stays MLX- and PyTorch-free (ADR-0062). Speaker diarization
+(optional) is served by the same PyTorch audio server. See
+**[docs/ai-audio.md](docs/ai-audio.md)** for setup.
 
 How the engine pairs audio with Markdown:
 
@@ -626,36 +627,37 @@ How the engine pairs audio with Markdown:
   with matching sidecars instead of overwriting the base file.
 - **A `.md` selected directly** — its same-stem audio beside it is attached.
 
-If transcription fails (missing `ffmpeg`/`mlx_whisper`, server down), it degrades
-to a warning. Every segment is recorded to `ptm.sqlite` (`transcript_segments`
-table, keyed by the Markdown path).
+If transcription fails (missing `ffmpeg`, ASR daemon down), the job fails with a
+warning — there is no mlx-whisper fallback. Every segment is recorded to
+`ptm.sqlite` (`transcript_segments` table, keyed by the Markdown path).
 
 The audio pipeline is `ffmpeg clean → WPE dereverb → DeepFilterNet enhance →
-[SepFormer isolate] → mlx-whisper`. Reverb removal (WPE) and denoising
+[SepFormer isolate] → fleet ASR`. Reverb removal (WPE) and denoising
 (DeepFilterNet) run automatically whenever the audio server is up; voice
 isolation is opt-in (`AUDIO_ISOLATE_ENABLED=1`) and writes a
-`<stem>.isolated.flac` that Whisper transcribes instead of the cleaned file.
+`<stem>.isolated.flac` that ASR transcribes instead of the cleaned file.
 
-Progress streams as engine WS frames (per phase and per file), with a heartbeat
-when a phase goes quiet (e.g. the first-run model download). Only one
-transcription may run at a time — the engine holds an exclusive `flock` on
-`<PTM_STATE_DIR or ~/.local/state/ptm>/transcribe.lock` and a second job is
-rejected while it runs. See [docs/runbook.md](docs/runbook.md).
+Progress streams as engine WS frames (per phase and per file); local subprocess
+phases emit a heartbeat when quiet. ASR itself is phase-level only (one HTTP
+call per file). Only one transcription may run at a time — the engine holds an
+exclusive `flock` on `<PTM_STATE_DIR or ~/.local/state/ptm>/transcribe.lock`
+and a second job is rejected while it runs. See
+[docs/runbook.md](docs/runbook.md).
 
 | Var | Default | Purpose |
 | --- | --- | --- |
 | `AUDIO_ENABLED` | *(unset = off)* | Master switch |
-| `AUDIO_MODEL` | `mlx-community/whisper-large-v3-mlx` | ASR model id (`…-large-v3-turbo` for speed) |
-| `AUDIO_MLX_WHISPER_BIN` | `mlx_whisper` | mlx-whisper CLI |
+| `AUDIO_MODEL` | `nb-whisper-large` | Fleet ASR name: `nb-whisper-large`, `whisper-large-v3` (quality) or `whisper-large-v3-turbo` (speed); old HF ids are aliased (ADR-0062) |
 | `AUDIO_FFMPEG_BIN` | `ffmpeg` | ffmpeg binary |
 | `AUDIO_LANGUAGE` | `no` | Whisper language hint (`auto`/empty = auto-detect) |
-| `AUDIO_HEARTBEAT_SECONDS` | `20` | Quiet-interval before a `still working …` heartbeat line |
-| `AUDIO_CONDITION_ON_PREVIOUS_TEXT` | *(unset = off)* | Feed prior output back as a prompt (off avoids the "log log log" repetition loop on long recordings) |
+| `AUDIO_HEARTBEAT_SECONDS` | `20` | Quiet-interval before a `still working …` heartbeat line (local subprocess phases) |
+| `WHISPER_BASE_URL` | manifest `whisper` daemon (`:8099/v1`) | Whisper daemon base URL override |
+| `WHISPER_API_KEY` | *(unset)* | Optional bearer token for the whisper daemon |
 | `AUDIO_DEREVERB_ENABLED` | `1` | WPE dereverberation via the audio server |
 | `AUDIO_ENHANCE_ENABLED` | `1` | DeepFilterNet denoise via the audio server |
 | `AUDIO_ISOLATE_ENABLED` | *(unset = off)* | Voice isolation (SepFormer) via the audio server |
 | `AUDIO_DIARIZE_ENABLED` | *(unset = off)* | Enable speaker labelling |
-| `AUDIO_DIARIZE_BASE_URL` | `http://127.0.0.1:8089/v1` | Diarization service base URL (env override; daemon-resolved by default, ADR-0035) |
+| `AUDIO_DIARIZE_BASE_URL` | `http://127.0.0.1:8089/v1` | Audio server base URL (env override; daemon-resolved by default, ADR-0035) |
 
 ### Running all AI passes at once
 
@@ -675,8 +677,8 @@ classifier (`:8082`), the summary chat model (`:8084`), and the embeddings
 server (`nomic-embed-text`).
 
 Audio transcription is deliberately **not part of the slide-pass set** (it needs
-an audio file and the mlx-whisper/ffmpeg toolchain, and is a separate job
-anyway). Select audio rows in the TUI to run it.
+an audio file, ffmpeg and a running ASR daemon, and is a separate job anyway).
+Select audio rows in the TUI to run it.
 
 The RAG index lives in the same `ptm.sqlite` as the vision log (`deck_documents`,
 `deck_chunks`, and a `deck_chunk_vec` sqlite-vec table). `sqlite-vec` is an added

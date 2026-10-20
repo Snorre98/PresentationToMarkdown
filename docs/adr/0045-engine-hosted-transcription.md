@@ -1,8 +1,10 @@
 # 0045. Engine-hosted audio transcription and unified job progress
 
-- Status: Proposed; amended by [0051](0051-tui-sole-surface.md) and [0053](0053-tui-v2-charm-and-job-contract.md)
+- Status: Proposed; amended by [0051](0051-tui-sole-surface.md),
+  [0053](0053-tui-v2-charm-and-job-contract.md) and
+  [0062](0062-asr-on-the-fleet-whisper-daemon.md)
 - Date: 2026-09-23
-- Relates to: [0009](0009-decouple-transcription-from-conversion.md), [0040](0040-native-go-tui.md), [0041](0041-tui-transcription.md), [0043](0043-quality-first-asr-defaults.md), [0044](0044-nb-whisper-server-asr.md)
+- Relates to: [0009](0009-decouple-transcription-from-conversion.md), [0040](0040-native-go-tui.md), [0041](0041-tui-transcription.md), [0043](0043-quality-first-asr-defaults.md), [0044](0044-nb-whisper-server-asr.md), [0062](0062-asr-on-the-fleet-whisper-daemon.md)
 
 ## Context
 
@@ -91,7 +93,11 @@ a shared job-state endpoint so any observer can render what is running.
   cannot race).
 - `converter` stays free of Go and the engine stays free of transcription
   logic beyond options plumbing; heavy work remains in `converter.transcribe`
-  and the audio server (ADR-0044).
+  and the fleet ASR daemons (ADR-0044/0062).
+- **Amended by ADR-0062:** ASR is an HTTP call to a fleet daemon, not a
+  streamed subprocess. Progress is phase-level only during transcription
+  (`transcribing with <model> (fleet ASR) …`, then silence until the server
+  replies); the heartbeat still covers the ffmpeg/dereverb/enhance phases.
 - The web dashboard gains transcription job visibility for free (same
   `/api/status`), though this is out of scope for now.
 

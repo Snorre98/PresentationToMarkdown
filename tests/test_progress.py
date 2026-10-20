@@ -82,19 +82,8 @@ def test_atomic_write_cleans_temp_on_failure(tmp_path, monkeypatch):
 def test_transcribe_audio_streams_phases(monkeypatch, tmp_path):
     seen: list[str] = []
 
-    def fake_run(cmd, timeout=3600.0, **kw):
-        if cmd[0] == t.AUDIO_FFMPEG_BIN:
-            return ""
-        import json
-
-        idx = cmd.index("--output-dir")
-        outdir = Path(cmd[idx + 1])
-        (outdir / (Path(cmd[1]).stem + ".json")).write_text(
-            json.dumps({"segments": []}), encoding="utf-8"
-        )
-        return ""
-
-    monkeypatch.setattr(t, "_run", fake_run)
+    monkeypatch.setattr(t, "_run", lambda cmd, timeout=3600.0, **kw: "")
+    monkeypatch.setattr(t, "transcribe_fleet", lambda path, **kw: [])
     monkeypatch.setattr(t, "AUDIO_ENHANCE_ENABLED", False)
     t.transcribe_audio(tmp_path / "x.mp3", tmp_path / "x.clean.flac", on_line=seen.append)
 

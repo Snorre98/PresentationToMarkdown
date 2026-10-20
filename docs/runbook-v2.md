@@ -13,13 +13,14 @@ speaker count are *per-job* settings — the TUI settings screen sends them with
 each request — so toggle those there rather than via the environment. Standalone
 transcripts are append-only, so the levels stack up as diffable versions.
 
-**Pipeline:** `ffmpeg clean → WPE dereverb → DeepFilterNet enhance → [SepFormer isolate] → mlx-whisper` (+ optional diarization).
+**Pipeline:** `ffmpeg clean → WPE dereverb → DeepFilterNet enhance → [SepFormer isolate] → fleet ASR` (+ optional diarization).
 
 ---
 
 ## 1. Prerequisites
 
-- `ffmpeg` and `mlx_whisper` on `PATH` (see [runbook §1](runbook.md#1-prerequisites-one-time)).
+- `ffmpeg` on `PATH` and the fleet `whisper` daemon running (see
+  [runbook §1](runbook.md#1-prerequisites-one-time)).
 - The audio server, with the **two new dependencies installed** (it is the
   manifest's `audio` daemon on `:8089`, managed by the control daemon, ADR-0035):
 
@@ -48,7 +49,7 @@ transcripts are append-only, so the levels stack up as diffable versions.
 | 2 | WPE dereverb | server `/v1/dereverb` | `AUDIO_DEREVERB_ENABLED` | `1` | env at launch |
 | 3 | DeepFilterNet enhance | server `/v1/enhance` | `AUDIO_ENHANCE_ENABLED` | `1` | env at launch |
 | 4 | SepFormer voice isolate | server `/v1/isolate` | `AUDIO_ISOLATE_ENABLED` | off | env at launch |
-| 5 | ASR (mlx-whisper / nb-whisper) | local subprocess / server | `AUDIO_MODEL`, `AUDIO_LANGUAGE` | nb-whisper, `no` | env or TUI settings |
+| 5 | ASR (fleet whisper / NB-Whisper) | `whisper` daemon `:8099` / audio server `:8089` | `AUDIO_MODEL`, `AUDIO_LANGUAGE` | nb-whisper, `no` | env or TUI settings |
 | 6 | pyannote diarize | server `/v1/diarize` | `AUDIO_DIARIZE_ENABLED`, `AUDIO_DIARIZE_SPEAKERS` | off (TUI default: on) | TUI settings |
 
 Every server stage degrades to a warning (never fails the run) when the server is

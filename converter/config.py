@@ -484,6 +484,21 @@ def _vault_root() -> str | None:
         return None
 
 
+def _audio_model() -> str:
+    """The persisted ASR model as a canonical fleet name (ADR-0062).
+
+    Settings written before the cutover hold mlx-whisper HF ids; normalizing on
+    read keeps the TUI and run snapshots on fleet names without a migration.
+    """
+    value = _audio_setting("model", "nb-whisper-large")
+    try:
+        from converter.audio import normalize_audio_model
+
+        return normalize_audio_model(value)
+    except Exception:
+        return value
+
+
 def _audio_setting(key: str, default: str) -> str:
     """Read a persisted transcription setting (ADR-0043).
 
@@ -550,7 +565,7 @@ def snapshot(probe: bool = True) -> dict:
         "need_gate": os.environ.get("NEED_GATE", "on").strip().lower() or "on",
         "duplicate": _duplicate_if_exists(),
         "vault_root": _vault_root(),
-        "audio_model": _audio_setting("model", "nb-whisper-large"),
+        "audio_model": _audio_model(),
         "audio_language": _audio_setting("language", "no"),
         "audio_diarize": _audio_setting("diarize", "on").strip().lower() in _TRUE,
         "audio_speakers": _audio_int("speakers", 2),

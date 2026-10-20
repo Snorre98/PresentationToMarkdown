@@ -1,6 +1,7 @@
 # 0010. Dereverberation and voice isolation in the audio server
 
-- Status: Accepted
+- Status: Accepted; the ASR lane is superseded by
+  [0062](0062-asr-on-the-fleet-whisper-daemon.md)
 - Date: 2026-08-26
 
 ## Context

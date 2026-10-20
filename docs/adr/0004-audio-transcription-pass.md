@@ -1,6 +1,7 @@
 # 0004. Add an opt-in local audio-transcription post-pass
 
-- Status: Accepted
+- Status: Accepted; the ASR lane is superseded by
+  [0062](0062-asr-on-the-fleet-whisper-daemon.md)
 - Date: 2026-08-26
 
 ## Context
@@ -46,7 +47,7 @@ Configuration follows the existing env-var pattern (ADR-0002), exposed as
 | --- | --- | --- |
 | `AUDIO_ENABLED` | *(unset = off)* | Master switch |
 | `AUDIO_MODEL` | `mlx-community/whisper-large-v3-turbo` | ASR model id |
-| `AUDIO_MLX_WHISPER_BIN` | `mlx_whisper` | mlx-whisper CLI binary |
+| ~~`AUDIO_MLX_WHISPER_BIN`~~ | — | removed with the subprocess lane ([0062](0062-asr-on-the-fleet-whisper-daemon.md)) |
 | `AUDIO_FFMPEG_BIN` | `ffmpeg` | ffmpeg binary |
 | `AUDIO_LANGUAGE` | *(unset = auto-detect)* | Whisper language hint |
 

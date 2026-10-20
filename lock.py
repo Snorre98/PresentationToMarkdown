@@ -1,7 +1,7 @@
 """Single-instance guard for engine-hosted audio transcription (ADR-0045).
 
-Ensures only one transcription runs at a time: concurrent ``mlx_whisper``
-processes would thrash MLX unified memory and clobber each other's
+Ensures only one transcription runs at a time: concurrent jobs would thrash
+the ASR daemon (one resident model) and clobber each other's
 ``.clean.flac`` / ``.md`` / ``.srt`` sidecars. The lock is a ``flock``-based
 exclusive lock on ``<PTM_STATE_DIR or ~/.local/state/ptm>/transcribe.lock``:
 

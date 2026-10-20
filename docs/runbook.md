@@ -7,21 +7,25 @@ existing Markdown file (or writes a standalone `<stem>.transcript.md`), and save
 a **cleaned** copy of the audio (`.clean.flac`). Transcription is decoupled from
 conversion (ADR-0009): `convert_files` never transcribes.
 
-**Hardware:** Apple M4, 32 GB · **ASR:** `mlx-whisper` · **Enhancement:** DeepFilterNet · **Diarization:** pyannote
+**Hardware:** Apple M4, 32 GB · **ASR:** fleet `whisper` daemon (MLX) + NB-Whisper · **Enhancement:** DeepFilterNet · **Diarization:** pyannote
 
 ## 1. Prerequisites (one-time)
 
 | Tool | Check | Install |
 | --- | --- | --- |
 | `ffmpeg` | `which ffmpeg` | `brew install ffmpeg` (already present) |
-| `mlx-whisper` | `which mlx_whisper` | `uv tool install mlx-whisper --python 3.12` |
-| `uv` | `which uv` | `brew install uv` (already present) |
+| fleet whisper daemon | `curl -sf http://127.0.0.1:8099/v1/models` (after a start) | managed by flaate from `macos-dev-config/models.json`; see `SERVING-MANIFEST.md` |
+| audio server (`audio` daemon) | `curl -sf http://127.0.0.1:8089/v1/models` | `scripts/audio_serve.sh install` + start (below) |
 
-Verify: `mlx_whisper --help` and `ffmpeg -version` both return.
+Verify: `ffmpeg -version` and
+`curl -s -X POST http://127.0.0.1:9300/start/whisper-large-v3` both succeed.
 
-> First transcription downloads `mlx-community/whisper-large-v3-turbo`
-> (~1.6 GB) to `HF_HOME` (your SSD). The converter never downloads models
-> itself.
+> The whisper models download on their first load (to `HF_HOME`, your SSD) from
+> inside the daemon; the converter never downloads models itself. The stored
+> repos are the mlx-audio `-asr-fp16` conversions
+> (`mlx-community/whisper-large-v3-asr-fp16`, `…-turbo-asr-fp16`) because the
+> older `whisper-large-v3-mlx` repos carry no HF processor (ADR-0062).
+> `serve-whisper.sh warm [model]` preloads without inference.
 
 ## 2. The audio-model server (diarization + enhancement)
 
@@ -45,12 +49,25 @@ daemon (ADR-0035), like every other ML service (ADR-0029). Four endpoints:
 // POST /v1/isolate — isolate the dominant voice (SepFormer)
 {"path": "/abs/path/lecture.clean.flac", "output": "/abs/path/lecture.isolated.flac"}
 -> {"ok": true}
+
+// POST /v1/asr — NB-Whisper (return_words = per-word timestamps)
+{"path": "/abs/path/lecture.clean.flac", "language": "no", "return_words": false}
+-> [{"start": 0.0, "end": 9.2, "text": "..."}, ...]
 ```
 
-The real server is managed by the control daemon; `scripts/audio_serve.sh`
-proxies its verbs (start/stop/status/log) and keeps the one-time venv install +
-the no-PyTorch test stub (the same lifecycle the vision models get from the
-`macos-dev-config` control daemon).
+The MLX whisper models are served by a **separate fleet daemon**
+(`whisper`, `:8099`) through the OpenAI transcription contract:
+
+```bash
+curl -s http://127.0.0.1:8099/v1/audio/transcriptions \
+  -F model=mlx-community/whisper-large-v3-asr-fp16 \
+  -F language=en -F response_format=verbose_json -F word_timestamps=true \
+  -F file=@lecture.clean.flac
+```
+
+The real servers are managed by the control daemon (`com.flaate.engine`);
+`scripts/audio_serve.sh` proxies the audio daemon's verbs (start/stop/status/log)
+and keeps the one-time venv install + the no-PyTorch test stub.
 
 ### Option A — Stub (for testing, no PyTorch, no Hugging Face)
 
@@ -102,10 +119,10 @@ with `PTM_STATE_DIR`, the stub port with `PTM_AUDIO_PORT` or `--port N`), and
 DeepFilterNet's noise-attenuation limit with `AUDIO_ENHANCE_ATTEN_DB`
 (server-side; default `12.0` dB, `0` = full suppression).
 
-**Always-on (survive reboot):** the `com.macosdev.fleetdaemon` LaunchAgent is
-the always-on authority for every manifest daemon, the audio server included
-(ADR-0035). There is no separate audio LaunchAgent anymore; `launchd-install`
-was removed.
+**Always-on (survive reboot):** the `com.flaate.engine` LaunchAgent is the
+always-on authority for every manifest daemon, the audio server and the
+`whisper` ASR daemon included (ADR-0035/0062, flaate ADR-0001). There is no
+separate audio LaunchAgent anymore; `launchd-install` was removed.
 
 ### 2.1 Hugging Face setup (only for speaker labels)
 
@@ -208,18 +225,22 @@ so past transcripts are kept for A/B comparison. Attaching to a `.md` is
 idempotent — the `# Transcript` section is replaced, not duplicated.
 
 The audio pipeline is `ffmpeg clean → WPE dereverb → DeepFilterNet enhance →
-[SepFormer isolate] → mlx-whisper`. WPE dereverberation and enhancement run
+[SepFormer isolate] → fleet ASR`. WPE dereverberation and enhancement run
 whenever the server is up (both default on, degrade to a `[WARN]` if it is
 down); voice isolation runs only with `--isolate` and writes a
-`<stem>.isolated.<N>.flac` that Whisper transcribes instead of the cleaned file.
+`<stem>.isolated.<N>.flac` that ASR transcribes instead of the cleaned file.
+ASR is an HTTP call to the audio server (`nb-whisper-large`) or the fleet
+`whisper` daemon (`whisper-large-v3` / `…-turbo`); a dead daemon fails the job
+with a warning and there is no mlx-whisper fallback (ADR-0062).
 
 ### Progress output & the single-instance guard
 
-While a file is transcribing, the engine streams live progress over its
-WebSocket: the underlying ffmpeg and mlx-whisper output (including the first-run
-~1.6 GB model download) appears in real time, with short phase frames (`ffmpeg`
-/ `dereverberating` / `enhancing` / `isolating` / `transcribing` / `diarizing`).
-If a phase goes quiet (e.g. the model download), a heartbeat line appears every
+While a file transcribing, the engine streams live progress over its WebSocket:
+ffmpeg output appears in real time with short phase frames (`ffmpeg` /
+`dereverberating` / `enhancing` / `isolating` / `transcribing` / `diarizing`).
+The ASR phase itself is **phase-level only** — one HTTP call to a daemon, with
+no incremental transcript — so expect silence there (and a longer first request
+while the model loads). Local subprocess phases emit a heartbeat line every
 `AUDIO_HEARTBEAT_SECONDS` seconds (default `20`).
 
 Only one transcription may run at a time. The engine holds an exclusive `flock`
@@ -253,7 +274,7 @@ Expected Markdown:
 ```markdown
 # Transcript
 <details>
-<summary>Auto-generated transcript (mlx-community/whisper-large-v3-turbo)</summary>
+<summary>Auto-generated transcript (whisper-large-v3)</summary>
 
 [00:00:04] **Speaker A:** Welcome to today's lecture.
 [00:00:21] **Speaker A:** We'll cover three topics.
@@ -273,7 +294,7 @@ Expected Markdown:
 # full suite
 ./.venv/bin/python -m pytest -q
 
-# real ffmpeg + mlx-whisper end-to-end (opt-in; downloads the model on first run)
+# real ffmpeg + fleet whisper daemon end-to-end (opt-in; start the daemon first)
 PTM_RUN_AUDIO_INTEGRATION=1 ./.venv/bin/python -m pytest tests/test_transcribe_integration.py -v
 ```
 
@@ -281,19 +302,29 @@ PTM_RUN_AUDIO_INTEGRATION=1 ./.venv/bin/python -m pytest tests/test_transcribe_i
 
 | Goal | Setting |
 | --- | --- |
-| Max ASR quality | `AUDIO_MODEL=mlx-community/whisper-large-v3-mlx` |
-| Norwegian (avoid mis-detect on short clips) | `AUDIO_LANGUAGE=no` |
+| Max ASR quality | `AUDIO_MODEL=whisper-large-v3` |
+| Speed (non-Norwegian) | `AUDIO_MODEL=whisper-large-v3-turbo` |
+| Norwegian (avoid mis-detect on short clips) | `AUDIO_MODEL=nb-whisper-large` + `AUDIO_LANGUAGE=no` |
 | Skip enhancement (A/B check) | `AUDIO_PREPROCESS=0 AUDIO_ENHANCE_ENABLED=0` |
 | Skip dereverberation (very dry audio) | `AUDIO_DEREVERB_ENABLED=0` |
 | Isolate voice from music/chatter | `AUDIO_ISOLATE_ENABLED=1` (TUI setting) |
 | Enhancement only, no speaker labels | run the server, leave diarization off |
-| Default | `mlx-community/whisper-large-v3-turbo` |
+| Default | `nb-whisper-large`, language `no`, diarize on, 2 speakers |
+
+Start/stop the whisper daemon through flaate (model name, not daemon name):
+
+```bash
+curl -s -X POST http://127.0.0.1:9300/start/whisper-large-v3
+curl -s -X POST http://127.0.0.1:9300/stop/whisper-large-v3
+/Users/snorresaether/Projects/macos-dev-config/tools/serve-whisper.sh warm whisper-large-v3
+```
 
 ## 7. Troubleshooting
 
 | Symptom | Cause → Fix |
 | --- | --- |
-| `[WARN] Audio transcription failed: mlx_whisper not found` | `uv tool install mlx-whisper`, or set `AUDIO_MLX_WHISPER_BIN` |
+| `[WARN] Audio transcription failed: transcription returned HTTP …` / connection refused | Whisper daemon down → `curl -X POST http://127.0.0.1:9300/start/whisper-large-v3` (no fallback lane exists) |
+| `[WARN] … unknown ASR model` | `AUDIO_MODEL` is not a fleet name → use `nb-whisper-large`, `whisper-large-v3` or `whisper-large-v3-turbo` |
 | `[WARN] … ffmpeg not found` | `brew install ffmpeg` |
 | `[WARN] Audio enhancement failed: …` | Server down → `scripts/audio_serve.sh start` (daemon-managed `audio`, :8089), or set `AUDIO_ENHANCE_ENABLED=0` |
 | `[WARN] Audio dereverberation failed: …` | Server down → start it, or set `AUDIO_DEREVERB_ENABLED=0` |
@@ -301,6 +332,8 @@ PTM_RUN_AUDIO_INTEGRATION=1 ./.venv/bin/python -m pytest tests/test_transcribe_i
 | `[WARN] Diarization failed: …` | Server down → start it, or disable diarization |
 | Server logs a 401/403 "gated repo" on startup | Re-do §2.1: accept both model licenses + create a **Read** token |
 | No `# Transcript` appears | No same-stem audio found → select the Markdown whose audio you want attached |
-| Wrong language / gibberish | Set `AUDIO_LANGUAGE`, or upgrade to `large-v3-mlx` |
-| Long silence / music transcribed | Whisper hallucination → trim the recording, or try `AUDIO_CONDITION_ON_PREVIOUS_TEXT=1` |
+| Wrong language / gibberish | Set `AUDIO_LANGUAGE`, or use `whisper-large-v3` instead of NB-Whisper |
+| Long silence / music transcribed | Whisper hallucination → trim the recording, or set `WHISPER_CONDITION_ON_PREVIOUS_TEXT=1` where the whisper daemon starts |
+| `[WARN] Fallback re-decode is NB-Whisper only …` | Expected for whisper models: the OpenAI transcription form has no beam width (ADR-0062) |
+| First request is slow / times out | The daemon is loading ~3 GB → `serve-whisper.sh warm`, or use turbo / raise `AUDIO_TIMEOUT` |
 | “Another transcription is already running.” in the run pane | Another transcription is active — wait for it, or stop the engine (the `flock` releases on process death) |

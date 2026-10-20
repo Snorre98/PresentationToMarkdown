@@ -32,8 +32,8 @@ func (fakeEngine) SetConfig(context.Context, ConfigUpdate) (Config, error) {
 func (fakeEngine) Open(context.Context, string, bool) error { return nil }
 func (fakeEngine) CancelJob(context.Context, int) error     { return nil }
 func (fakeEngine) Runs(context.Context, int) ([]Run, error) { return nil, nil }
-func (fakeEngine) Servers(context.Context) (ServersResult, error) {
-	return ServersResult{}, nil
+func (fakeEngine) Fleet(context.Context) (FleetResult, error) {
+	return FleetResult{}, nil
 }
 
 func testApp() *model {

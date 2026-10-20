@@ -7,7 +7,9 @@ a native client cannot do alone:
 - engine-hosted audio transcription (ADR-0045),
 - filesystem access (directory listing, path resolution, recursive glob, and a
   native "open in Finder"),
-- the AI server preflight (``config.probe`` / ``config.missing_servers``), and
+- the AI server preflight (``config.probe`` / ``config.missing_servers``) and
+  the read-only fleet availability projection (``converter.fleetview``,
+  ADR-0063), and
 - app settings persistence (``converter.settings``).
 
 It is the **sole writer** to ``ptm.sqlite`` (WAL): the TUI stays a pure client
@@ -827,7 +829,9 @@ def _apply_audio_options(options: dict) -> None:
     transcribe_mod.AUDIO_ENABLED = True
     model = options.get("model")
     if model:
-        transcribe_mod.AUDIO_MODEL = model
+        # Old persisted HF ids arrive from pre-ADR-0062 settings; canonicalize
+        # before the converter picks a route.
+        transcribe_mod.AUDIO_MODEL = audio_mod.normalize_audio_model(model)
     language = options.get("language")
     transcribe_mod.AUDIO_LANGUAGE = None if language in (None, "", "auto") else language
     speakers = int(options.get("speakers") or 0)
@@ -911,8 +915,11 @@ def _transcribe_execute(wsock, paths: list[str], audio_options: dict | None) -> 
                     result = transcribe_to_markdown(path, warnings, on_line=on_line)
             for warning in warnings:
                 emit({"type": "log", "kind": "warn", "message": f"{path.name}: {warning}"})
-            if result is None and not warnings:
-                emit({"type": "log", "kind": "warn", "message": f"{path.name}: no transcript produced"})
+            if result is None:
+                # A missing transcript is a failed file, even when the cause was
+                # already emitted as a warning (ADR-0062: no fallback lane).
+                if not warnings:
+                    emit({"type": "log", "kind": "warn", "message": f"{path.name}: no transcript produced"})
             else:
                 ok += 1
         _engine_state["status"] = "done"
@@ -1025,7 +1032,11 @@ def create_app() -> Flask:
         if "duplicate" in data:
             set_setting("duplicate_if_exists", "on" if data["duplicate"] else "off")
         if "audio_model" in data:
-            set_setting("audio_model", str(data["audio_model"]).strip())
+            from converter.audio import normalize_audio_model
+
+            set_setting(
+                "audio_model", normalize_audio_model(str(data["audio_model"]).strip())
+            )
         if "audio_language" in data:
             set_setting("audio_language", str(data["audio_language"]).strip())
         if "audio_diarize" in data:
@@ -1059,6 +1070,19 @@ def create_app() -> Flask:
             for name, url, command in config.missing_servers()
         ]
         return jsonify({"servers": results, "missing": missing})
+
+    @app.get("/api/fleet")
+    def fleet_availability():
+        """Read-only fleet availability projection for the settings modal (ADR-0063).
+
+        Prefers flaate's ``list`` + ``status/all``; falls back to direct probes
+        over the static catalogue when the daemon is unreachable. Never gates or
+        starts a conversion.
+        """
+        _, config, _ = _import_converter()
+        from converter import fleetview
+
+        return jsonify(fleetview.snapshot(config))
 
     @app.get("/api/status")
     def status():

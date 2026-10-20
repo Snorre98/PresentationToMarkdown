@@ -1,6 +1,8 @@
 # 0005. Use mlx-whisper with large-v3-turbo (large-v3 override) as the ASR engine
 
-- Status: Accepted
+- Status: Superseded by [0062](0062-asr-on-the-fleet-whisper-daemon.md) for the
+  serving lane (the MLX whisper subprocess moved behind the fleet `whisper`
+  daemon); the model choice still stands.
 - Date: 2026-08-26
 
 ## Context

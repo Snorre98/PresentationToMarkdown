@@ -4,11 +4,15 @@
   ``test_dereverb_client_against_stub`` / ``test_isolate_client_against_stub`` run
   the stub audio server and the real ``converter.audio`` clients against it — no
   model, no binaries.
+- ``test_transcribe_fleet_*_against_stub`` runs the real OpenAI multipart
+  client against ``scripts/stub_whisper_server.py`` (ADR-0062) — no model, no
+  daemon.
 - ``test_transcribe_audio_writes_clean_flac`` runs the *real* ffmpeg to produce
-  the persisted cleaned FLAC (mlx-whisper is faked), so it needs only ``ffmpeg``.
-- ``test_transcribe_audio_real`` exercises the full real ``ffmpeg`` +
-  ``mlx_whisper`` pipeline. It is skipped unless both binaries are on PATH *and*
-  ``PTM_RUN_AUDIO_INTEGRATION=1`` is set (first run downloads a ~1.6 GB model).
+  the persisted cleaned FLAC (the fleet ASR call is faked), so it needs only
+  ``ffmpeg``.
+- ``test_transcribe_audio_real`` exercises the full real ``ffmpeg`` + fleet
+  whisper daemon pipeline. It is skipped unless the daemon is reachable on
+  ``:8099``, ``ffmpeg`` is on PATH, *and* ``PTM_RUN_AUDIO_INTEGRATION=1``.
 """
 from __future__ import annotations
 
@@ -18,13 +22,22 @@ import os
 import shutil
 import subprocess
 import threading
+import urllib.request
 import wave
 from pathlib import Path
 
 import pytest
 
 from converter import transcribe as t
-from converter.audio import asr, dereverb, diarize, enhance, isolate, vad
+from converter.audio import (
+    asr,
+    dereverb,
+    diarize,
+    enhance,
+    isolate,
+    transcribe_fleet,
+    vad,
+)
 
 
 def _make_tone_wav(path: Path, seconds: float = 1.0, rate: int = 16000) -> None:
@@ -42,6 +55,16 @@ def _make_tone_wav(path: Path, seconds: float = 1.0, rate: int = 16000) -> None:
 
 def _start_stub():
     from scripts.stub_audio_server import make_server
+
+    httpd = make_server(0)
+    port = httpd.server_address[1]
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    return httpd, port, thread
+
+
+def _start_whisper_stub():
+    from scripts.stub_whisper_server import make_server
 
     httpd = make_server(0)
     port = httpd.server_address[1]
@@ -120,6 +143,72 @@ def test_asr_client_return_words_against_stub(tmp_path):
     for word in words:
         assert set(word) == {"start", "end", "text"}
         assert word["text"].startswith("word")  # finer than the "segment N" default
+
+
+def test_transcribe_fleet_openai_against_stub(tmp_path):
+    httpd, port, thread = _start_whisper_stub()
+    audio = tmp_path / "talk.wav"
+    _make_tone_wav(audio, seconds=3.0)
+    base = f"http://127.0.0.1:{port}/v1"
+    try:
+        segments = transcribe_fleet(
+            str(audio), model="whisper-large-v3", language="en", base_url=base
+        )
+        words = transcribe_fleet(
+            str(audio),
+            model="whisper-large-v3",
+            language="en",
+            word_timestamps=True,
+            base_url=base,
+        )
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        thread.join(timeout=5)
+
+    assert isinstance(segments, list) and segments
+    for seg in segments:
+        assert set(seg) == {"start", "end", "text"}
+        assert seg["end"] > seg["start"]
+        assert seg["text"]
+    assert isinstance(words, list) and words
+    for word in words:
+        assert set(word) == {"start", "end", "text"}
+        assert word["text"].startswith("word")
+
+
+def test_transcribe_fleet_audio_json_against_stub(tmp_path):
+    """NB-Whisper keeps the audio server's /v1/asr shape."""
+    httpd, port, thread = _start_stub()
+    audio = tmp_path / "talk.wav"
+    _make_tone_wav(audio, seconds=3.0)
+    try:
+        segments = transcribe_fleet(
+            str(audio),
+            model="nb-whisper-large",
+            language="no",
+            base_url=f"http://127.0.0.1:{port}/v1",
+        )
+        words = transcribe_fleet(
+            str(audio),
+            model="nb-whisper-large",
+            language="no",
+            word_timestamps=True,
+            base_url=f"http://127.0.0.1:{port}/v1",
+        )
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        thread.join(timeout=5)
+
+    assert segments and segments[0]["text"] == "segment 0"
+    assert words and words[0]["text"] == "word 0"
+
+
+def test_transcribe_fleet_unknown_model_raises(tmp_path):
+    (tmp_path / "x.wav").write_bytes(b"x")
+    with pytest.raises(RuntimeError, match="unknown ASR model"):
+        transcribe_fleet(str(tmp_path / "x.wav"), model="not-a-model")
 
 
 def test_vad_client_against_stub(tmp_path):
@@ -228,17 +317,11 @@ def test_transcribe_audio_writes_clean_flac(tmp_path, monkeypatch):
     clean = tmp_path / "tone.clean.flac"
 
     def fake_run(cmd, timeout=3600.0):
-        if cmd[0] == t.AUDIO_FFMPEG_BIN:
-            subprocess.run(cmd, check=True, capture_output=True)
-            return ""
-        idx = cmd.index("--output-dir")
-        outdir = Path(cmd[idx + 1])
-        (outdir / (Path(cmd[1]).stem + ".json")).write_text(
-            json.dumps({"segments": []}), encoding="utf-8"
-        )
+        subprocess.run(cmd, check=True, capture_output=True)
         return ""
 
     monkeypatch.setattr(t, "_run", fake_run)
+    monkeypatch.setattr(t, "transcribe_fleet", lambda path, **kw: [])
     monkeypatch.setattr(t, "AUDIO_ENHANCE_ENABLED", False)
     monkeypatch.setattr(t, "AUDIO_DEREVERB_ENABLED", False)
     t.transcribe_audio(audio, clean)
@@ -247,10 +330,22 @@ def test_transcribe_audio_writes_clean_flac(tmp_path, monkeypatch):
     assert clean.read_bytes()[:4] == b"fLaC"
 
 
+def _whisper_daemon_up() -> bool:
+    """True when the fleet whisper daemon answers on its default port."""
+    try:
+        with urllib.request.urlopen(
+            "http://127.0.0.1:8099/v1/models", timeout=1.5
+        ) as resp:
+            return 200 <= resp.status < 300
+    except Exception:  # noqa: BLE001 - unreachable means "skip the integration run"
+        return False
+
+
 _requires_audio = pytest.mark.skipif(
-    not (shutil.which("mlx_whisper") and shutil.which("ffmpeg"))
+    not (_whisper_daemon_up() and shutil.which("ffmpeg"))
     or not os.environ.get("PTM_RUN_AUDIO_INTEGRATION"),
-    reason="requires mlx_whisper + ffmpeg and PTM_RUN_AUDIO_INTEGRATION=1",
+    reason="requires the fleet whisper daemon on :8099 + ffmpeg and "
+    "PTM_RUN_AUDIO_INTEGRATION=1",
 )
 
 
@@ -258,7 +353,9 @@ _requires_audio = pytest.mark.skipif(
 def test_transcribe_audio_real(tmp_path):
     audio = tmp_path / "tone.wav"
     _make_tone_wav(audio, seconds=2.0)
-    segments = t.transcribe_audio(audio, tmp_path / "tone.clean.flac", language="en")
+    segments = t.transcribe_audio(
+        audio, tmp_path / "tone.clean.flac", model="whisper-large-v3", language="en"
+    )
     assert isinstance(segments, list)
 
 

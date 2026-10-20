@@ -41,7 +41,7 @@ type engineAPI interface {
 	Open(ctx context.Context, path string, reveal bool) error
 	CancelJob(ctx context.Context, id int) error
 	Runs(ctx context.Context, limit int) ([]Run, error)
-	Servers(ctx context.Context) (ServersResult, error)
+	Fleet(ctx context.Context) (FleetResult, error)
 }
 
 type logLine struct {
@@ -95,14 +95,15 @@ type model struct {
 	tab tab
 
 	// settings
-	cfg            Config
-	outputDir      string
-	duplicate      bool
-	setCursor      int
-	editing        editField
-	editBuf        string
-	servers        []ServerHealth
-	missingServers []ServerHealth
+	cfg       Config
+	outputDir string
+	duplicate bool
+	setCursor int
+	editing   editField
+	editBuf   string
+	fleet     FleetResult
+	fleetAt   time.Time
+	fleetErr  string
 
 	overlay overlay
 	help    help.Model
@@ -307,10 +308,14 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.duplicate = msg.cfg.Duplicate
 		return m, nil
 
-	case serversMsg:
-		if msg.err == nil {
-			m.servers, m.missingServers = msg.res.Servers, msg.res.Missing
+	case fleetMsg:
+		if msg.err != nil {
+			m.fleetErr = msg.err.Error()
+			return m, nil
 		}
+		m.fleet = msg.res
+		m.fleetAt = time.Now()
+		m.fleetErr = ""
 		return m, nil
 
 	case watchConnMsg:
@@ -421,7 +426,7 @@ func (m *model) onKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "s":
 		m.overlay = overlaySettings
-		return m, tea.Batch(m.fetchConfig(), m.fetchServers())
+		return m, tea.Batch(m.fetchConfig(), m.fetchFleet())
 	case "x":
 		if j := m.jobs.latest(); j != nil && j.running() {
 			return m, m.cancelCmd(j.id)

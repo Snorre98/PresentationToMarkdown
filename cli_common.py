@@ -25,8 +25,8 @@ AI_FLAGS: dict[str, tuple[str, str]] = {
 }
 
 # ``--all`` enables the core slide passes only — not audio transcription, which
-# is an engine-hosted job (ADR-0045) that needs an audio file to exist plus the
-# ffmpeg/mlx-whisper toolchain.
+# is an engine-hosted job (ADR-0045) that needs an audio file to exist plus
+# ffmpeg and a running fleet ASR daemon (ADR-0062).
 _ALL_FLAGS = ("vision", "classify", "interpret", "format", "summary")
 
 

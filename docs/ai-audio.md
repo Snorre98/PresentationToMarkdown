@@ -18,24 +18,28 @@ extraction always runs first, and the transcript is appended as a
 
 | Role | Model | Runtime | Notes |
 | --- | --- | --- | --- |
-| ASR (Norwegian, TUI default) | `NbAiLab/nb-whisper-large` (via `/v1/asr`) | audio server (PyTorch) | ~2× fewer Norwegian errors than stock Whisper (6.6%/2.2% vs 10.4%/6.8% WER); Apache-2.0 (ADR-0044) |
-| ASR (mlx-whisper default) | `mlx-community/whisper-large-v3-mlx` | `mlx-whisper` (MLX) | 1.55B params, ~1× realtime on Apple Silicon — the generic quality ceiling (ADR-0043) |
-| ASR (speed override) | `mlx-community/whisper-large-v3-turbo` | `mlx-whisper` (MLX) | 809M params, ~4–5× realtime, near-equal quality |
+| ASR (Norwegian, default) | `NbAiLab/nb-whisper-large` (fleet `nb-whisper-large`, via `/v1/asr`) | audio server (PyTorch) | ~2× fewer Norwegian errors than stock Whisper (6.6%/2.2% vs 10.4%/6.8% WER); Apache-2.0 (ADR-0044) |
+| ASR (max quality) | `mlx-community/whisper-large-v3-asr-fp16` (fleet `whisper-large-v3`) | `whisper` daemon (`:8099`, MLX) | 1.55B params; `verbose_json` + word timestamps (ADR-0062) |
+| ASR (speed) | `mlx-community/whisper-large-v3-turbo-asr-fp16` (fleet `whisper-large-v3-turbo`) | `whisper` daemon (`:8099`, MLX) | 809M params, near-equal quality; one resident model at a time |
 | Enhancement | DeepFilterNet (denoise + dereverb) | PyTorch server (`:8089`, manifest `audio` daemon) | optional, ~8 MB, no gating |
 | Diarization | `pyannote/speaker-diarization-3.1` | PyTorch server (`:8089`, manifest `audio` daemon) | optional, gated HF model |
 
-### 1. Install the ASR toolchain
+### 1. Prerequisites
 
-`mlx-whisper` (via `uv`, Python 3.12) and `ffmpeg`:
+`ffmpeg` plus the fleet's `whisper` ASR daemon:
 
 ```bash
-brew install uv ffmpeg
-uv tool install mlx-whisper --python 3.12
+brew install ffmpeg
+# start the ASR daemon through the flaate control plane (not by hand):
+curl -s -X POST http://127.0.0.1:9300/start/whisper-large-v3
 ```
 
-`mlx_whisper` downloads weights on first run (to `HF_HOME`, see
-`macos-dev-config/inference-readme.md`). The converter never downloads models
-itself — it invokes `mlx_whisper` as a subprocess.
+The daemon is part of the machine's fleet manifest (`macos-dev-config/models.json`,
+`whisper` on `:8099`) and is installed with the shared `mlx-audio` uv tool — see
+`macos-dev-config/SERVING-MANIFEST.md`. Do **not** install `mlx-whisper`: the
+subprocess lane is gone (ADR-0062). Models download on first load to `HF_HOME`
+(the SSD; see `macos-dev-config/inference-readme.md`) and the launcher keeps at
+most one resident; `serve-whisper.sh warm [model]` preloads without inference.
 
 ### 2. (Optional) Serve the audio-model server
 
@@ -74,19 +78,30 @@ The service exposes four endpoints:
   (WPE dereverberation, pure NumPy, 16 kHz in/out).
 - `POST /v1/isolate` — `{"path": "<in>", "output": "<out>"}` → `{"ok": true}`
   (SepFormer voice isolation, 8 kHz in → 16 kHz out).
+- `POST /v1/asr` — `{"path": "<audio>", "language": "no", "return_words": bool}`
+  → segments (or per-word timestamps); the NB-Whisper route (ADR-0044).
 
-Reference servers ship in `scripts/` — `audio_server.py` (real) and
-`stub_audio_server.py` (no-PyTorch stand-in for testing). See
-[docs/runbook.md](runbook.md) for the full operational runbook.
+The MLX whisper models are a **separate fleet daemon** (`whisper`, `:8099`),
+not part of this server: it exposes the OpenAI-compatible
+`POST /v1/audio/transcriptions` (multipart; `response_format=verbose_json`,
+`word_timestamps`) and `GET /v1/models` (ADR-0062). `converter.audio.transcribe_fleet()`
+hides the two wire shapes.
 
-If the server is down, transcription still succeeds — dereverberation/enhancement
-degrades to the deterministic ffmpeg chain, isolation is skipped, and speaker
-labels are dropped.
+Reference servers ship in `scripts/` — `audio_server.py` (real),
+`stub_audio_server.py` and `stub_whisper_server.py` (no-model stand-ins for
+testing). See [docs/runbook.md](runbook.md) for the full operational runbook.
 
-The engine streams live progress over its WebSocket (ffmpeg/mlx-whisper output
-plus short phase frames), with a heartbeat during quiet phases such as the
-first-run model download. Only one transcription runs at a time: the engine
-holds an exclusive `flock` on
+If the audio server is down, preprocessing still succeeds — dereverberation and
+enhancement degrade to the deterministic ffmpeg chain, isolation is skipped,
+speaker labels are dropped, and NB-Whisper is unavailable. A down **ASR daemon**
+fails the job with a warning; there is no mlx-whisper fallback (ADR-0062).
+
+The engine streams live progress over its WebSocket (ffmpeg output plus short
+phase frames), with a heartbeat during the local subprocess phases. ASR itself
+is one HTTP call to a fleet daemon: progress is **phase-level only** there
+(`transcribing with <model> (fleet ASR) …`, then silence until the reply; the
+first request after a start also pays the model load). Only one transcription
+runs at a time: the engine holds an exclusive `flock` on
 `<PTM_STATE_DIR or ~/.local/state/ptm>/transcribe.lock`, and a second job is
 rejected while it runs. Output files are written atomically.
 
@@ -106,14 +121,14 @@ AUDIO_DIARIZE_ENABLED=1 AUDIO_DIARIZE_SPEAKERS=2 scripts/ptm-tui.sh
 
 # voice isolation / language hint / ASR model override
 AUDIO_ISOLATE_ENABLED=1 AUDIO_LANGUAGE=en scripts/ptm-tui.sh
-AUDIO_MODEL=mlx-community/whisper-large-v3-turbo scripts/ptm-tui.sh
+AUDIO_MODEL=whisper-large-v3-turbo scripts/ptm-tui.sh
 ```
 
 The audio pipeline is `ffmpeg clean → WPE dereverb → DeepFilterNet enhance →
-[SepFormer isolate] → mlx-whisper`. WPE dereverberation and enhancement both run
+[SepFormer isolate] → fleet ASR`. WPE dereverberation and enhancement both run
 whenever the server is up (default on); voice isolation is opt-in
 (`AUDIO_ISOLATE_ENABLED`) and, when enabled, writes a `<stem>.isolated.<N>.flac`
-that Whisper transcribes instead of the cleaned file.
+that ASR transcribes instead of the cleaned file.
 
 ### Speaker count
 
@@ -137,35 +152,38 @@ diarized turn, so heavy crosstalk/overlapping speech can still be mislabelled.
 ### Defaults and TUI control
 
 The default is `nb-whisper-large` — a Norwegian fine-tuned Whisper served by the
-audio server (`/v1/asr`, ADR-0044) that roughly halves Norwegian ASR errors; if
-that route is down it falls back to `mlx-whisper`
-(`mlx-community/whisper-large-v3-mlx`, the max-quality generic model) with a
-warning. Model, language, diarization, and the speaker count are persisted
-**settings** the TUI controls:
+audio server (`/v1/asr`, ADR-0044) that roughly halves Norwegian ASR errors.
+The MLX whisper models are served by the fleet's `whisper` daemon (`:8099`) over
+the OpenAI transcription endpoint with word timestamps (ADR-0062). A failed ASR
+call fails the job with a warning; there is no subprocess fallback. Model,
+language, diarization, and the speaker count are persisted **settings** the TUI
+controls:
 
 - In `ptm-tui`, the settings screen (`s`) shows `model`, `language`, `diarize`
   and `speakers` rows. Model cycles `nb-whisper (no)` → `large-v3 (max)` →
   `turbo (fast)`; language is a freeform edit where `auto` means auto-detect.
   Changes round-trip through the engine's `/api/config` (stored in
   `converter.settings`) and are applied to the next transcription job — no
-  restart needed (ADR-0043/0045).
+  restart needed (ADR-0043/0045/0062). Old persisted HF ids are aliased to the
+  fleet names on read and write.
 - Defaults: model `nb-whisper-large`, language `no`, diarize **on**, speakers
   `2` (interview-first). The `AUDIO_*` environment variables override them at
   engine launch.
-- NB-Whisper is Norwegian/English focused — pick an mlx-whisper model for other
-  languages.
+- NB-Whisper is Norwegian/English focused — pick `whisper-large-v3` (quality)
+  or `whisper-large-v3-turbo` (speed) for other languages. Start the daemon
+  first: `curl -X POST http://127.0.0.1:9300/start/whisper-large-v3`.
 
 ## Configuration
 
 | Var | Default | Purpose |
 | --- | --- | --- |
 | `AUDIO_ENABLED` | *(unset = off)* | Master switch — `1`/`true`/`yes`/`on` |
-| `AUDIO_MODEL` | `mlx-community/whisper-large-v3-mlx` | ASR model id. `nb-whisper-large` routes ASR through the audio server's NB-Whisper (`/v1/asr`, ADR-0044); `…-large-v3-turbo` for speed |
-| `AUDIO_MLX_WHISPER_BIN` | `mlx_whisper` | mlx-whisper CLI |
+| `AUDIO_MODEL` | `nb-whisper-large` | Fleet ASR model name: `nb-whisper-large` (audio server `/v1/asr`), `whisper-large-v3` (max quality) or `whisper-large-v3-turbo` (speed), the latter two on the fleet `whisper` daemon (ADR-0062). Old HF ids are aliased |
 | `AUDIO_FFMPEG_BIN` | `ffmpeg` | ffmpeg binary |
 | `AUDIO_LANGUAGE` | `no` | Whisper language hint (set to `auto` or empty for auto-detection) |
-| `AUDIO_HEARTBEAT_SECONDS` | `20` | Quiet-interval before a `still working …` heartbeat line |
-| `AUDIO_CONDITION_ON_PREVIOUS_TEXT` | *(unset = off)* | Feed prior output back as a prompt (off avoids the "log log log" repetition loop on long recordings) |
+| `AUDIO_HEARTBEAT_SECONDS` | `20` | Quiet-interval before a `still working …` heartbeat line (local subprocess phases) |
+| `WHISPER_BASE_URL` | manifest `whisper` daemon (`:8099/v1`) | Whisper daemon base URL override |
+| `WHISPER_API_KEY` | *(unset)* | Optional bearer token for the whisper daemon |
 | `AUDIO_PREPROCESS` | `1` | Gentle ffmpeg chain (DC/rumble removal + band-limit) — denoise/dereverb live in the server |
 | `AUDIO_DEREVERB_ENABLED` | `1` | WPE dereverberation via the audio server |
 | `AUDIO_ENHANCE_ENABLED` | `1` | DeepFilterNet denoise via the audio server |
@@ -175,8 +193,13 @@ warning. Model, language, diarization, and the speaker count are persisted
 | `AUDIO_DIARIZE_SPEAKERS` | *(unset = auto)* | Exact speaker count for pyannote; implies diarization, overrides min/max |
 | `AUDIO_DIARIZE_MIN_SPEAKERS` | *(unset = auto)* | Lower bound of the speaker-count range; implies diarization |
 | `AUDIO_DIARIZE_MAX_SPEAKERS` | *(unset = auto)* | Upper bound of the speaker-count range; implies diarization |
-| `AUDIO_DIARIZE_BASE_URL` | `http://127.0.0.1:8089/v1` | Audio server base URL |
-| `AUDIO_DIARIZE_API_KEY` | *(unset)* | Optional bearer token |
+| `AUDIO_DIARIZE_BASE_URL` | `http://127.0.0.1:8089/v1` | Audio server base URL (diarization + NB-Whisper) |
+| `AUDIO_DIARIZE_API_KEY` | *(unset)* | Optional bearer token for the audio server |
+
+`AUDIO_MLX_WHISPER_BIN` and `AUDIO_CONDITION_ON_PREVIOUS_TEXT` are gone with the
+subprocess lane (ADR-0062). The equivalent prompting knob now lives on the
+daemon: `WHISPER_CONDITION_ON_PREVIOUS_TEXT` (default off; see
+`macos-dev-config/SERVING-MANIFEST.md`).
 
 ## How the audio is found
 
@@ -210,7 +233,7 @@ Transcript Markdown (speaker omitted when diarization is off):
 # Transcript
 
 <details>
-<summary>Auto-generated transcript (mlx-community/whisper-large-v3-mlx)</summary>
+<summary>Auto-generated transcript (whisper-large-v3)</summary>
 
 [00:00:04] **Speaker A:** Welcome to today's lecture.
 [00:00:21] **Speaker A:** We'll cover three topics.
@@ -246,8 +269,12 @@ side by side and can be diffed.
   assignment, ADR-0042). Dual-stream isolation is a documented, deferred idea;
   for occasional overlap the NB-Whisper + diarization combo is the practical
   mitigation.
-- **Segment-level timestamps only** — word-level precision needs wav2vec2 forced
-  alignment, deferred to v2.
+- **The rendered transcript is segment/utterance-level.** Per-word timestamps
+  are requested from both ASR routes when diarizing (ADR-0045/0062), used to
+  assign speakers and split at pauses, but not rendered word by word.
+- **Beam re-decode is NB-Whisper only** — the OpenAI transcription form has no
+  beam-width field, so whisper models warn and skip the coverage re-decode pass
+  (ADR-0062).
 - **No per-slide alignment yet** — the transcript is timestamped, not placed
   under matching slides (ADR-0007).
 - Whisper can hallucinate on long silence/music; keep recordings clean, and

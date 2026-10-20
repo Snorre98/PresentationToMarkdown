@@ -1,6 +1,6 @@
 # 0009. Decouple transcription from conversion
 
-- Status: Amended by [0051](0051-tui-sole-surface.md)
+- Status: Amended by [0051](0051-tui-sole-surface.md), [0062](0062-asr-on-the-fleet-whisper-daemon.md)
 - Date: 2026-08-26
 
 ## Context

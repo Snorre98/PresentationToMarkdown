@@ -64,6 +64,22 @@ def test_engine_health(client):
     assert h["engine"] is True
 
 
+def test_engine_fleet_projection(client, monkeypatch):
+    """The settings modal reads one read-only projection (ADR-0063)."""
+    monkeypatch.setattr(
+        "converter.fleetview.snapshot",
+        lambda cfg: {
+            "daemon": {"url": "http://127.0.0.1:9300", "reachable": True},
+            "source": "fleet",
+            "services": [{"name": "text", "state": "up"}],
+            "other_models": 0,
+        },
+    )
+    r = client.get("/api/fleet").get_json()
+    assert r["source"] == "fleet"
+    assert r["services"][0]["name"] == "text"
+
+
 def test_create_app_imports_converter_eagerly(monkeypatch):
     """The lazy per-request import deadlocks under Flask's thread pool."""
     import engine
@@ -196,7 +212,8 @@ def test_engine_config_set_audio(client, monkeypatch):
             "audio_speakers": 0,
         },
     ).get_json()
-    assert stored["audio_model"] == "mlx-community/whisper-large-v3-turbo"
+    # Writes are canonicalized too, so the store never regains old HF ids.
+    assert stored["audio_model"] == "whisper-large-v3-turbo"
     assert stored["audio_language"] == "auto"
     assert stored["audio_diarize"] == "off"
     assert stored["audio_speakers"] == "0"
@@ -1053,6 +1070,34 @@ def test_transcribe_execute_streams_structured_frames(monkeypatch, tmp_path):
     assert "transcribe" in phases and "diarize" in phases
     done = next(m for m in ws.sent if m["type"] == "done")
     assert done["ok"] == 1 and done["total"] == 1
+
+
+def test_transcribe_execute_failure_is_not_counted_ok(monkeypatch):
+    """A dead ASR daemon yields a warning and ok=0, with no fallback lane."""
+    import threading
+
+    import converter.transcribe as T
+    import engine
+
+    monkeypatch.setattr(engine, "_job_running", threading.Event())
+    monkeypatch.setattr(engine, "_apply_audio_options", lambda options: None)
+    fake_lock = type("_L", (), {"held": True, "release": lambda self: None})()
+    monkeypatch.setattr("lock.acquire_transcribe_lock", lambda: fake_lock)
+
+    def fake_attach(md, warnings, audio_path=None, on_line=None, **kw):
+        warnings.append("Audio transcription failed: whisper daemon down")
+        return None
+
+    monkeypatch.setattr(T, "attach_transcript", fake_attach)
+    ws = _RecordingWS()
+    engine._transcribe_execute(ws, ["/tmp/deck.md"], {"model": "whisper-large-v3"})
+
+    done = next(m for m in ws.sent if m["type"] == "done")
+    assert done["ok"] == 0 and done["total"] == 1
+    assert any(
+        m["type"] == "log" and m.get("kind") == "warn" and "whisper daemon down" in m["message"]
+        for m in ws.sent
+    )
 
 
 def test_transcribe_execute_rejects_when_lock_held(monkeypatch):

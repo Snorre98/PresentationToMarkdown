@@ -1,6 +1,7 @@
 # 0043. Quality-first ASR defaults, engine-backed transcription settings
 
-- Status: Accepted
+- Status: Accepted; amended by [0062](0062-asr-on-the-fleet-whisper-daemon.md)
+  (fleet model names, `nb-whisper-large` is now also the library/CLI default)
 - Date: 2026-09-22
 - Relates to: [0005](0005-asr-engine-and-model.md), [0041](0041-tui-transcription.md), [0042](0042-multi-speaker-diarization.md)
 
@@ -32,8 +33,12 @@ transcription settings into the engine-backed settings store.
 
 ### 1. Library defaults (ADR-0005 amended)
 
-- `AUDIO_MODEL` default → `mlx-community/whisper-large-v3-mlx` (the quality
-  ceiling; `…-large-v3-turbo` becomes the speed override).
+- `AUDIO_MODEL` default → `nb-whisper-large` (the Norwegian-first machine
+  default; `whisper-large-v3` is the max-quality override and
+  `whisper-large-v3-turbo` the speed override). **Amended by ADR-0062**: the
+  values are fleet model names, not HF repo ids; the old
+  `mlx-community/whisper-large-v3-mlx` default is aliased to
+  `whisper-large-v3`.
 - `AUDIO_LANGUAGE` default → `no`; an empty/`auto` value means auto-detect.
   This is a deliberate project-wide default (the owner's content is Norwegian);
   it is overridable via `AUDIO_LANGUAGE`, `--language`, or the TUI.
@@ -41,9 +46,10 @@ transcription settings into the engine-backed settings store.
 ### 2. Engine-backed transcription settings
 
 - Four new keys in `converter.settings` (the SQLite `meta` KV store, same as
-  the GUI/web preferences): `audio_model` (default
-  `mlx-community/whisper-large-v3-mlx`), `audio_language` (default `no`),
-  `audio_diarize` (default `on`), `audio_speakers` (default `2`).
+  the GUI/web preferences): `audio_model` (default `nb-whisper-large` — see
+  ADR-0062; originally `mlx-community/whisper-large-v3-mlx`),
+  `audio_language` (default `no`), `audio_diarize` (default `on`),
+  `audio_speakers` (default `2`).
 - `converter.config.snapshot()` exposes them (`audio_model`/`audio_language`/
   `audio_diarize`/`audio_speakers`); the engine `/api/config` GET/POST reads and
   writes them via `set_setting` (speakers sanitised to `>= 0`).

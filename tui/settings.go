@@ -1,18 +1,20 @@
 package main
 
 // settings.go — the settings modal: AI feature toggles, output preferences,
-// transcription settings (ADR-0043) and live model-server health. Every change
-// round-trips through the engine's /api/config so it persists in the shared
-// settings store (converter.settings).
+// transcription settings (ADR-0043) and live fleet availability (ADR-0063).
+// Every change round-trips through the engine's /api/config so it persists in
+// the shared settings store (converter.settings).
 
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 )
 
 var featureOrder = []string{"vision", "classify", "interpret", "format", "summary", "structure"}
@@ -21,13 +23,14 @@ var featureOrder = []string{"vision", "classify", "interpret", "format", "summar
 // overwrite, duplicate, diarize, speakers, model, language, output_dir.
 const settingsExtraRows = 10
 
-// audioModels is the cycle of ASR models the TUI offers (ADR-0043/0044). The
-// first is the machine default: NB-Whisper (Norwegian, routed through the audio
-// server's /v1/asr).
+// audioModels is the cycle of fleet ASR model names the TUI offers
+// (ADR-0043/0044/0062). The first is the machine default: NB-Whisper
+// (Norwegian, audio server /v1/asr); the whisper models are served by the
+// fleet's `whisper` daemon.
 var audioModels = []string{
-	"nb-whisper-large",                     // norwegian (audio server ASR)
-	"mlx-community/whisper-large-v3-mlx",   // max quality (mlx-whisper)
-	"mlx-community/whisper-large-v3-turbo", // speed (mlx-whisper)
+	"nb-whisper-large",       // norwegian (audio server ASR)
+	"whisper-large-v3",       // max quality (fleet whisper daemon)
+	"whisper-large-v3-turbo", // speed (fleet whisper daemon)
 }
 
 type editField int
@@ -39,17 +42,17 @@ const (
 	editSpeakers
 )
 
-type serversMsg struct {
-	res ServersResult
+type fleetMsg struct {
+	res FleetResult
 	err error
 }
 
-func (m *model) fetchServers() tea.Cmd {
+func (m *model) fetchFleet() tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
-		res, err := m.client.Servers(ctx)
-		return serversMsg{res, err}
+		res, err := m.client.Fleet(ctx)
+		return fleetMsg{res, err}
 	}
 }
 
@@ -90,7 +93,7 @@ func modelShort(id string) string {
 	if id == "nb-whisper-large" {
 		return "nb-whisper (no)"
 	}
-	if strings.HasSuffix(id, "whisper-large-v3-turbo") {
+	if id == "whisper-large-v3-turbo" {
 		return "turbo (fast)"
 	}
 	return "large-v3 (max)"
@@ -189,7 +192,7 @@ func (m *model) updateSettings(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.setCursor++
 		}
 	case "r":
-		return m, m.fetchServers()
+		return m, m.fetchFleet()
 	case "e":
 		return m.activateSetting(true)
 	case "enter", " ", "space":
@@ -262,13 +265,16 @@ func (m *model) activateSetting(editOnly bool) (tea.Model, tea.Cmd) {
 		m.editing = editSpeakers
 		m.editBuf = strconv.Itoa(m.cfg.AudioSpeakers)
 		return m, nil
-	case 7: // model — cycle between the bundled ASR models
+	case 7: // model — cycle between the fleet ASR models
 		if editOnly {
 			return m, nil
 		}
 		next := audioModels[0]
-		if m.cfg.AudioModel == audioModels[0] {
-			next = audioModels[1]
+		for i, name := range audioModels {
+			if m.cfg.AudioModel == name {
+				next = audioModels[(i+1)%len(audioModels)]
+				break
+			}
 		}
 		m.cfg.AudioModel = next
 		return m, m.saveConfig(ConfigUpdate{AudioModel: &next})
@@ -334,6 +340,10 @@ func (m *model) renderSettingsBox(width, height int) string {
 	for i := 0; i < m.settingsRows(); i++ {
 		label := m.settingsLabel(i)
 		val := m.settingsValue(i)
+		if i < len(featureOrder) {
+			glyph, style := m.featureAvailability(featureOrder[i])
+			val += " " + style.Render(glyph)
+		}
 		line := fmt.Sprintf("%-16s %s", label, val)
 		if i == m.setCursor {
 			line = th.cursor.Render("> ") + fmt.Sprintf("%-16s %s", label, val)
@@ -345,30 +355,141 @@ func (m *model) renderSettingsBox(width, height int) string {
 	}
 
 	b.WriteString("\n")
-	b.WriteString(truncate(th.subtle.Render("↑/↓ move · space toggle · e edit · r refresh servers · esc close"), inner))
+	b.WriteString(truncate(th.subtle.Render("↑/↓ move · space toggle · e edit · r refresh fleet · esc close"), inner))
 	b.WriteString("\n")
-
-	if len(m.servers) > 0 || len(m.missingServers) > 0 {
-		b.WriteString("\n")
-		b.WriteString(th.bold.Render("model servers"))
-		b.WriteString("\n")
-		shown := map[string]bool{}
-		for _, s := range m.servers {
-			glyph, style := "●", th.ok
-			if !s.Up {
-				glyph, style = "○", th.err
-			}
-			shown[s.Name] = true
-			b.WriteString(truncate(fmt.Sprintf("  %s %-18s %s", style.Render(glyph), s.Name, th.subtle.Render(s.URL)), inner))
+	b.WriteString("\n")
+	b.WriteString(truncate(m.fleetHeader(), inner))
+	b.WriteString("\n")
+	if !m.fleetAt.IsZero() {
+		for _, s := range m.fleetRows() {
+			glyph, style := fleetGlyph(s.State)
+			line := fmt.Sprintf(
+				"  %s %-18s %-5s %s",
+				style.Render(glyph),
+				s.Name,
+				s.State,
+				th.subtle.Render(serviceDetail(s)),
+			)
+			b.WriteString(truncate(line, inner))
 			b.WriteString("\n")
 		}
-		for _, s := range m.missingServers {
-			if shown[s.Name] {
-				continue
-			}
-			b.WriteString(truncate(fmt.Sprintf("  %s %-18s %s", th.err.Render("○"), s.Name, th.subtle.Render(s.URL)), inner))
-			b.WriteString("\n")
-		}
+		b.WriteString(truncate(th.subtle.Render(m.fleetSummary()), inner))
+		b.WriteString("\n")
 	}
 	return th.box.Render(strings.TrimRight(b.String(), "\n"))
+}
+
+// featureAvailability is the worst state among a feature's servers: all up ●,
+// transitional ◌, any down ○. "…" until the first fleet response arrives.
+func (m *model) featureAvailability(key string) (string, lipgloss.Style) {
+	if m.fleetAt.IsZero() {
+		return "…", th.subtle
+	}
+	found := false
+	worst := 0
+	for _, s := range m.fleet.Services {
+		if !slices.Contains(s.Features, key) {
+			continue
+		}
+		found = true
+		switch s.State {
+		case "up":
+		case "starting", "stopping", "provisioning":
+			if worst < 1 {
+				worst = 1
+			}
+		default:
+			worst = 2
+		}
+	}
+	if !found {
+		return "…", th.subtle
+	}
+	switch worst {
+	case 0:
+		return "●", th.ok
+	case 1:
+		return "◌", th.warn
+	default:
+		return "○", th.err
+	}
+}
+
+// fleetGlyph maps a flaate state to the availability glyph (ADR-0063).
+func fleetGlyph(state string) (string, lipgloss.Style) {
+	switch state {
+	case "up":
+		return "●", th.ok
+	case "starting", "stopping", "provisioning":
+		return "◌", th.warn
+	default:
+		return "○", th.err
+	}
+}
+
+// serviceDetail renders the roles a fleet row serves, marking the ASR target
+// and the rows the current toggles need.
+func serviceDetail(s FleetService) string {
+	var detail string
+	switch {
+	case s.Selected && s.Name == "audio":
+		detail = "ASR nb-whisper (selected)"
+	case s.Selected:
+		detail = "ASR (selected)"
+	case slices.Contains(s.Roles, "audio") || slices.Contains(s.Roles, "nb-whisper-large") ||
+		strings.HasPrefix(s.Name, "whisper-"):
+		detail = "ASR"
+	default:
+		detail = strings.Join(s.Roles, " · ")
+	}
+	if s.Needed {
+		detail += " · needed"
+	}
+	return detail
+}
+
+func (m *model) fleetHeader() string {
+	if m.fleetAt.IsZero() {
+		if m.fleetErr != "" {
+			return th.err.Render("fleet: " + truncate(m.fleetErr, 40))
+		}
+		return th.subtle.Render("fleet (checking…)")
+	}
+	if m.fleetErr != "" {
+		return th.bold.Render("fleet") + " " + th.warn.Render("(refresh failed)")
+	}
+	if m.fleet.Source == "static" || !m.fleet.Daemon.Reachable {
+		return th.warn.Render("fleet (flaate ✗ static probes)")
+	}
+	return th.bold.Render("fleet") + " " + th.ok.Render("(flaate ●)")
+}
+
+// fleetRows is the PtM-consumable subset: manifest models that serve no PtM
+// role stay out of the settings modal (they are the "+N other models" count).
+func (m *model) fleetRows() []FleetService {
+	rows := make([]FleetService, 0, len(m.fleet.Services))
+	for _, s := range m.fleet.Services {
+		if len(s.Roles) == 0 {
+			continue
+		}
+		rows = append(rows, s)
+	}
+	return rows
+}
+
+func (m *model) fleetSummary() string {
+	rows := m.fleetRows()
+	up := 0
+	for _, s := range rows {
+		if s.State == "up" {
+			up++
+		}
+	}
+	return fmt.Sprintf(
+		"  %d/%d up · +%d other models · as of %s",
+		up,
+		len(rows),
+		m.fleet.OtherModels,
+		m.fleetAt.Format("15:04"),
+	)
 }

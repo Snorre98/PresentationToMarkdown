@@ -1,7 +1,7 @@
 # Whisper on the fleet — implementation plan
 
 Date: 2026-10-19
-Status: planned (owner decisions locked)
+Status: done (2026-10-19; one deviation recorded in "Outcome" below)
 Scope: macos-dev-config manifest + wrapper, PresentationToMarkdown client/cutover
 
 ## Decisions
@@ -400,14 +400,36 @@ Check:
 
 ## Checklist
 
-- [ ] Phase 1.1 launcher + docs
-- [ ] Phase 1.2 `serve-whisper.sh`
-- [ ] Phase 1.3 manifest (committed + live) + flaate restart
-- [ ] Phase 1.4 smoke test + list shows both models
-- [ ] Phase 2.1 `converter/audio.py` registry + OpenAI multipart client
-- [ ] Phase 2.2 `converter/transcribe.py` routing; delete subprocess lane
-- [ ] Phase 2.3 settings migration + TUI cycle
-- [ ] Phase 2.4 tests (unit, stub, integration gate)
-- [ ] Phase 2.5 ADR-0062 + amendments + docs
-- [ ] Phase 2.6 full pytest + TUI 2-speaker English run
-- [ ] Update this file's status to done
+- [x] Phase 1.1 launcher + docs
+- [x] Phase 1.2 `serve-whisper.sh`
+- [x] Phase 1.3 manifest (committed + live) + flaate restart
+- [x] Phase 1.4 smoke test + list shows both models
+- [x] Phase 2.1 `converter/audio.py` registry + OpenAI multipart client
+- [x] Phase 2.2 `converter/transcribe.py` routing; delete subprocess lane
+- [x] Phase 2.3 settings migration + TUI cycle
+- [x] Phase 2.4 tests (unit, stub, integration gate)
+- [x] Phase 2.5 ADR-0062 + amendments + docs
+- [x] Phase 2.6 full pytest + engine/TUI 2-speaker English run
+- [x] Update this file's status to done
+
+## Outcome (2026-10-19)
+
+**Deviation — HF repo ids.** The plan named
+`mlx-community/whisper-large-v3-mlx` and
+`mlx-community/whisper-large-v3-turbo`. Those are weights-only mlx-whisper
+conversions: mlx-audio 0.5.9's whisper loader needs a Hugging Face processor in
+the same repo for its tokenizer and fails with
+`ValueError: Processor not found`. The daemon now serves mlx-audio's documented
+`mlx-community/whisper-large-v3-asr-fp16` and
+`mlx-community/whisper-large-v3-turbo-asr-fp16`; the fleet model names
+(`whisper-large-v3`, `whisper-large-v3-turbo`) and all contracts are unchanged.
+The old HF ids remain accepted as aliases in PtM settings.
+
+**Verification summary.** Both models served with `verbose_json` segments +
+word timestamps; FIFO eviction keeps one resident; flaate `list` shows both
+models with their `modelId`; PtM's engine/WS 2-speaker English run produced
+`SPEAKER_00`/`SPEAKER_01` and matched SRT timestamps; stopping the whisper
+daemon produced a loud `Connection refused` warning, no transcript, and
+`ok=0`; deterministic PPTX conversion is unaffected. Full pytest: 534 passed,
+1 skipped, 2 environment-only failures in `tests/test_audio_serve.py`
+(`nohup` cannot detach a child in the sandbox used for this run).

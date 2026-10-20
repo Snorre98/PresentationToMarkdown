@@ -4,9 +4,10 @@ Turns a lecture recording into a timestamped, speaker-labelled transcript and
 attaches it to an existing Markdown file, or writes it to a fresh
 ``<stem>.transcript.md`` when no Markdown exists yet. Local only: the audio is
 cleaned (deterministic ffmpeg chain + optional DeepFilterNet denoise/dereverb)
-and persisted as a ``<stem>.clean.flac``, then transcribed by **mlx-whisper** run
-as a subprocess, so ``converter`` stays free of MLX. Speaker labelling (optional)
-comes from a separate diarization service (see ``converter.audio``, ADR-0006/0008).
+and persisted as a ``<stem>.clean.flac``, then transcribed by the fleet's
+``whisper`` daemon (MLX) or the audio server's NB-Whisper route (ADR-0062), so
+``converter`` stays free of MLX and PyTorch. Speaker labelling (optional) comes
+from the audio server's diarization endpoint (ADR-0006/0008).
 
 This module is **not** part of the conversion pipeline: ``convert_file``/``convert_files``
 never call into it (ADR-0009). It operates on Markdown and/or audio directly and
@@ -15,12 +16,10 @@ is driven by the engine's transcription job (ADR-0045).
 Configuration (environment variables):
 
 - ``AUDIO_ENABLED`` — master switch. Default off.
-- ``AUDIO_MODEL`` — ASR model id, default
-  ``mlx-community/whisper-large-v3-mlx`` (max quality; override to
-  ``…-large-v3-turbo`` for speed). Set to ``nb-whisper-large`` to route ASR
-  through the audio server's NB-Whisper route instead (``/v1/asr``, ADR-0044);
-  if that route fails, transcription falls back to ``mlx_whisper``.
-- ``AUDIO_MLX_WHISPER_BIN`` — mlx-whisper CLI, default ``mlx_whisper``.
+- ``AUDIO_MODEL`` — ASR fleet model name, default ``nb-whisper-large``
+  (Norwegian-first, audio server). ``whisper-large-v3`` (max quality) and
+  ``whisper-large-v3-turbo`` (speed) are served by the fleet's ``whisper``
+  daemon; old mlx-whisper HF ids are aliased to these names (ADR-0062).
 - ``AUDIO_FFMPEG_BIN`` — ffmpeg binary, default ``ffmpeg``.
 - ``AUDIO_LANGUAGE`` — Whisper language hint (default ``no``; set to ``auto`` /
   empty for auto-detection).
@@ -37,7 +36,6 @@ Configuration (environment variables):
 """
 from __future__ import annotations
 
-import json
 import os
 import queue
 import subprocess
@@ -49,6 +47,7 @@ from pathlib import Path
 from typing import Callable
 
 from converter.audio import (
+    ASR_MODELS,
     AUDIO_DEREVERB_ENABLED,
     AUDIO_ENHANCE_ENABLED,
     AUDIO_ISOLATE_ENABLED,
@@ -61,6 +60,8 @@ from converter.audio import (
     diarize_requested,
     enhance,
     isolate,
+    normalize_audio_model,
+    transcribe_fleet,
     vad,
 )
 from converter.logstore import record_segment
@@ -77,22 +78,19 @@ AUDIO_PREPROCESS = os.environ.get("AUDIO_PREPROCESS", "1").strip().lower() in {
     "yes",
     "on",
 }
-DEFAULT_MLX_MODEL = "mlx-community/whisper-large-v3-mlx"
-
-# When ``AUDIO_MODEL`` is this sentinel, transcription runs on the audio server's
-# NB-Whisper route (``/v1/asr``, ADR-0044) instead of the ``mlx_whisper``
-# subprocess. The server owns the actual HF model id; ``converter`` only knows
-# the routing sentinel.
-AUDIO_ASR_SERVER_SENTINEL = "nb-whisper-large"
-
-AUDIO_MODEL = os.environ.get("AUDIO_MODEL", DEFAULT_MLX_MODEL)
-AUDIO_MLX_WHISPER_BIN = os.environ.get("AUDIO_MLX_WHISPER_BIN", "mlx_whisper")
+AUDIO_MODEL = normalize_audio_model(os.environ.get("AUDIO_MODEL", "nb-whisper-large"))
 AUDIO_FFMPEG_BIN = os.environ.get("AUDIO_FFMPEG_BIN", "ffmpeg")
 AUDIO_FFPROBE_BIN = os.environ.get("AUDIO_FFPROBE_BIN", "ffprobe")
 AUDIO_LANGUAGE = os.environ.get("AUDIO_LANGUAGE", "no").strip().lower()
 AUDIO_LANGUAGE = None if not AUDIO_LANGUAGE or AUDIO_LANGUAGE == "auto" else AUDIO_LANGUAGE
 AUDIO_TIMEOUT = float(os.environ.get("AUDIO_TIMEOUT", "3600"))
 AUDIO_HEARTBEAT_SECONDS = float(os.environ.get("AUDIO_HEARTBEAT_SECONDS", "20"))
+
+
+def _current_model() -> str:
+    """Canonical fleet ASR model for the current module-level settings (ADR-0062)."""
+    return normalize_audio_model(AUDIO_MODEL)
+
 
 # Coverage + fallback re-decode (ADR-0045). ``AUDIO_COVERAGE_ENABLED`` runs a VAD
 # round-trip after transcription and warns about speech spans with no words —
@@ -123,15 +121,6 @@ AUDIO_GUIDE_ENABLED = os.environ.get("AUDIO_GUIDE_ENABLED", "").strip().lower() 
     "on",
 }
 AUDIO_GUIDE_PATH = os.environ.get("AUDIO_GUIDE_PATH", "")
-
-# mlx-whisper's default (``--condition-on-previous-text True``) feeds the previous
-# window's text back as a prompt, which triggers the classic repetition-loop
-# hallucination ("log log log …") on long recordings. We disable it by default;
-# set ``AUDIO_CONDITION_ON_PREVIOUS_TEXT=1`` to re-enable it for smoother
-# cross-window continuity at the cost of possible loops.
-AUDIO_CONDITION_ON_PREVIOUS_TEXT = os.environ.get(
-    "AUDIO_CONDITION_ON_PREVIOUS_TEXT", "0"
-).strip().lower() in {"1", "true", "yes", "on"}
 
 # Deterministic speech-enhancement chain for lecture-hall audio (ADR-0008).
 # Kept deliberately gentle: only DC/rumble removal + band-limiting. The old
@@ -515,7 +504,6 @@ def transcribe_audio(
     clean_path: Path,
     model: str | None = None,
     language: str | None = None,
-    mlx_bin: str | None = None,
     ffmpeg_bin: str | None = None,
     timeout: float = AUDIO_TIMEOUT,
     warnings: list[str] | None = None,
@@ -523,24 +511,27 @@ def transcribe_audio(
     heartbeat: float | None = None,
     return_words: bool = False,
 ) -> list[dict]:
-    """Enhance ``audio_path``, persist it as a FLAC, and transcribe it.
+    """Enhance ``audio_path``, persist it as a FLAC, and transcribe it on the fleet.
 
     The cleaned audio is written to ``clean_path`` (16 kHz mono FLAC) — first by
     the deterministic ffmpeg chain, then dereverberated (WPE) and upgraded by
     DeepFilterNet when those steps are enabled and the server is up. With
     ``AUDIO_ISOLATE_ENABLED``, a voice-isolated ``<stem>.isolated.flac`` is also
-    produced and that is what Whisper transcribes (each failure only warns).
+    produced and that is what ASR transcribes (each failure only warns).
 
-    ``return_words`` requests per-word timestamps from the *server* ASR lane
-    (ADR-0045); it is ignored on the mlx-whisper fallback, which always yields
-    segments. The returned list is ``[{start, end, text}, ...]`` either way.
+    ``model`` overrides the module-level ``AUDIO_MODEL`` for this call (a fleet
+    name; old mlx-whisper HF ids are aliased — ADR-0062). ``return_words``
+    requests per-word timestamps, which both ASR routes support (ADR-0045); the
+    returned list is ``[{start, end, text}, ...]`` either way.
 
-    ``on_line`` (optional) receives raw subprocess output plus short phase lines
-    as they happen; ``heartbeat`` overrides the quiet-interval before a
-    ``still working …`` line.
+    ``on_line`` (optional) receives ffmpeg output plus short phase lines as they
+    happen; ``heartbeat`` overrides the quiet-interval for those subprocess
+    phases. The ASR call itself is phase-level only (the server exposes no
+    incremental transcript).
 
     Returns ``[{start, end, text}, ...]`` (seconds, verbatim text). Raises on any
-    fatal subprocess failure so callers can degrade gracefully.
+    fatal ffmpeg/ASR failure — there is no subprocess fallback; callers decide
+    whether to warn or fail.
     """
     stream_kw: dict = {}
     if on_line is not None:
@@ -597,69 +588,19 @@ def transcribe_audio(
             if warnings is not None:
                 warnings.append(f"Voice isolation failed: {exc}; using unisolated audio")
 
-    use_server_asr = AUDIO_MODEL == AUDIO_ASR_SERVER_SENTINEL
-
-    if use_server_asr:
-        if on_line is not None:
-            on_line(f"transcribing with {AUDIO_MODEL} (audio server) …\n")
-        try:
-            lang = language or AUDIO_LANGUAGE or "no"
-            # Resolve to an absolute path: the audio server runs from a
-            # different cwd and cannot open a relative ``target``.
-            return asr(str(target.resolve()), language=lang, timeout=timeout, return_words=return_words)
-        except Exception as exc:  # noqa: BLE001 - degrade to the mlx-whisper fallback
-            if warnings is not None:
-                warnings.append(
-                    f"Server ASR ({AUDIO_MODEL}) failed: {exc}; falling back to mlx-whisper"
-                )
-
+    effective_model = normalize_audio_model(model or AUDIO_MODEL)
     if on_line is not None:
-        on_line(f"transcribing with {mlx_bin or AUDIO_MLX_WHISPER_BIN} …\n")
-
-    with tempfile.TemporaryDirectory(prefix="ptm-audio-") as tmp:
-        tmpdir = Path(tmp)
-        cmd = [
-            mlx_bin or AUDIO_MLX_WHISPER_BIN,
-            str(target),
-            "--model", (model or AUDIO_MODEL) if not use_server_asr else DEFAULT_MLX_MODEL,
-            "--output-format", "json",
-            "--output-dir", str(tmpdir),
-        ]
-        if not AUDIO_CONDITION_ON_PREVIOUS_TEXT:
-            cmd += ["--condition-on-previous-text", "False"]
-        lang = language or AUDIO_LANGUAGE
-        if lang:
-            cmd += ["--language", lang]
-        whisper_out = _run(cmd, timeout=timeout, **stream_kw)
-        # mlx-whisper's writer does `Path(output_name).with_suffix(".json")`, which
-        # re-interprets dots in the stem (``week-2.clean.flac`` -> ``week-2.json``),
-        # so we can't predict the exact name — glob the (fresh, single-file) dir.
-        json_files = sorted(tmpdir.glob("*.json"))
-        if not json_files:
-            # mlx-whisper exits 0 even when transcription fails (it prints
-            # "Skipping <audio> due to <exc>" + a traceback and moves on), so a
-            # missing JSON is the only reliable signal — surface its output.
-            tail = [ln.strip() for ln in (whisper_out or "").splitlines() if ln.strip()][-15:]
-            detail = "\n  ".join(tail) if tail else "(no output captured)"
-            raise RuntimeError(
-                f"{AUDIO_MLX_WHISPER_BIN} produced no output for {target.name} "
-                f"(it likely failed and exited 0):\n  {detail}"
-            )
-        data = json.loads(json_files[0].read_text(encoding="utf-8"))
-
-    segments: list[dict] = []
-    for seg in data.get("segments", []):
-        text = (seg.get("text") or "").strip()
-        if not text:
-            continue
-        segments.append(
-            {
-                "start": float(seg.get("start", 0.0)),
-                "end": float(seg.get("end", 0.0)),
-                "text": text,
-            }
-        )
-    return segments
+        on_line(f"transcribing with {effective_model} (fleet ASR) …\n")
+    lang = language or AUDIO_LANGUAGE or "no"
+    # Absolute path: the ASR daemon runs in another process/cwd and cannot open
+    # a relative ``target``.
+    return transcribe_fleet(
+        str(target.resolve()),
+        model=effective_model,
+        language=lang,
+        word_timestamps=return_words,
+        timeout=timeout,
+    )
 
 
 def format_timestamp(seconds: float) -> str:
@@ -750,7 +691,7 @@ def merge_utterances(
 
 def segments_to_markdown(segments: list[dict], model: str | None = None) -> str:
     """Render timestamped segments as a Markdown ``# Transcript`` section."""
-    lines = ["# Transcript", "", "<details>", f"<summary>Auto-generated transcript ({model or AUDIO_MODEL})</summary>", ""]
+    lines = ["# Transcript", "", "<details>", f"<summary>Auto-generated transcript ({model or _current_model()})</summary>", ""]
     for seg in merge_utterances(segments):
         ts = format_timestamp(seg["start"])
         text = seg["text"].strip()
@@ -842,11 +783,26 @@ def redecode_windows(
     """Re-decode low-coverage windows with beam search; return replacement segments.
 
     Each window is sliced from ``clean_path`` with ffmpeg and re-POSTed to the
-    server ASR with ``AUDIO_REDECODE_BEAMS``; returned segments are shifted back
-    into the original timeline. Best-effort: a failed window only appends a
-    warning and yields nothing for that window.
+    audio server's NB-Whisper ASR with ``AUDIO_REDECODE_BEAMS``; returned
+    segments are shifted back into the original timeline. Best-effort: a failed
+    window only appends a warning and yields nothing for that window.
+
+    Beam re-decode is **NB-Whisper only** (ADR-0062): the OpenAI transcription
+    form the whisper daemon serves has no beam-width field. For whisper models
+    this appends one warning and skips, leaving the transcript unchanged.
     """
     warnings = warnings if warnings is not None else []
+    model_name = _current_model()
+    spec = ASR_MODELS.get(model_name)
+    if spec is None or spec.protocol != "audio_json":
+        message = (
+            "Fallback re-decode is NB-Whisper only; skipping for "
+            f"{model_name} (the whisper daemon exposes no beam width)"
+        )
+        warnings.append(message)
+        if on_line is not None:
+            on_line(f"[WARN] {message}\n")
+        return []
     out: list[dict] = []
     for window in windows:
         w_start = window["start"]
@@ -906,14 +862,14 @@ def _transcribe(
 
     Persists the cleaned audio to ``clean_path``, records every segment to
     ``ptm.sqlite`` under ``source``, and returns the segment list. Diarization
-    failure only warns; any fatal subprocess failure is raised to the caller.
+    failure only warns; any fatal ffmpeg/ASR failure is raised to the caller.
 
-    When diarization is requested and the server ASR lane is in use, per-word
-    timestamps are requested so speakers are assigned per word and utterances
-    re-derived at speaker/pause boundaries (ADR-0045); otherwise the coarser
-    segment-level overlap assignment runs.
+    When diarization is requested, per-word timestamps are requested so speakers
+    are assigned per word and utterances re-derived at speaker/pause boundaries
+    (ADR-0045); both ASR routes return words now (ADR-0062). Otherwise the
+    coarser segment-level overlap assignment runs.
     """
-    want_words = diarize_requested() and AUDIO_MODEL == AUDIO_ASR_SERVER_SENTINEL
+    want_words = diarize_requested()
     segments = transcribe_audio(
         audio_path,
         clean_path,
@@ -953,7 +909,7 @@ def _transcribe(
             end=seg["end"],
             text=seg["text"],
             speaker=seg.get("speaker"),
-            model=AUDIO_MODEL,
+            model=_current_model(),
         )
     return segments
 

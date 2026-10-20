@@ -1,6 +1,9 @@
 # 0008. Enhance lecture-hall audio before ASR and persist a cleaned FLAC
 
-- Status: Accepted
+- Status: Accepted; the ASR lane is superseded by
+  [0062](0062-asr-on-the-fleet-whisper-daemon.md) (the
+  `condition_on_previous_text=False` requirement still applies, now patched
+  into the whisper daemon)
 - Date: 2026-08-26
 
 ## Context
