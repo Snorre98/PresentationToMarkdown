@@ -1,12 +1,16 @@
 # 0065. AI capability labels and the resolved requirements projection
 
-- Status: Accepted
+- Status: Accepted (amended by [0066](0066-ai-setup-control-surface.md): the AI toggles moved from settings to the `a` view)
 - Date: 2026-10-20
 - Relates to: [0012](0012-runtime-ai-features.md),
   [0029](0029-serving-via-control-daemon.md),
   [0062](0062-asr-on-the-fleet-whisper-daemon.md),
   [0063](0063-fleet-service-availability-in-tui.md),
   [0064](0064-fleet-model-identity-key-name-tags.md)
+
+> **Amended by [0066](0066-ai-setup-control-surface.md):** `a` is no longer
+> read-only. It owns the AI toggles, descriptions, requirements and start
+> commands; `s` holds output and audio preferences only.
 
 ## Context
 

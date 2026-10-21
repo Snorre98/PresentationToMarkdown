@@ -164,38 +164,57 @@ FEATURES: dict[str, Feature] = {
         key="vision",
         label="Vision transcription",
         env_var="VISION_ENABLED",
-        description="Transcribe images, diagrams and charts that appear as pictures",
+        description=(
+            "Reads images, diagrams and charts and turns them into Markdown "
+            "text or a short description."
+        ),
     ),
     "classify": Feature(
         key="classify",
         label="Image classifier",
         env_var="VISION_CLASSIFY_ENABLED",
-        description="Skip decorative images before vision transcription (implies vision)",
+        description=(
+            "Decides which images are worth reading and skips photos, logos "
+            "and backgrounds before vision runs. Turning it on also enables "
+            "Vision transcription."
+        ),
         implies=("vision",),
     ),
     "interpret": Feature(
         key="interpret",
         label="Diagram interpretation",
         env_var="INTERPRET_ENABLED",
-        description="Extract typed relationships and meaning from diagrams",
+        description=(
+            "Reads the relationships a diagram asserts (for example, A "
+            "supports B) and adds a plain-language explanation."
+        ),
     ),
     "format": Feature(
         key="format",
         label="Markdown restructure",
         env_var="FORMAT_ENABLED",
-        description="Reflow wrapped lines and promote heading-like bullets with a local model",
+        description=(
+            "Rejoins wrapped lines and promotes heading-like bullets to "
+            "headings; a word check rejects any change that drops content."
+        ),
     ),
     "summary": Feature(
         key="summary",
         label="Presentation summary",
         env_var="SUMMARY_ENABLED",
-        description="Prepend a standardized per-presentation summary header",
+        description=(
+            "Adds a summary header with abstract, key topics, takeaways and "
+            "key terms to each converted file."
+        ),
     ),
     "structure": Feature(
         key="structure",
         label="Paper structure",
         env_var="STRUCTURE_ENABLED",
-        description="Improve the structure of paper-mode PDFs (paper PDFs only)",
+        description=(
+            "Fixes titles, headings, column order and footnotes in paper-mode "
+            "PDFs and rewords unreadable pages; no effect in slide mode."
+        ),
         scope="paper",
     ),
 }

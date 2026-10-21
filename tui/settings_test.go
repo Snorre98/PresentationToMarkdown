@@ -1,87 +1,70 @@
 package main
 
-// settings_test.go — the settings modal labels and the feature availability
-// glyphs derived from the server-computed requirements (ADR-0065).
+// settings_test.go — the settings modal now holds output and audio preferences;
+// the AI capabilities live in the AI setup view (ADR-0066).
 
 import (
 	"strings"
 	"testing"
-	"time"
 )
 
-func TestFeatureAvailabilityUsesResolvedReadiness(t *testing.T) {
+func TestSettingsLayoutHasSectionsAndTenRows(t *testing.T) {
 	m := testApp()
-	m.fleetAt = time.Now()
-	m.fleet = FleetResult{
-		Services: []FleetService{
-			{Name: "Qwen2.5-VL 7B", State: "up", Features: []string{"vision"}},
-			{Name: "Qwen2.5-VL 3B", State: "down", Features: []string{"vision", "classify"}},
-		},
-		Requirements: []FeatureRequirement{
-			{Key: "vision", Label: "Vision transcription", Readiness: "ready"},
-			{Key: "classify", Label: "Image classifier", Readiness: "missing"},
-			{Key: "summary", Label: "Presentation summary", Readiness: "pending"},
-		},
+	if got := m.settingsRows(); got != 10 {
+		t.Fatalf("settingsRows = %d, want 10", got)
 	}
-
-	cases := map[string]string{
-		"vision":    "●",
-		"classify":  "○",
-		"summary":   "◌",
-		"structure": "…", // no requirement advertised
-	}
-	for key, want := range cases {
-		got, _ := m.featureAvailability(key)
-		if got != want {
-			t.Errorf("featureAvailability(%q) = %q, want %q", key, got, want)
+	layout := m.settingsLayout()
+	var headers []string
+	for _, row := range layout {
+		if row.kind == settingsHeader {
+			headers = append(headers, row.label)
 		}
 	}
-}
-
-func TestFeatureAvailabilityLoading(t *testing.T) {
-	m := testApp()
-	if got, _ := m.featureAvailability("vision"); got != "…" {
-		t.Fatalf("loading glyph = %q", got)
+	if len(headers) != 2 || headers[0] != "Output" || headers[1] != "Audio transcription" {
+		t.Fatalf("headers = %v", headers)
+	}
+	if got := m.settingsLabel(0); got != "pdf mode" {
+		t.Fatalf("first row = %q", got)
+	}
+	if got := m.settingsLabel(m.settingsRows() - 1); got != "language" {
+		t.Fatalf("last row = %q", got)
 	}
 }
 
-func TestRenderSettingsShowsLabelsAndAISetupHint(t *testing.T) {
+func TestRenderSettingsShowsSectionsAndNoAIRows(t *testing.T) {
 	m := testApp()
-	m.cfg.FeatureInfo = []FeatureInfo{
-		{Key: "vision", Label: "Vision transcription", Scope: "all"},
-		{Key: "classify", Label: "Image classifier", Scope: "all"},
-		{Key: "interpret", Label: "Diagram interpretation", Scope: "all"},
-		{Key: "format", Label: "Markdown restructure", Scope: "all"},
-		{Key: "summary", Label: "Presentation summary", Scope: "all"},
-		{Key: "structure", Label: "Paper structure", Scope: "paper"},
-	}
-	m.fleetAt = time.Now()
-	m.fleet = FleetResult{
-		Daemon:      FleetDaemon{URL: "http://127.0.0.1:9300", Reachable: true},
-		Source:      "fleet",
-		OtherModels: 2,
-		Requirements: []FeatureRequirement{
-			{
-				Key: "vision", Label: "Vision transcription", Enabled: true,
-				Readiness: "missing",
-				Services: []RequirementService{
-					{Key: "qwen2.5-vl-7b-instruct-4bit", Name: "Qwen2.5-VL 7B", State: "down"},
-				},
-			},
-		},
-	}
+	m.width, m.height = 100, 40
+	m.cfg.PDFMode = "slide"
+	m.cfg.PDFCompress = true
 	out := m.renderSettingsBox(100, 40)
 	for _, want := range []string{
-		"Vision transcription", "Markdown restructure", "Presentation summary",
-		"Paper structure", "audio model", "AI setup", "a AI setup",
+		"settings", "Output", "Audio transcription", "pdf mode",
+		"output dir", "audio model", "a AI setup",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("settings box missing %q:\n%s", want, out)
 		}
 	}
-	for _, unwanted := range []string{"transcriber", "structure-text", "nomic-embed"} {
+	for _, unwanted := range []string{
+		"Vision transcription", "Image classifier", "Markdown restructure",
+		"Presentation summary", "Paper structure",
+	} {
 		if strings.Contains(out, unwanted) {
-			t.Errorf("settings box leaked internal label %q:\n%s", unwanted, out)
+			t.Errorf("AI row leaked into settings: %q:\n%s", unwanted, out)
 		}
+	}
+}
+
+func TestRenderSettingsKeepsSelectedRowVisibleAtSmallHeight(t *testing.T) {
+	m := testApp()
+	m.width, m.height = 80, 12
+	m.setCursor = m.settingsRows() - 1
+	out := m.renderSettingsBox(80, 12)
+	if !strings.Contains(out, "language") {
+		t.Fatalf("selected last row not visible at 80x12:\n%s", out)
+	}
+	lines := strings.Split(out, "\n")
+	if len(lines) > 12 {
+		t.Fatalf("settings box taller than terminal: %d lines", len(lines))
 	}
 }

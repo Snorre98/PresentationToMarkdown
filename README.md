@@ -73,7 +73,7 @@ Slide decks keep the default per-page behaviour; `PDF_MODE=slide` restores it
 explicitly. The two modes are mutually exclusive. The TUI settings screen offers
 the same choice as *Paper layout* (remembered across sessions).
 
-With the structure pass enabled (TUI setting or `STRUCTURE_ENABLED=1`) an
+With the structure pass enabled (AI setup `a` or `STRUCTURE_ENABLED=1`) an
 optional LLM pass then improves
 the structure: it fixes the page-1 title/authors block, blockquotes the
 abstract, adds `##` headings and a `## References` section, wraps footnotes, and
@@ -151,13 +151,13 @@ the durable `/api/runs` history.
 
 Audio rows are marked `♫`: transcription is an engine-hosted job (ADR-0045),
 which pairs a recording with its same-stem Markdown or writes a standalone
-`<stem>.transcript.md`. The settings modal (`s`) toggles the AI passes, paper
-layout, image links, PDF compression, inference overwrite, duplicate handling,
-output folder, and transcription options (diarization, speaker count, audio
-model, language) — persisted through the engine and applied to the next run
-without a restart. Press `a` for **AI setup**: each pass, the models PtM will
-actually use, their state, and the command to start anything that is down
-(ADR-0065).
+`<stem>.transcript.md`. Press `a` for **AI setup**: each AI pass, what it does,
+its toggle, the models PtM will actually use, their state, and the command to
+start anything that is down (ADR-0065/0066). The settings modal (`s`) holds
+paper layout, image links, PDF compression, inference overwrite, duplicate
+handling, output folder, and transcription options (diarization, speaker count,
+audio model, language) — persisted through the engine and applied to the next
+run without a restart.
 
 ```bash
 scripts/install-global.sh        # install ~/.local/bin/ptm-tui (once)
@@ -521,8 +521,8 @@ Every conversion finishes with a formatting post-pass (`converter/format.py`):
   that never adds or changes headings (ADR-0052).
 
 Enable it by reusing the vision endpoint (see [AI vision pass](#ai-vision-pass)) —
-toggle *Markdown restructure* in the TUI settings, or set `FORMAT_ENABLED=1` for
-the engine.
+toggle *Markdown restructure* in the TUI AI setup (`a`), or set
+`FORMAT_ENABLED=1` for the engine.
 
 `FORMAT_BASE_URL`/`FORMAT_MODEL`/`FORMAT_API_KEY` default to their `WRITE_*`
 equivalents; override them to point the restructure pass at a different text
@@ -553,8 +553,9 @@ is produced by deterministic geometry heuristics. The optional **structure pass*
   junk, detected pre-call — ADR-0023) is skipped without a model call, since a
   layer that is not really prose can only fail the verbatim word gate.
 
-Enable it together with paper mode: toggle *Structure pass* + *Paper layout* in
-the TUI, or set `STRUCTURE_ENABLED=1` and `PDF_MODE=paper` for the engine.
+Enable it together with paper mode: toggle *Paper structure* in the TUI AI setup
+(`a`) and *Paper layout* in settings (`s`), or set `STRUCTURE_ENABLED=1` and
+`PDF_MODE=paper` for the engine.
 
 | Var | Default | Purpose |
 | --- | --- | --- |
@@ -599,8 +600,8 @@ How it works:
    titles) is used. Any failure degrades gracefully — conversion never fails
    because of summaries.
 
-Enable it by setting `SUMMARY_ENABLED=1` for the engine, or by toggling the
-summary pass in the TUI settings.
+Enable it by setting `SUMMARY_ENABLED=1` for the engine, or by toggling
+*Presentation summary* in the TUI AI setup (`a`).
 
 | Var | Default | Purpose |
 | --- | --- | --- |
@@ -683,8 +684,8 @@ and a second job is rejected while it runs. See
 ### Running all AI passes at once
 
 Each AI pass is independently opt-in (off by default), so you can mix and match.
-The TUI settings screen toggles them (persisted through the engine and applied
-without a restart). To enable every slide pass — vision transcription + image
+The TUI AI setup screen (`a`) toggles them (persisted through the engine and
+applied without a restart). To enable every slide pass — vision transcription + image
 classifier, diagram interpretation, markdown restructure, and the presentation
 summary — at engine launch:
 

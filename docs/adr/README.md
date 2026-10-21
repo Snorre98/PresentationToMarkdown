@@ -64,4 +64,5 @@ Index of architectural decisions for PresentationToMarkdown, in
 | [0062](0062-asr-on-the-fleet-whisper-daemon.md) | ASR on the fleet: one whisper daemon, no subprocess lane | Accepted |
 | [0063](0063-fleet-service-availability-in-tui.md) | Fleet service availability in the TUI | Amended by [0065](0065-ai-capability-labels-and-requirements.md) |
 | [0064](0064-fleet-model-identity-key-name-tags.md) | Fleet model identity in PtM — key, display name, tags | Amended by [0065](0065-ai-capability-labels-and-requirements.md) |
-| [0065](0065-ai-capability-labels-and-requirements.md) | AI capability labels and the resolved requirements projection | Accepted |
+| [0065](0065-ai-capability-labels-and-requirements.md) | AI capability labels and the resolved requirements projection | Amended by [0066](0066-ai-setup-control-surface.md) |
+| [0066](0066-ai-setup-control-surface.md) | AI setup is the AI control surface | Accepted |

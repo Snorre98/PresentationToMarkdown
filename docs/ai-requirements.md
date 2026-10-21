@@ -2,9 +2,9 @@
 
 PresentationToMarkdown translates the fleet manifest's capability **tags** into
 the passes it runs. This page is the single reference for that mapping. In the
-TUI, press **`a`** for the live version: it shows each pass, the model PtM will
-actually use, its state, and the command to start it. Press **`s`** to toggle
-the passes.
+TUI, press **`a`** for the live version: it shows each pass, what it does, the
+model PtM will actually use, its state, and the command to start it. `space`
+toggles the selected pass. Press **`s`** for output and audio preferences.
 
 ## The vocabulary
 

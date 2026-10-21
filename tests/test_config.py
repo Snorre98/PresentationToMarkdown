@@ -89,6 +89,15 @@ def test_feature_labels_and_scopes_are_user_facing():
     assert [item["key"] for item in config.feature_info()] == list(config.FEATURES)
 
 
+def test_feature_descriptions_explain_the_behavior():
+    assert "Markdown" in config.FEATURES["vision"].description
+    assert "also enables" in config.FEATURES["classify"].description
+    assert "supports B" in config.FEATURES["interpret"].description
+    assert "word check" in config.FEATURES["format"].description
+    assert "summary header" in config.FEATURES["summary"].description
+    assert "slide mode" in config.FEATURES["structure"].description
+
+
 def test_feature_requirements_expose_optional_dependencies(monkeypatch):
     def _entry(tags):
         port = 8090 if "embeddings" in tags else 8083

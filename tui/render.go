@@ -105,6 +105,46 @@ func overlayCenter(base, box string, w, h int) string {
 	return strings.Join(baseLines, "\n")
 }
 
+// wrapText breaks plain text at word boundaries to at most width cells.
+// It is used for the AI descriptions, which are plain prose (no styling).
+func wrapText(s string, width int) []string {
+	if width <= 0 {
+		return nil
+	}
+	words := strings.Fields(s)
+	if len(words) == 0 {
+		return nil
+	}
+	lines := make([]string, 0, len(words)/4+1)
+	current := ""
+	for _, word := range words {
+		if current == "" {
+			current = word
+			continue
+		}
+		if visibleWidth(current)+1+visibleWidth(word) <= width {
+			current += " " + word
+			continue
+		}
+		lines = append(lines, current)
+		current = word
+	}
+	if current != "" {
+		lines = append(lines, current)
+	}
+	return lines
+}
+
+// overlayBodyHeight reserves the fixed chrome (borders, title, footer) and
+// returns the remaining body height. Callers add their own scroll markers.
+func overlayBodyHeight(height, fixed int) int {
+	h := height - fixed
+	if h < 1 {
+		h = 1
+	}
+	return h
+}
+
 // windowBounds returns the [start,end) slice of n rows that keeps the cursor
 // visible inside a viewport of the given height.
 func windowBounds(n, cursor, height int) (int, int) {

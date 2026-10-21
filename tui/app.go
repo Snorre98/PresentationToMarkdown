@@ -105,7 +105,7 @@ type model struct {
 	fleet     FleetResult
 	fleetAt   time.Time
 	fleetErr  string
-	aiScroll  int
+	aiCursor  int
 
 	overlay overlay
 	help    help.Model
@@ -308,6 +308,11 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.cfg = msg.cfg
 		m.duplicate = msg.cfg.Duplicate
+		if m.overlay == overlayAI {
+			// A toggle replies with the effective feature state (implies
+			// included); refresh readiness for the new pass set.
+			return m, m.fetchFleet()
+		}
 		return m, nil
 
 	case fleetMsg:
@@ -431,10 +436,13 @@ func (m *model) onKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "s":
 		m.overlay = overlaySettings
-		return m, tea.Batch(m.fetchConfig(), m.fetchFleet())
+		if m.setCursor >= m.settingsRows() {
+			m.setCursor = m.settingsRows() - 1
+		}
+		return m, m.fetchConfig()
 	case "a":
 		m.overlay = overlayAI
-		m.aiScroll = 0
+		m.aiCursor = 0
 		return m, m.fetchFleet()
 	case "x":
 		if j := m.jobs.latest(); j != nil && j.running() {

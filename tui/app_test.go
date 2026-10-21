@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 )
@@ -213,9 +214,27 @@ func renderStates(m *model) []string {
 			m.tab = tabFiles
 			m.overlay = overlaySettings
 		},
+		"ai": func() {
+			m.tab = tabFiles
+			m.overlay = overlayAI
+			m.fleetAt = time.Now()
+			m.fleet = FleetResult{
+				Source: "fleet",
+				Requirements: []FeatureRequirement{
+					{
+						Key: "vision", Label: "Vision transcription", Enabled: true,
+						Description: "Reads images, diagrams and charts into Markdown.",
+						Readiness:   "ready",
+						Services: []RequirementService{
+							{Key: "qwen2.5-vl-7b-instruct-4bit", Name: "Qwen2.5-VL 7B", State: "up"},
+						},
+					},
+				},
+			}
+		},
 		"help": func() { m.overlay = overlayHelp },
 	}
-	order := []string{"empty", "files", "filtering", "running", "finished", "results-tab", "log-tab", "settings", "help"}
+	order := []string{"empty", "files", "filtering", "running", "finished", "results-tab", "log-tab", "settings", "ai", "help"}
 	out := make([]string, 0, len(order))
 	for _, name := range order {
 		states[name]()
@@ -261,15 +280,37 @@ func keyMsg(s string) tea.KeyPressMsg {
 	return tea.KeyPressMsg{Text: s}
 }
 
-func TestSettingsOverlayToggles(t *testing.T) {
+func TestAISetupOverlayTogglesPass(t *testing.T) {
+	m := testApp()
+	m.width, m.height = 80, 24
+	m.fleetAt = time.Now()
+	m.fleet = FleetResult{
+		Source: "fleet",
+		Requirements: []FeatureRequirement{
+			{Key: "vision", Label: "Vision transcription", Enabled: false},
+		},
+	}
+
+	if _, _ = m.Update(keyMsg("a")); m.overlay != overlayAI {
+		t.Fatal("AI setup overlay did not open")
+	}
+	if _, _ = m.Update(keyMsg("space")); !m.cfg.Features["vision"] {
+		t.Fatalf("pass toggle: %v", m.cfg.Features)
+	}
+	if _, _ = m.Update(keyMsg("esc")); m.overlay != overlayNone {
+		t.Fatal("AI setup overlay did not close")
+	}
+}
+
+func TestSettingsOverlayTogglesOutputPreference(t *testing.T) {
 	m := testApp()
 	m.width, m.height = 80, 24
 
 	if _, _ = m.Update(keyMsg("s")); m.overlay != overlaySettings {
 		t.Fatal("settings overlay did not open")
 	}
-	if _, _ = m.Update(keyMsg("space")); !m.cfg.Features["vision"] {
-		t.Fatalf("feature toggle: %v", m.cfg.Features)
+	if _, _ = m.Update(keyMsg("space")); m.cfg.PDFMode != "paper" {
+		t.Fatalf("pdf mode = %q, want paper", m.cfg.PDFMode)
 	}
 	if _, _ = m.Update(keyMsg("esc")); m.overlay != overlayNone {
 		t.Fatal("settings overlay did not close")
