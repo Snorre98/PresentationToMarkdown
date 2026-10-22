@@ -16,6 +16,7 @@ type resultRow struct {
 	name     string
 	source   string
 	mdPath   string
+	epubPath string
 	movedTo  string
 	detail   string
 	warnings []string
@@ -54,6 +55,7 @@ func (m *model) rebuildResults() {
 				name:     baseName(r.Source),
 				source:   r.Source,
 				mdPath:   r.MDPath,
+				epubPath: r.EpubPath,
 				movedTo:  r.MovedTo,
 				warnings: r.Warnings,
 				logTail:  j.logTail,
@@ -113,6 +115,9 @@ func (m *model) renderResults(width, height int) []string {
 			for _, w := range row.warnings {
 				lines = append(lines, th.warn.Render("      ⚠ "+w))
 			}
+			if row.epubPath != "" {
+				lines = append(lines, th.subtle.Render("      epub: "+shortPath(m.cwd, row.epubPath)))
+			}
 			if row.movedTo != "" {
 				lines = append(lines, th.subtle.Render("      archived: "+shortPath(m.cwd, row.movedTo)))
 			}
@@ -145,8 +150,11 @@ func (m *model) renderResultRow(row resultRow, cursor bool, width int) string {
 	left := fmt.Sprintf("%s%s %s", prefix, style.Render(glyph), row.name)
 	if row.mdPath != "" {
 		left += "  →  " + th.ok.Render(shortPath(m.cwd, row.mdPath))
-	} else if row.detail == "" {
+	} else if row.epubPath == "" && row.detail == "" {
 		left += "  " + th.subtle.Render("(no output)")
+	}
+	if row.epubPath != "" {
+		left += "  " + th.ok.Render("+epub")
 	}
 	if row.detail != "" {
 		left += "  " + th.subtle.Render(row.detail)

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import io
 import os
+from pathlib import Path
 
 import pytest
 
@@ -45,6 +46,9 @@ class _FakeConfig:
             "pdf_mode": "slide",
             "image_links": os.environ.get("IMAGE_LINKS", "").strip().lower()
             in {"1", "true", "yes", "on"},
+            "epub_output": os.environ.get("EPUB_OUTPUT", "").strip().lower()
+            in {"1", "true", "yes", "on"},
+            "pandoc": True,
             "duplicate": False,
             "vault_root": None,
             "audio_model": "nb-whisper-large",
@@ -184,6 +188,39 @@ def test_engine_config_set_image_links(client, monkeypatch):
     r = client.post("/api/config", json={"image_links": True}).get_json()
     assert r["image_links"] is True
     assert stored["image_links"] == "on"
+
+
+def test_engine_config_set_epub(client, monkeypatch):
+    monkeypatch.setenv("EPUB_OUTPUT", "off")
+    stored = {}
+    monkeypatch.setattr(
+        "converter.settings.set_setting",
+        lambda key, value: stored.__setitem__(key, value),
+    )
+    r = client.post("/api/config", json={"epub_output": True}).get_json()
+    assert r["epub_output"] is True
+    assert os.environ["EPUB_OUTPUT"] == "on"
+    assert stored["epub_output"] == "on"
+
+
+def test_result_record_includes_epub_path():
+    from types import SimpleNamespace
+
+    import engine
+
+    result = SimpleNamespace(
+        source_path=Path("/tmp/deck.pdf"),
+        md_path=Path("/tmp/deck.md"),
+        epub_path=Path("/tmp/deck.epub"),
+        moved_to=None,
+        error=None,
+        warnings=[],
+        inference_passes=[],
+    )
+    record = engine._result_record(result, [0.5], 0)
+    assert record["md_path"] == "/tmp/deck.md"
+    assert record["epub_path"] == "/tmp/deck.epub"
+    assert record["duration_ms"] == 500
 
 
 def test_engine_config_set_vault_root(client, monkeypatch, tmp_path):

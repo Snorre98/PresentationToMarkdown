@@ -109,6 +109,12 @@ def add_ai_flags(parser: argparse.ArgumentParser) -> None:
         help="replace an existing <name>-inference-used.md instead of writing "
         "the next -2/-3 (default: never overwrite inference output)",
     )
+    output.add_argument(
+        "--epub",
+        action="store_true",
+        help="also write an EPUB beside each PDF's Markdown (requires pandoc; "
+        "EPUB_OUTPUT=on)",
+    )
 
 
 def ai_env_vars(args: argparse.Namespace) -> dict[str, str]:
@@ -152,6 +158,9 @@ def ai_env_vars(args: argparse.Namespace) -> dict[str, str]:
 
     if getattr(args, "overwrite_inference", False):
         env["INFERENCE_OVERWRITE"] = "on"
+
+    if getattr(args, "epub", False):
+        env["EPUB_OUTPUT"] = "on"
 
     for item in getattr(args, "env", None) or []:
         if "=" not in item:

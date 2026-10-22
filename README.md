@@ -1,6 +1,6 @@
 # Presentation to Markdown
 
-Native terminal app and reusable Python library that converts PowerPoint presentations (`.pptx`), PDF documents (`.pdf`), and LaTeX projects (`.tex`) into Markdown. Personal-use tool built for feeding lecture slides into an Obsidian vault.
+Native terminal app and reusable Python library that converts PowerPoint presentations (`.pptx`), PDF documents (`.pdf`), and LaTeX projects (`.tex`) into Markdown, with optional PDF → EPUB export. Personal-use tool built for feeding lecture slides into an Obsidian vault.
 
 - **TUI (`ptm-tui`)** — compiled Go terminal app: file discovery, batch conversion, live progress, history, and settings (ADR-0040). It is the only user interface (ADR-0051).
 - **Engine (`ptm-engine`)** — the local backend the TUI drives: filesystem access, conversion, engine-hosted transcription, settings (ADR-0025)
@@ -8,7 +8,9 @@ Native terminal app and reusable Python library that converts PowerPoint present
 
 ## What it does
 
-One Markdown file per source document. Image links are **off by default** — a
+One Markdown file per source document. PDFs can also produce an EPUB beside
+that Markdown (*epub export* in the settings, `EPUB_OUTPUT=on`; ADR-0067).
+Image links are **off by default** — a
 figure's local-AI description is kept where one exists, and nothing is extracted
 to disk; turn on *Image links* in the TUI settings (env `IMAGE_LINKS=on`) to
 restore the legacy `assets/<name>/` sidecar with `![…]`/`[Page N]` links
@@ -47,6 +49,11 @@ order (`PDF_BORDERLESS_TABLES=off` disables that, ADR-0054).
 Pages whose text can't be linearized (diagrams, multi-column flowcharts) fall
 back to a collapsed raw-text block — and can optionally be transcribed by a local
 vision model. See [docs/ai-vision.md](docs/ai-vision.md).
+
+With *epub export* on (ADR-0067), each PDF also produces `<name>.epub` beside
+its Markdown: the same headings, text, tables and math, with the figures
+embedded, a TOC and a page-1 cover. Paper mode gives the best book; slide mode
+becomes a chapter-per-slide text book.
 
 #### Whitepapers / multi-column documents (paper mode)
 
@@ -146,18 +153,18 @@ transcription phase, elapsed time, `x` to cancel), three tabs — `1` files,
 `Space` multi-selects, `Enter` runs (an explicit selection first, otherwise the
 cursor row; the selection is consumed either way), `r` re-discovers, and the
 results tab lists each finished file's output path, warnings and duration
-(`o` opens the Markdown, `f` reveals it in Finder, `y` copies the path) above
-the durable `/api/runs` history.
+(`o` opens the Markdown, `f` reveals it in Finder, `y` copies the path, `E`
+opens an exported EPUB) above the durable `/api/runs` history.
 
 Audio rows are marked `♫`: transcription is an engine-hosted job (ADR-0045),
 which pairs a recording with its same-stem Markdown or writes a standalone
 `<stem>.transcript.md`. Press `a` for **AI setup**: each AI pass, what it does,
 its toggle, the models PtM will actually use, their state, and the command to
 start anything that is down (ADR-0065/0066). The settings modal (`s`) holds
-paper layout, image links, PDF compression, inference overwrite, duplicate
-handling, output folder, and transcription options (diarization, speaker count,
-audio model, language) — persisted through the engine and applied to the next
-run without a restart.
+paper layout, EPUB export, image links, PDF compression, inference overwrite,
+duplicate handling, output folder, and transcription options (diarization,
+speaker count, audio model, language) — persisted through the engine and applied
+to the next run without a restart.
 
 ```bash
 scripts/install-global.sh        # install ~/.local/bin/ptm-tui (once)
@@ -190,6 +197,7 @@ pass below:
 | `--image-links` | Legacy output: extract `assets/<name>/` and emit `![…]`/`[Page N](…)` links (default: no image links, AI descriptions only) |
 | `--no-compress` | Skip Ghostscript/qpdf compression of PDFs archived into `source/` (default: compress) |
 | `--overwrite-inference` | Replace an existing `<name>-inference-used.md` instead of writing `-2` (default: never overwrite inference output, ADR-0050) |
+| `--epub` | Also write an EPUB beside each PDF's Markdown (`EPUB_OUTPUT=on`; requires pandoc) |
 | `--env KEY=VALUE` | Set any other env var (repeatable) — model ids, URLs, log DB |
 
 The pass labels, required models and start commands are in
@@ -203,7 +211,9 @@ the TUI dispatches (see [Audio transcription](#audio-transcription-optional)).
 `ptm-engine --vision --env VISION_MODEL=... --env VISION_LOG_DB=/tmp/ptm.sqlite`.
 It also carries the lazy output preferences: `--env PDF_REFLOW=off` keeps the
 legacy line-per-line paper output, and `--env PDF_BORDERLESS_TABLES=off`
-disables borderless-table reconstruction. For `.tex` projects,
+disables borderless-table reconstruction. EPUB packaging reads
+`EPUB_LANG=<tag>` (overrides the PDF's own language) and `EPUB_COVER=off`
+(no page-1 cover). For `.tex` projects,
 `--env LATEX_FIGURES=off` disables the TikZ/pgfplots figure pipeline,
 `--env LATEX_FIGURE_PREAMBLE=/path/preamble.tex` adds preamble lines to the
 standalone figure render, and `--env LATEX_CSL=/path/style.csl` replaces the
@@ -218,6 +228,7 @@ from converter import convert_file, convert_files, SUPPORTED_EXTENSIONS
 # one file (Markdown beside the source; source archived into source/)
 result = convert_file("deck.pptx")
 print(result.md_path or result.error)
+print(result.epub_path)  # set when EPUB_OUTPUT=on converts a PDF
 
 # one file, explicit output folder
 result = convert_file("deck.pptx", "out/")
@@ -236,7 +247,7 @@ for r in results:
 - `convert_file(path, output_dir=None) -> ConvertResult`
 - `convert_files(paths, output_dir=None, progress_callback=None) -> list[ConvertResult]`
 - `progress_callback(idx: int, total: int, name: str) -> None`
-- `ConvertResult` fields: `source_path`, `md_path`, `error`, `warnings`, `moved_to`
+- `ConvertResult` fields: `source_path`, `md_path`, `epub_path`, `error`, `warnings`, `moved_to`, `inference_passes`
 - `SUPPORTED_EXTENSIONS` — e.g. `{".pptx", ".pdf"}`
 - `output_dir` is optional; when omitted, each file's Markdown is written beside the source under a kebab-case name and the source is moved into a sibling `source/` folder (ADR-0048); an explicit `output_dir` disables that organizing. `ConvertResult.moved_to` points at the archived copy, and `ConvertResult.inference_passes` lists the AI passes whose model output landed in the file — non-empty means the Markdown carries the `-inference-used` marker (ADR-0050).
 
@@ -278,8 +289,16 @@ lectures/
     └── 03-what-makes-things-fun-to-learn.pdf
 ```
 
-One `.md` per source document — no `assets/` sidecar and no image links (AI
-descriptions stand in for figures where the vision passes run).
+One `.md` per source document (plus an optional `<name>.epub` when EPUB export
+is on) — no `assets/` sidecar and no image links by default (AI descriptions
+stand in for figures where the vision passes run). An EPUB export extracts the
+figure images it needs, and `IMAGE_LINKS=on` restores the full legacy sidecar.
+
+- **EPUB export is additive** (ADR-0067): the settings row *epub export*
+  (`EPUB_OUTPUT=on` / `--epub`) writes `<name>.epub` beside each PDF's
+  Markdown, from the same text plus the figures. The EPUB inherits the
+  `-inference-used` marker and is packaged with pandoc; a missing pandoc only
+  warns. It applies to PDFs only.
 
 - **LaTeX projects** are named after the project folder (`thesis/` →
   `thesis.md` beside it) and the whole project folder moves into `source/`.
@@ -343,7 +362,7 @@ Slides are separated by an HTML page break (`<div style="page-break-after: alway
 
 ## Install
 
-Requires **Python 3.10+** and **Go 1.26+** (to build the TUI). Dependencies: `python-pptx`, `PyMuPDF` (PDF), `flask`/`flask-sock` + `simple-websocket` (engine), `SQLAlchemy` + `sqlite-vec` (log/settings/RAG store), and `numpy`. External binaries, all optional except where noted: `pandoc` (required for `.tex`), `pdflatex` (renders display math and TikZ/pgfplots figures for `.tex` with `IMAGE_LINKS=on`), `soffice` (PPTX chart transcription), and `gs`/`qpdf` (PDF compression on archive; Ghostscript preferred, qpdf the lossless fallback — `brew install ghostscript qpdf`).
+Requires **Python 3.10+** and **Go 1.26+** (to build the TUI). Dependencies: `python-pptx`, `PyMuPDF` (PDF), `flask`/`flask-sock` + `simple-websocket` (engine), `SQLAlchemy` + `sqlite-vec` (log/settings/RAG store), and `numpy`. External binaries, all optional except where noted: `pandoc` (required for `.tex` input and for PDF → EPUB export), `pdflatex` (renders display math and TikZ/pgfplots figures for `.tex` with `IMAGE_LINKS=on`), `soffice` (PPTX chart transcription), and `gs`/`qpdf` (PDF compression on archive; Ghostscript preferred, qpdf the lossless fallback — `brew install ghostscript qpdf`).
 
 ### 1. Clone and set up a virtual environment
 

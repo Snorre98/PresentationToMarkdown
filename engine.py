@@ -671,6 +671,7 @@ def _result_record(result, durations: list[float], idx: int) -> dict:
     return {
         "source": str(result.source_path),
         "md_path": str(result.md_path) if result.md_path else None,
+        "epub_path": str(result.epub_path) if result.epub_path else None,
         "moved_to": str(result.moved_to) if result.moved_to else None,
         "error": result.error,
         "warnings": list(result.warnings),
@@ -780,7 +781,10 @@ def _job_execute(wsock, paths: list[str], output_dir: str | None, duplicate: boo
             if result.error:
                 log("err", f"{result.source_path.name}: {result.error}")
             else:
-                log("ok", f"{result.source_path.name} -> {result.md_path}")
+                produced = str(result.md_path)
+                if result.epub_path:
+                    produced += f" + {result.epub_path.name}"
+                log("ok", f"{result.source_path.name} -> {produced}")
                 for warning in result.warnings:
                     log("warn", f"{result.source_path.name}: {warning}")
         _engine_state["results"] = [r.error or str(r.md_path) for r in results]
@@ -1039,6 +1043,10 @@ def create_app() -> Flask:
             value = "on" if data["inference_overwrite"] else "off"
             os.environ["INFERENCE_OVERWRITE"] = value
             set_setting("inference_overwrite", value)
+        if "epub_output" in data:
+            value = "on" if data["epub_output"] else "off"
+            os.environ["EPUB_OUTPUT"] = value
+            set_setting("epub_output", value)
         if "vault_root" in data:
             set_setting("vault_root", str(data["vault_root"]).strip())
         if "duplicate" in data:

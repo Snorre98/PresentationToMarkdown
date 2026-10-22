@@ -92,6 +92,11 @@ def test_overwrite_inference_maps_to_env():
     }
 
 
+def test_epub_maps_to_env():
+    assert ai_env_vars(parse([])) == {}
+    assert ai_env_vars(parse(["--epub"])) == {"EPUB_OUTPUT": "on"}
+
+
 def test_env_passthrough():
     env = ai_env_vars(parse(["--vision", "--env", "VISION_MODEL=foo", "--env", "VISION_LOG_DB=/tmp/x.sqlite"]))
     assert env["VISION_ENABLED"] == "1"

@@ -10,7 +10,7 @@ TUI settings screen) — no restart required.
 It also owns non-AI *output* preferences that share the same runtime-toggle
 contract (``IMAGE_LINKS``, ADR-0047; ``PDF_COMPRESS``, ADR-0049;
 ``INFERENCE_OVERWRITE``, ADR-0050; ``PDF_BORDERLESS_TABLES``, ADR-0054;
-``PDF_REFLOW``, ADR-0055): those
+``PDF_REFLOW``, ADR-0055; ``EPUB_OUTPUT``, ADR-0067): those
 are read lazily at conversion time so an engine flip takes effect on the next
 conversion, mirroring the lazy ``PDF_MODE`` read.
 
@@ -30,8 +30,11 @@ offline fallback — never a second authority.
 """
 from __future__ import annotations
 
+import contextvars
 import os
 import urllib.request
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Callable
 
@@ -42,6 +45,39 @@ _TRUE = {"1", "true", "yes", "on"}
 
 def _env_true(value: str | None) -> bool:
     return (value or "").strip().lower() in _TRUE
+
+
+# Context-local overrides for one conversion (ADR-0067). EPUB packaging needs
+# the PDF converter's figure images even when the user keeps ``IMAGE_LINKS``
+# off; page-render links retain the prior setting so an EPUB-only run does not
+# write a PNG per page that pandoc would never embed. Scoped like the inference
+# ledger so a batch thread cannot leak the override into the next file and the
+# user's preference is never mutated.
+_image_links_override: contextvars.ContextVar[bool | None] = contextvars.ContextVar(
+    "ptm_image_links_override", default=None
+)
+_page_links_override: contextvars.ContextVar[bool | None] = contextvars.ContextVar(
+    "ptm_page_links_override", default=None
+)
+
+
+@contextmanager
+def force_epub_images() -> Iterator[None]:
+    """Force figure extraction for one EPUB conversion (ADR-0067).
+
+    Page-render links keep whatever the user's ``IMAGE_LINKS`` preference was
+    before the block: an EPUB-only run (image links off) writes no page PNGs,
+    while an explicit image-links run keeps them. The override is context-local
+    and disappears when the block exits.
+    """
+    page_links = image_links_enabled()
+    image_token = _image_links_override.set(True)
+    page_token = _page_links_override.set(page_links)
+    try:
+        yield
+    finally:
+        _image_links_override.reset(image_token)
+        _page_links_override.reset(page_token)
 
 
 @dataclass(frozen=True)
@@ -271,8 +307,56 @@ def image_links_enabled() -> bool:
     without a restart. Default **off**: images are not extracted and no
     ``![...](...)``/``[Page N](...)`` links are written; AI descriptions are
     emitted in their place. ``IMAGE_LINKS=on`` restores the legacy behaviour.
+
+    An EPUB export temporarily overrides this through
+    :func:`force_epub_images` (ADR-0067), independently of the user setting.
     """
+    override = _image_links_override.get()
+    if override is not None:
+        return override
     return _env_true(os.environ.get("IMAGE_LINKS"))
+
+
+def page_links_enabled() -> bool:
+    """Whether rendered page PNGs are saved and linked (ADR-0047).
+
+    Defaults to :func:`image_links_enabled`. An EPUB export forces figure
+    images on but leaves this at the user's prior setting (ADR-0067), so an
+    EPUB-only run does not write a page render per page while an explicit
+    image-links run keeps its page links.
+    """
+    override = _page_links_override.get()
+    if override is not None:
+        return override
+    return image_links_enabled()
+
+
+def epub_output_enabled() -> bool:
+    """Whether a PDF conversion also writes an EPUB beside its Markdown.
+
+    A lazy output preference like ``IMAGE_LINKS`` (ADR-0067), so the engine/TUI
+    can toggle it per conversion. Default **off**; ``EPUB_OUTPUT=on`` enables
+    the export. Applies to PDF inputs only.
+    """
+    return _env_true(os.environ.get("EPUB_OUTPUT"))
+
+
+def epub_language() -> str:
+    """Language tag for the EPUB metadata (ADR-0067).
+
+    Empty means "let :mod:`converter.epub` derive it from the PDF catalog,
+    falling back to ``en``"; ``EPUB_LANG`` overrides the derivation.
+    """
+    return os.environ.get("EPUB_LANG", "").strip()
+
+
+def epub_cover_enabled() -> bool:
+    """Whether the EPUB gets a cover rendered from the PDF's first page.
+
+    Default **on**; ``EPUB_COVER=off`` keeps the export without a cover
+    (ADR-0067). Best-effort: a page that cannot be rendered is simply skipped.
+    """
+    return (os.environ.get("EPUB_COVER", "on").strip().lower() or "on") in _TRUE
 
 
 def pdf_compress_enabled() -> bool:
@@ -678,15 +762,26 @@ def _audio_int(key: str, default: int) -> int:
         return default
 
 
+def _pandoc_available() -> bool:
+    """Whether the external ``pandoc`` binary is available (ADR-0067)."""
+    try:
+        from converter.epub import pandoc_available
+
+        return pandoc_available()
+    except Exception:
+        return False
+
+
 def snapshot(probe: bool = True) -> dict:
     """Return a JSON-serialisable snapshot of the runtime AI configuration (ADR-0022).
 
     Captures ``PDF_MODE``, the on/off state of every feature, each enabled pass's
     resolved base URLs and model id, the embeddings model, the
     duplicate-if-exists preference, the image-link, PDF-compression,
-    borderless-table, reflow and inference-overwrite output preferences, and —
-    when ``probe`` is true — the ``missing_servers()`` result. Never raises; used
-    to persist a per-run record of "what models/toggles/servers were in effect".
+    borderless-table, reflow, inference-overwrite and EPUB-output preferences,
+    whether pandoc is available for EPUB packaging, and — when ``probe`` is
+    true — the ``missing_servers()`` result. Never raises; used to persist a
+    per-run record of "what models/toggles/servers were in effect".
     """
     passes: dict[str, dict] = {}
     for key in FEATURES:
@@ -712,6 +807,8 @@ def snapshot(probe: bool = True) -> dict:
         "borderless_tables": borderless_tables_enabled(),
         "pdf_reflow": pdf_reflow_enabled(),
         "inference_overwrite": inference_overwrite(),
+        "epub_output": epub_output_enabled(),
+        "pandoc": _pandoc_available(),
         "need_gate": os.environ.get("NEED_GATE", "on").strip().lower() or "on",
         "duplicate": _duplicate_if_exists(),
         "vault_root": _vault_root(),

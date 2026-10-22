@@ -8,10 +8,10 @@ import (
 	"testing"
 )
 
-func TestSettingsLayoutHasSectionsAndTenRows(t *testing.T) {
+func TestSettingsLayoutHasSectionsAndElevenRows(t *testing.T) {
 	m := testApp()
-	if got := m.settingsRows(); got != 10 {
-		t.Fatalf("settingsRows = %d, want 10", got)
+	if got := m.settingsRows(); got != 11 {
+		t.Fatalf("settingsRows = %d, want 11", got)
 	}
 	layout := m.settingsLayout()
 	var headers []string
@@ -26,8 +26,27 @@ func TestSettingsLayoutHasSectionsAndTenRows(t *testing.T) {
 	if got := m.settingsLabel(0); got != "pdf mode" {
 		t.Fatalf("first row = %q", got)
 	}
+	if got := m.settingsLabel(1); got != "epub export" {
+		t.Fatalf("second row = %q", got)
+	}
 	if got := m.settingsLabel(m.settingsRows() - 1); got != "language" {
 		t.Fatalf("last row = %q", got)
+	}
+}
+
+func TestSettingsEpubExportToggleAndPandocHint(t *testing.T) {
+	m := testApp()
+	m.cfg.Pandoc = true
+	m.setCursor = 1
+	if _, _ = m.activateSetting(false); !m.cfg.EpubOutput {
+		t.Fatal("epub export did not toggle on")
+	}
+	if got := m.settingsValueFor(settingsRow{key: "epub_output"}); got != "on" {
+		t.Fatalf("value = %q, want on", got)
+	}
+	m.cfg.Pandoc = false
+	if got := m.settingsValueFor(settingsRow{key: "epub_output"}); got != "on (pandoc missing)" {
+		t.Fatalf("value = %q, want pandoc hint", got)
 	}
 }
 

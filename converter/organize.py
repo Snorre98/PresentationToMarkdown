@@ -131,10 +131,17 @@ def marked_stem(stem: str) -> str:
 
 
 def _exists(output_dir: Path, stem: str) -> bool:
-    """Whether ``stem`` is taken, as Markdown or as an assets folder."""
-    return (output_dir / f"{stem}.md").exists() or (
-        output_dir / "assets" / stem
-    ).exists()
+    """Whether ``stem`` is taken, as Markdown, EPUB or an assets folder.
+
+    The EPUB is a second artifact of the same conversion (ADR-0067), so the
+    collision/marker checks must see it too: a run must not overwrite a marked
+    EPUB just because its Markdown was moved or deleted.
+    """
+    return (
+        (output_dir / f"{stem}.md").exists()
+        or (output_dir / f"{stem}.epub").exists()
+        or (output_dir / "assets" / stem).exists()
+    )
 
 
 def claim_inference_path(
@@ -150,10 +157,10 @@ def claim_inference_path(
     """
     marked = marked_stem(stem)
     target = output_dir / f"{marked}.md"
-    if overwrite or not target.exists():
+    if overwrite or not _exists(output_dir, marked):
         return target
     n = 2
-    while (output_dir / f"{marked}-{n}.md").exists():
+    while _exists(output_dir, f"{marked}-{n}"):
         n += 1
     bumped = f"{marked}-{n}.md"
     warnings.append(

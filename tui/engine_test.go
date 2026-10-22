@@ -71,6 +71,7 @@ func TestConfigRoundTrip(t *testing.T) {
 			json.NewEncoder(w).Encode(map[string]any{
 				"pdf_mode": "slide", "need_gate": "on", "duplicate": false,
 				"pdf_compress": true, "inference_overwrite": false,
+				"epub_output": true, "pandoc": true,
 				"features": map[string]bool{"vision": true, "format": false},
 				"feature_info": []map[string]any{
 					{"key": "vision", "label": "Vision transcription", "scope": "all"},
@@ -84,6 +85,7 @@ func TestConfigRoundTrip(t *testing.T) {
 			"pdf_mode": body.PDFMode, "features": body.Features,
 			"pdf_compress":        body.PDFCompress != nil && *body.PDFCompress,
 			"inference_overwrite": body.InferenceOverwrite != nil && *body.InferenceOverwrite,
+			"epub_output":         body.EpubOutput != nil && *body.EpubOutput,
 		})
 	}))
 	defer srv.Close()
@@ -102,14 +104,19 @@ func TestConfigRoundTrip(t *testing.T) {
 	if cfg.InferenceOverwrite {
 		t.Fatalf("inference_overwrite = %v", cfg.InferenceOverwrite)
 	}
+	if !cfg.EpubOutput || !cfg.Pandoc {
+		t.Fatalf("epub_output=%v pandoc=%v", cfg.EpubOutput, cfg.Pandoc)
+	}
 
 	compressOff := false
 	overwriteOn := true
+	epubOff := false
 	updated, err := c.SetConfig(context.Background(), ConfigUpdate{
 		PDFMode:            "paper",
 		Features:           map[string]bool{"vision": false},
 		PDFCompress:        &compressOff,
 		InferenceOverwrite: &overwriteOn,
+		EpubOutput:         &epubOff,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -119,6 +126,9 @@ func TestConfigRoundTrip(t *testing.T) {
 	}
 	if !updated.InferenceOverwrite {
 		t.Fatalf("inference_overwrite = %v", updated.InferenceOverwrite)
+	}
+	if updated.EpubOutput {
+		t.Fatalf("epub_output = %v", updated.EpubOutput)
 	}
 }
 

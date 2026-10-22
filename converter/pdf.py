@@ -390,20 +390,23 @@ def _covered_by_ruled(bbox, ruled, threshold: float = 0.5) -> bool:
 
 def _page_images(
     page, doc, assets_dir, stem, counter, warnings, skip_xrefs, dedup, pno,
-    repeated, seen, source, image_links,
+    repeated, seen, source, image_links, page_links,
 ) -> tuple[list[str], bytes, int, int]:
     """Return ``(refs, png_bytes, width, height)`` for one page.
 
     ``refs`` carries the legacy links (``[Page N](...)`` for the rendered page,
     ``![image](...)`` per embedded image) plus any vision descriptions. With
     ``image_links`` off (ADR-0047) no assets are written and no links are
-    emitted; the descriptions still are. ``png_bytes`` is always rendered in
-    memory — it is the page-level vision / interpretation input (ADR-0020).
+    emitted; the descriptions still are. ``page_links`` gates only the page
+    render: EPUB export forces it off so the packaging step does not write a
+    PNG per page that pandoc would never embed (ADR-0067). ``png_bytes`` is
+    always rendered in memory — it is the page-level vision / interpretation
+    input (ADR-0020).
     """
     refs: list[str] = []
     pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
     png_bytes = pix.tobytes("png")
-    if image_links:
+    if image_links and page_links:
         assets_dir.mkdir(parents=True, exist_ok=True)
         png_name = f"{stem}_page_{pno:02d}.png"
         pix.save(str(assets_dir / png_name))
@@ -420,6 +423,7 @@ def _page_images(
         digest = image_digest(extracted["image"])
         filename = None
         if image_links:
+            assets_dir.mkdir(parents=True, exist_ok=True)
             filename = write_image(
                 extracted["image"],
                 extracted.get("ext", "bin"),
@@ -728,6 +732,7 @@ class PDFConverter(Converter):
             stem = output_stem or path.stem
             paper = _pdf_mode()
             image_links = config.image_links_enabled()
+            page_links = config.page_links_enabled()
             page_count = doc.page_count
             assets_dir = output_dir / "assets" / stem
             skip_xrefs = _background_xrefs(doc)
@@ -756,7 +761,7 @@ class PDFConverter(Converter):
                 page_out, page_content, page_png = self._page_to_md(
                     page, doc, pno, assets_dir, stem, counter, skip_xrefs,
                     footer_keys, top_keys, dedup, result.warnings, repeated,
-                    seen, source, paper, image_links, flow,
+                    seen, source, paper, image_links, page_links, flow,
                 )
                 lines.extend(page_out)
                 if flow is not None:
@@ -813,7 +818,7 @@ class PDFConverter(Converter):
     def _page_to_md(
         self, page, doc, pno, assets_dir, stem, counter, skip_xrefs, footer_keys,
         top_keys, dedup, warnings, repeated, seen, source, paper, image_links,
-        flow: _PaperFlow | None,
+        page_links, flow: _PaperFlow | None,
     ) -> tuple[list[str], list[Line], bytes | None]:
         """Return ``(md_lines, content_lines, page_png)`` for one page.
 
@@ -901,7 +906,8 @@ class PDFConverter(Converter):
         )
 
         image_refs, page_png, png_w, png_h = _page_images(
-            page, doc, assets_dir, stem, counter, warnings, skip_xrefs, dedup, pno, repeated, seen, source, image_links,
+            page, doc, assets_dir, stem, counter, warnings, skip_xrefs, dedup,
+            pno, repeated, seen, source, image_links, page_links,
         )
         if image_refs:
             out.extend(image_refs)

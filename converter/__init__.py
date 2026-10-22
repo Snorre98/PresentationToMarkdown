@@ -22,13 +22,20 @@ deterministic re-run (which writes the unmarked ``<stem>.md``) can never
 overwrite a file that cost inference time. An existing marked file is never
 overwritten: the rename bumps to ``-inference-used-2`` unless
 ``INFERENCE_OVERWRITE`` explicitly opts into replacing it.
+
+With ``EPUB_OUTPUT`` on, a PDF conversion also writes ``<stem>.epub`` beside the
+Markdown (ADR-0067). The EPUB is packaged from the final Markdown (after the
+post-passes and the inference marker) with pandoc, embeds the figure images,
+and is additive: the Markdown is never removed, and packaging failures only
+append warnings. ``ConvertResult.epub_path`` reports the artifact.
 """
 from __future__ import annotations
 
 from collections.abc import Callable
+from contextlib import nullcontext
 from pathlib import Path
 
-from converter import compress, config, inference
+from converter import compress, config, epub, inference
 from converter.base import (
     ConvertResult,
     Converter,
@@ -129,11 +136,14 @@ def _next_free_stem(output_dir: Path, stem: str) -> str:
     """Return the next free Finder-style stem, e.g. ``deck (2)``, ``deck (3)``.
 
     Only *reads* existence — never touches existing files — so a duplicate run
-    cannot clobber a prior conversion.
+    cannot clobber a prior conversion. Both artifacts are considered: an EPUB
+    from an earlier run must not be replaced just because its Markdown is gone
+    (ADR-0067).
     """
     n = 2
     while (
         (output_dir / f"{stem} ({n}).md").exists()
+        or (output_dir / f"{stem} ({n}).epub").exists()
         or (output_dir / "assets" / f"{stem} ({n})").exists()
     ):
         n += 1
@@ -214,21 +224,29 @@ def _convert_one(
     try:
         layout.output_dir.mkdir(parents=True, exist_ok=True)
         output_stem: str = layout.stem
-        if duplicate_if_exists and (layout.output_dir / f"{layout.stem}.md").exists():
+        if duplicate_if_exists and any(
+            (layout.output_dir / f"{layout.stem}{ext}").exists()
+            for ext in (".md", ".epub")
+        ):
             output_stem = _next_free_stem(layout.output_dir, layout.stem)
         output_stem = avoid_marked_artifact(
             layout.output_dir, output_stem, layout.warnings
         )
+        # EPUB export is an additive PDF artifact (ADR-0067): package after the
+        # post-passes and the inference marker, and force the figure images the
+        # packaging needs without writing per-page render links.
+        epub_export = config.epub_output_enabled() and path.suffix.lower() == ".pdf"
         # The AI passes record what actually landed in the Markdown (ADR-0050);
         # the ledger scopes those notes to this one conversion.
         with inference.tracking():
-            with phase(run_id, "convert", 1):
-                result = converter.convert(
-                    path,
-                    layout.output_dir,
-                    progress_callback=progress_callback,
-                    output_stem=output_stem,
-                )
+            with config.force_epub_images() if epub_export else nullcontext():
+                with phase(run_id, "convert", 1):
+                    result = converter.convert(
+                        path,
+                        layout.output_dir,
+                        progress_callback=progress_callback,
+                        output_stem=output_stem,
+                    )
             if layout.warnings:
                 result.warnings = layout.warnings + result.warnings
             if result.error is None and result.md_path is not None:
@@ -269,6 +287,14 @@ def _convert_one(
                             result.warnings,
                             overwrite=config.inference_overwrite(),
                         )
+                if epub_export and result.error is None and result.md_path is not None:
+                    try:
+                        with phase(run_id, "epub", 6):
+                            result.epub_path = epub.build_epub(
+                                result.md_path, path, result.warnings
+                            )
+                    except Exception as exc:  # noqa: BLE001 - packaging never fails the conversion
+                        result.warnings.append(f"EPUB export failed: {exc}")
                 if layout.source_dest is not None:
                     moved = archive_source(path, layout.source_dest, result.warnings)
                     if moved is not None:

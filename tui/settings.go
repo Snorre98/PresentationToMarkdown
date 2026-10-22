@@ -36,6 +36,7 @@ func (m *model) settingsLayout() []settingsRow {
 	return []settingsRow{
 		{kind: settingsHeader, label: "Output"},
 		{kind: settingsSetting, key: "pdf_mode", label: "pdf mode"},
+		{kind: settingsSetting, key: "epub_output", label: "epub export"},
 		{kind: settingsSetting, key: "image_links", label: "image links"},
 		{kind: settingsSetting, key: "pdf_compress", label: "compress pdf"},
 		{kind: settingsSetting, key: "inference_overwrite", label: "overwrite infer"},
@@ -135,6 +136,14 @@ func (m *model) settingsValueFor(row settingsRow) string {
 			return "slide"
 		}
 		return m.cfg.PDFMode
+	case "epub_output":
+		if !m.cfg.EpubOutput {
+			return "off"
+		}
+		if !m.cfg.Pandoc {
+			return "on (pandoc missing)"
+		}
+		return "on"
 	case "image_links":
 		return boolLabel(m.cfg.ImageLinks)
 	case "pdf_compress":
@@ -247,6 +256,13 @@ func (m *model) activateSetting(editOnly bool) (tea.Model, tea.Cmd) {
 		}
 		m.cfg.PDFMode = next
 		return m, m.saveConfig(ConfigUpdate{PDFMode: next})
+	case "epub_output":
+		if editOnly {
+			return m, nil
+		}
+		next := !m.cfg.EpubOutput
+		m.cfg.EpubOutput = next
+		return m, m.saveConfig(ConfigUpdate{EpubOutput: &next})
 	case "image_links":
 		if editOnly {
 			return m, nil

@@ -35,6 +35,10 @@ REPEATED_IMAGE_THRESHOLD = 0.8
 class ConvertResult:
     source_path: Path
     md_path: Path | None = None
+    # The EPUB packaged from ``md_path`` when EPUB export is on (ADR-0067).
+    # ``None`` when the export is off, the input is not a PDF, or packaging
+    # failed (the Markdown is still the conversion's artifact then).
+    epub_path: Path | None = None
     error: str | None = None
     warnings: list[str] = field(default_factory=list)
     # Where the converted source was archived (ADR-0048); ``None`` when it was

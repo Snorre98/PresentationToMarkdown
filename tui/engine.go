@@ -82,6 +82,8 @@ type Config struct {
 	ImageLinks         bool            `json:"image_links"`
 	PDFCompress        bool            `json:"pdf_compress"`
 	InferenceOverwrite bool            `json:"inference_overwrite"`
+	EpubOutput         bool            `json:"epub_output"`
+	Pandoc             bool            `json:"pandoc"`
 	NeedGate           string          `json:"need_gate"`
 	Duplicate          bool            `json:"duplicate"`
 	VaultRoot          string          `json:"vault_root"`
@@ -103,6 +105,7 @@ type ConfigUpdate struct {
 	ImageLinks         *bool           `json:"image_links,omitempty"`
 	PDFCompress        *bool           `json:"pdf_compress,omitempty"`
 	InferenceOverwrite *bool           `json:"inference_overwrite,omitempty"`
+	EpubOutput         *bool           `json:"epub_output,omitempty"`
 	VaultRoot          string          `json:"vault_root,omitempty"`
 	Duplicate          *bool           `json:"duplicate,omitempty"`
 
@@ -153,6 +156,7 @@ type Job struct {
 type JobResult struct {
 	Source          string   `json:"source"`
 	MDPath          string   `json:"md_path"`
+	EpubPath        string   `json:"epub_path"`
 	MovedTo         string   `json:"moved_to"`
 	Error           string   `json:"error"`
 	Warnings        []string `json:"warnings"`

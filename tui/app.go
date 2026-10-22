@@ -582,6 +582,10 @@ func (m *model) updateResults(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			}
 			return m, m.openCmd(target, false)
 		}
+	case "E":
+		if row := m.selectedResult(); row != nil && row.epubPath != "" {
+			return m, m.openCmd(row.epubPath, false)
+		}
 	case "f":
 		if row := m.selectedResult(); row != nil {
 			target := row.mdPath

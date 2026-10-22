@@ -66,3 +66,4 @@ Index of architectural decisions for PresentationToMarkdown, in
 | [0064](0064-fleet-model-identity-key-name-tags.md) | Fleet model identity in PtM — key, display name, tags | Amended by [0065](0065-ai-capability-labels-and-requirements.md) |
 | [0065](0065-ai-capability-labels-and-requirements.md) | AI capability labels and the resolved requirements projection | Amended by [0066](0066-ai-setup-control-surface.md) |
 | [0066](0066-ai-setup-control-surface.md) | AI setup is the AI control surface | Accepted |
+| [0067](0067-pdf-epub-export.md) | PDF → EPUB export beside the Markdown | Accepted |
