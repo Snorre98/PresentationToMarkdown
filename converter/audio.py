@@ -49,20 +49,29 @@ Configuration (environment variables):
   manifest's ``audio`` daemon (``:8089``, ADR-0035) via the control daemon's
   ``list`` projection, falling back to ``http://127.0.0.1:8089/v1``.
 - ``AUDIO_DIARIZE_API_KEY`` — optional bearer token for the audio server.
+- ``AUDIO_DIARIZE_TIMEOUT`` — per-request diarization timeout in seconds,
+  default ``1800``. One *chunk* is one request (ADR-0068).
+- ``AUDIO_DIARIZE_SPEAKER_THRESHOLD`` — cosine-similarity threshold used to
+  merge per-chunk speaker identities when no exact speaker count is set,
+  default ``0.65`` (ADR-0068).
 - ``WHISPER_BASE_URL`` — whisper daemon base URL override. Default: the
   manifest's ``whisper`` daemon (``:8099``) via the ``list`` projection,
   falling back to ``http://127.0.0.1:8099/v1``.
 - ``WHISPER_API_KEY`` — optional bearer token for the whisper daemon.
-- ``AUDIO_ENHANCE_ENABLED`` — enhancement master switch. Default on.
+- ``AUDIO_ENHANCE_ENABLED`` — enhancement master switch. Default off.
 - ``AUDIO_ENHANCE_BASE_URL`` — enhancement base URL, defaults to ``AUDIO_DIARIZE_BASE_URL``.
 - ``AUDIO_ENHANCE_API_KEY`` — optional bearer token, defaults to ``AUDIO_DIARIZE_API_KEY``.
-- ``AUDIO_DEREVERB_ENABLED`` — WPE dereverberation master switch. Default on.
+- ``AUDIO_DEREVERB_ENABLED`` — WPE dereverberation master switch. Default off.
+- ``AUDIO_PREP_TIMEOUT`` — per-stage timeout in seconds for dereverb/enhance,
+  default ``300``; a wedged optional stage must not cost the caller 30 minutes
+  (ADR-0069).
 - ``AUDIO_ISOLATE_ENABLED`` — voice isolation master switch. Default off.
 """
 from __future__ import annotations
 
 import http.client
 import json
+import math
 import os
 import urllib.error
 import urllib.request
@@ -213,7 +222,7 @@ def _audio_base_url() -> str:
 AUDIO_DIARIZE_BASE_URL = _audio_base_url()
 AUDIO_DIARIZE_API_KEY = os.environ.get("AUDIO_DIARIZE_API_KEY") or None
 
-AUDIO_ENHANCE_ENABLED = os.environ.get("AUDIO_ENHANCE_ENABLED", "1").strip().lower() in {
+AUDIO_ENHANCE_ENABLED = os.environ.get("AUDIO_ENHANCE_ENABLED", "").strip().lower() in {
     "1",
     "true",
     "yes",
@@ -222,7 +231,7 @@ AUDIO_ENHANCE_ENABLED = os.environ.get("AUDIO_ENHANCE_ENABLED", "1").strip().low
 AUDIO_ENHANCE_BASE_URL = os.environ.get("AUDIO_ENHANCE_BASE_URL", AUDIO_DIARIZE_BASE_URL)
 AUDIO_ENHANCE_API_KEY = os.environ.get("AUDIO_ENHANCE_API_KEY") or AUDIO_DIARIZE_API_KEY
 
-AUDIO_DEREVERB_ENABLED = os.environ.get("AUDIO_DEREVERB_ENABLED", "1").strip().lower() in {
+AUDIO_DEREVERB_ENABLED = os.environ.get("AUDIO_DEREVERB_ENABLED", "").strip().lower() in {
     "1",
     "true",
     "yes",
@@ -240,6 +249,30 @@ _ASR_TIMEOUT = 3600.0
 _ENHANCE_TIMEOUT = 1800.0
 _DEREVERB_TIMEOUT = 1800.0
 _ISOLATE_TIMEOUT = 1800.0
+
+
+def _float_env(name: str, default: float) -> float:
+    """Parse ``name`` as a float, tolerating unset/garbage (``default``)."""
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
+
+
+# One diarization *request* now covers one chunk (ADR-0068), so the ceiling is
+# per chunk, not per file. Overridable so an operator can trade patience for
+# very short or very long chunks.
+AUDIO_DIARIZE_TIMEOUT = _float_env("AUDIO_DIARIZE_TIMEOUT", _DIARIZE_TIMEOUT)
+# Timeout for the *preprocessing* stages (dereverb/enhance). They are optional
+# and, when the server wedges, a long timeout is pure dead waiting: last run
+# burned a full 1800 s on each (ADR-0069).
+AUDIO_PREP_TIMEOUT = _float_env("AUDIO_PREP_TIMEOUT", 300.0)
+# Cosine similarity above which two per-chunk speaker identities are treated as
+# the same person when no exact speaker count is configured (ADR-0068).
+AUDIO_DIARIZE_SPEAKER_THRESHOLD = _float_env("AUDIO_DIARIZE_SPEAKER_THRESHOLD", 0.65)
 
 
 def _post_json(req: urllib.request.Request, timeout: float, what: str):
@@ -260,15 +293,21 @@ def _post_json(req: urllib.request.Request, timeout: float, what: str):
         raise RuntimeError(detail or f"{what} returned HTTP {exc.code}") from exc
 
 
-def diarize(
+def diarize_detailed(
     audio_path: str,
     min_speakers: int | None = None,
     max_speakers: int | None = None,
     base_url: str | None = None,
     api_key: str | None = None,
-    timeout: float = _DIARIZE_TIMEOUT,
-) -> list[dict]:
-    """Return speaker turns as ``[{start, end, speaker}, ...]``.
+    timeout: float | None = None,
+    return_embeddings: bool = False,
+) -> dict:
+    """Return ``{"turns": [...], "embeddings": {label: vector}}`` for one request.
+
+    ``return_embeddings`` asks the server for one speaker embedding per local
+    label, which is what lets :func:`stitch_chunk_turns` keep speaker identity
+    consistent across chunks (ADR-0068). Servers that predate the field simply
+    omit the embeddings, and the caller degrades to a single request.
 
     Raises on any network/HTTP error so callers can degrade to an unlabelled
     transcript.
@@ -278,6 +317,8 @@ def diarize(
         payload["min_speakers"] = min_speakers
     if max_speakers is not None:
         payload["max_speakers"] = max_speakers
+    if return_embeddings:
+        payload["return_embeddings"] = True
     url = (base_url or AUDIO_DIARIZE_BASE_URL).rstrip("/") + "/diarize"
     data = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
@@ -286,7 +327,7 @@ def diarize(
     key = api_key or AUDIO_DIARIZE_API_KEY
     if key:
         req.add_header("Authorization", f"Bearer {key}")
-    body = _post_json(req, timeout, "diarization")
+    body = _post_json(req, timeout or AUDIO_DIARIZE_TIMEOUT, "diarization")
     turns = body if isinstance(body, list) else body.get("turns", [])
     result: list[dict] = []
     for turn in turns:
@@ -297,7 +338,250 @@ def diarize(
                 "speaker": str(turn.get("speaker") or turn.get("label") or "SPEAKER"),
             }
         )
-    return result
+    embeddings: dict[str, list[float]] = {}
+    if isinstance(body, dict):
+        for label, vector in (body.get("embeddings") or {}).items():
+            try:
+                embeddings[str(label)] = [float(value) for value in vector]
+            except (TypeError, ValueError):
+                continue
+    return {"turns": result, "embeddings": embeddings}
+
+
+def diarize(
+    audio_path: str,
+    min_speakers: int | None = None,
+    max_speakers: int | None = None,
+    base_url: str | None = None,
+    api_key: str | None = None,
+    timeout: float | None = None,
+) -> list[dict]:
+    """Return speaker turns as ``[{start, end, speaker}, ...]``.
+
+    Thin wrapper over :func:`diarize_detailed` for the single-request path.
+    Raises on any network/HTTP error so callers can degrade to an unlabelled
+    transcript.
+    """
+    return diarize_detailed(
+        audio_path,
+        min_speakers=min_speakers,
+        max_speakers=max_speakers,
+        base_url=base_url,
+        api_key=api_key,
+        timeout=timeout,
+    )["turns"]
+
+
+# ── Long-file diarization: chunk plan, identity stitching (ADR-0068) ──────────
+
+
+def audio_server_available(
+    timeout: float = 2.0, base_url: str | None = None
+) -> bool:
+    """Whether the audio server answers ``GET {base}/models``.
+
+    A pre-flight before diarization: a dead or wedged daemon then costs one
+    failed probe instead of a whole chunk loop of connection errors. Never
+    raises — an unreachable server is simply ``False``.
+    """
+    url = f"{(base_url or AUDIO_DIARIZE_BASE_URL).rstrip('/')}/models"
+    req = urllib.request.Request(url, method="GET")
+    key = AUDIO_DIARIZE_API_KEY
+    if key:
+        req.add_header("Authorization", f"Bearer {key}")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return 200 <= resp.status < 300
+    except urllib.error.HTTPError:
+        # The server answered, it just does not serve this route (the real
+        # audio server implements POST only and returns 501 for GET). We are
+        # asking whether it is reachable, not whether it has a /models verb.
+        return True
+    except Exception:  # noqa: BLE001 - unreachable is the answer, not an error
+        return False
+
+
+def _unit(vector: list[float]) -> list[float]:
+    """Return ``vector`` scaled to unit length (or unchanged when it is zero)."""
+    norm = math.sqrt(sum(value * value for value in vector))
+    if not norm:
+        return list(vector)
+    return [value / norm for value in vector]
+
+
+def _cosine(a: list[float], b: list[float]) -> float:
+    """Cosine similarity between two already-normalised vectors."""
+    return sum(x * y for x, y in zip(a, b))
+
+
+def plan_diarize_chunks(
+    duration: float,
+    vad_regions: list[dict] | None = None,
+    chunk_seconds: float = 900.0,
+    overlap_seconds: float = 15.0,
+    min_seconds: float = 480.0,
+) -> list[dict]:
+    """Split ``duration`` into diarization chunks that end inside silences.
+
+    Each chunk carries a *core* span (the part whose turns are kept) and a
+    *request* span (the core plus half the overlap on each side, used as
+    context). Cuts prefer the middle of a VAD silence nearest the nominal
+    boundary, so a turn is rarely split; whatever still straddles a boundary is
+    clamped in :func:`stitch_chunk_turns`, which keeps every second covered
+    exactly once (ADR-0068).
+
+    A file no longer than ``chunk_seconds`` yields a single chunk covering the
+    whole recording, i.e. today's one-request behaviour.
+    """
+    duration = float(duration)
+    if duration <= 0:
+        return []
+    chunk_seconds = max(60.0, float(chunk_seconds))
+    min_seconds = max(0.0, float(min_seconds))
+    overlap = max(0.0, float(overlap_seconds))
+
+    regions = sorted(
+        (float(region["start"]), float(region["end"])) for region in (vad_regions or [])
+    )
+    cut_points: list[float] = []
+    previous_end = 0.0
+    for start, end in regions:
+        if start - previous_end > 0:
+            cut_points.append((previous_end + start) / 2.0)
+        previous_end = max(previous_end, end)
+    if duration - previous_end > 0:
+        cut_points.append((previous_end + duration) / 2.0)
+
+    cores: list[tuple[float, float]] = []
+    core_start = 0.0
+    while duration - core_start > chunk_seconds * 1.5:
+        target = core_start + chunk_seconds
+        low = core_start + min_seconds
+        high = min(duration, core_start + chunk_seconds * 1.5)
+        candidates = [point for point in cut_points if low <= point <= high]
+        cut = min(candidates, key=lambda point: abs(point - target)) if candidates else target
+        cores.append((core_start, cut))
+        core_start = cut
+    cores.append((core_start, duration))
+
+    return [
+        {
+            "core_start": start,
+            "core_end": end,
+            "request_start": max(0.0, start - overlap / 2.0),
+            "request_end": min(duration, end + overlap / 2.0),
+        }
+        for start, end in cores
+    ]
+
+
+def cluster_speaker_embeddings(
+    embeddings: list[list[float]],
+    num_speakers: int | None = None,
+    threshold: float = AUDIO_DIARIZE_SPEAKER_THRESHOLD,
+) -> list[int]:
+    """Cluster speaker embeddings into identities; return one cluster id per input.
+
+    Average-linkage agglomerative clustering on cosine similarity, which is the
+    same family pyannote itself uses (ADR-0068). With ``num_speakers`` the merge
+    stops at that exact count; otherwise pairs at or above ``threshold`` are
+    merged and the rest stay apart. Ties are broken by iteration order, so the
+    result is deterministic for the same input.
+    """
+    vectors = [_unit([float(value) for value in vector]) for vector in embeddings]
+    if not vectors:
+        return []
+    clusters: list[list[int]] = [[index] for index in range(len(vectors))]
+
+    def centroid(members: list[int]) -> list[float]:
+        summed = [0.0] * len(vectors[members[0]])
+        for member in members:
+            for position, value in enumerate(vectors[member]):
+                summed[position] += value
+        return _unit(summed)
+
+    target = None if num_speakers is None else max(1, int(num_speakers))
+    while len(clusters) > 1:
+        if target is not None and len(clusters) <= target:
+            break
+        best_similarity = -2.0
+        best_pair = (0, 0)
+        centroids = [centroid(members) for members in clusters]
+        for left in range(len(clusters)):
+            for right in range(left + 1, len(clusters)):
+                similarity = _cosine(centroids[left], centroids[right])
+                if similarity > best_similarity:
+                    best_similarity = similarity
+                    best_pair = (left, right)
+        if target is None and best_similarity < threshold:
+            break
+        left, right = best_pair
+        clusters[left].extend(clusters[right])
+        del clusters[right]
+
+    labels = [0] * len(vectors)
+    for cluster_id, members in enumerate(clusters):
+        for member in members:
+            labels[member] = cluster_id
+    return labels
+
+
+def stitch_chunk_turns(
+    chunks: list[dict],
+    num_speakers: int | None = None,
+    threshold: float = AUDIO_DIARIZE_SPEAKER_THRESHOLD,
+) -> list[dict]:
+    """Merge per-chunk diarization into one globally-labelled turn list.
+
+    ``chunks`` are ``{"core_start", "core_end", "turns": [{start, end, speaker}],
+    "embeddings": {local_label: vector}}`` as produced by
+    :func:`converter.transcribe`'s chunk loop. Local labels are re-identified
+    across chunks by clustering their embeddings, turns are clamped to their
+    core span (so every second is covered exactly once) and the surviving
+    identities are renamed ``SPEAKER_00``, ``SPEAKER_01``, … in order of first
+    appearance. A local speaker with no embedding keeps a private identity
+    rather than being merged into someone else (ADR-0068).
+    """
+    keys: list[tuple[int, str]] = []
+    vectors: list[list[float]] = []
+    for index, chunk in enumerate(chunks):
+        for label, vector in (chunk.get("embeddings") or {}).items():
+            keys.append((index, str(label)))
+            vectors.append(vector)
+
+    labels = cluster_speaker_embeddings(
+        vectors, num_speakers=num_speakers, threshold=threshold
+    )
+    mapping: dict[tuple[int, str], int] = {
+        key: labels[position] for position, key in enumerate(keys)
+    }
+    next_id = max(labels, default=-1) + 1
+
+    turns: list[dict] = []
+    for index, chunk in enumerate(chunks):
+        core_start = float(chunk["core_start"])
+        core_end = float(chunk["core_end"])
+        for turn in chunk.get("turns") or []:
+            key = (index, str(turn.get("speaker")))
+            label = mapping.get(key)
+            if label is None:
+                mapping[key] = next_id
+                label = next_id
+                next_id += 1
+            start = max(float(turn["start"]), core_start)
+            end = min(float(turn["end"]), core_end)
+            if end - start <= 0:
+                continue
+            turns.append({"start": start, "end": end, "speaker": label})
+
+    turns.sort(key=lambda turn: (turn["start"], turn["end"]))
+    names: dict[int, str] = {}
+    for turn in turns:
+        if turn["speaker"] not in names:
+            names[turn["speaker"]] = f"SPEAKER_{len(names):02d}"
+    for turn in turns:
+        turn["speaker"] = names[turn["speaker"]]
+    return turns
 
 
 def asr(
@@ -588,14 +872,22 @@ def enhance(
     output_path: str,
     base_url: str | None = None,
     api_key: str | None = None,
-    timeout: float = _ENHANCE_TIMEOUT,
+    timeout: float | None = None,
 ) -> None:
     """Enhance ``audio_path`` (denoise/dereverb) and write it to ``output_path``.
 
     Raises on any network/HTTP error so callers can degrade to the
     non-enhanced audio.
     """
-    _post_audio("enhance", audio_path, output_path, base_url, api_key, timeout, "enhancement")
+    _post_audio(
+        "enhance",
+        audio_path,
+        output_path,
+        base_url,
+        api_key,
+        timeout or AUDIO_PREP_TIMEOUT,
+        "enhancement",
+    )
 
 
 def dereverb(
@@ -603,14 +895,22 @@ def dereverb(
     output_path: str,
     base_url: str | None = None,
     api_key: str | None = None,
-    timeout: float = _DEREVERB_TIMEOUT,
+    timeout: float | None = None,
 ) -> None:
     """Dereverberate ``audio_path`` (WPE) and write it to ``output_path``.
 
     Raises on any network/HTTP error so callers can degrade to the reverberant
     audio.
     """
-    _post_audio("dereverb", audio_path, output_path, base_url, api_key, timeout, "dereverberation")
+    _post_audio(
+        "dereverb",
+        audio_path,
+        output_path,
+        base_url,
+        api_key,
+        timeout or AUDIO_PREP_TIMEOUT,
+        "dereverberation",
+    )
 
 
 def isolate(

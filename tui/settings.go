@@ -45,6 +45,10 @@ func (m *model) settingsLayout() []settingsRow {
 		{kind: settingsHeader, label: "Audio transcription"},
 		{kind: settingsSetting, key: "diarize", label: "diarize"},
 		{kind: settingsSetting, key: "speakers", label: "speakers"},
+		{kind: settingsSetting, key: "dereverb", label: "dereverb"},
+		{kind: settingsSetting, key: "denoise", label: "denoise"},
+		{kind: settingsSetting, key: "prep_timeout", label: "prep timeout"},
+		{kind: settingsSetting, key: "preflight", label: "check server"},
 		{kind: settingsSetting, key: "audio_model", label: "audio model"},
 		{kind: settingsSetting, key: "language", label: "language"},
 	}
@@ -94,6 +98,7 @@ const (
 	editOutput
 	editLanguage
 	editSpeakers
+	editPrepTimeout
 )
 
 type fleetMsg struct {
@@ -170,6 +175,17 @@ func (m *model) settingsValueFor(row settingsRow) string {
 			return "auto"
 		}
 		return strconv.Itoa(m.cfg.AudioSpeakers)
+	case "dereverb":
+		return boolLabel(m.cfg.AudioDereverb)
+	case "denoise":
+		return boolLabel(m.cfg.AudioEnhance)
+	case "prep_timeout":
+		if m.editing == editPrepTimeout {
+			return m.editBuf + "▌"
+		}
+		return strconv.Itoa(m.cfg.AudioPrepTimeout/60) + " min"
+	case "preflight":
+		return boolLabel(m.cfg.AudioPreflight)
 	case "audio_model":
 		return modelShort(m.cfg.AudioModel)
 	case "language":
@@ -205,7 +221,7 @@ func (m *model) updateSettings(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			}
 		default:
 			if msg.Text != "" {
-				if m.editing == editSpeakers {
+				if m.editing == editSpeakers || m.editing == editPrepTimeout {
 					for _, r := range msg.Text {
 						if r >= '0' && r <= '9' {
 							m.editBuf += string(r)
@@ -302,6 +318,31 @@ func (m *model) activateSetting(editOnly bool) (tea.Model, tea.Cmd) {
 		m.editing = editSpeakers
 		m.editBuf = strconv.Itoa(m.cfg.AudioSpeakers)
 		return m, nil
+	case "dereverb":
+		if editOnly {
+			return m, nil
+		}
+		next := !m.cfg.AudioDereverb
+		m.cfg.AudioDereverb = next
+		return m, m.saveConfig(ConfigUpdate{AudioDereverb: &next})
+	case "denoise":
+		if editOnly {
+			return m, nil
+		}
+		next := !m.cfg.AudioEnhance
+		m.cfg.AudioEnhance = next
+		return m, m.saveConfig(ConfigUpdate{AudioEnhance: &next})
+	case "prep_timeout":
+		m.editing = editPrepTimeout
+		m.editBuf = strconv.Itoa(m.cfg.AudioPrepTimeout / 60)
+		return m, nil
+	case "preflight":
+		if editOnly {
+			return m, nil
+		}
+		next := !m.cfg.AudioPreflight
+		m.cfg.AudioPreflight = next
+		return m, m.saveConfig(ConfigUpdate{AudioPreflight: &next})
 	case "audio_model":
 		if editOnly {
 			return m, nil
@@ -342,6 +383,17 @@ func (m *model) commitEdit() tea.Cmd {
 		}
 		m.cfg.AudioSpeakers = n
 		return m.saveConfig(ConfigUpdate{AudioSpeakers: &n})
+	case editPrepTimeout:
+		minutes := 0
+		if v, err := strconv.Atoi(m.editBuf); err == nil && v >= 1 {
+			minutes = v
+		}
+		if minutes == 0 {
+			minutes = 5
+		}
+		seconds := minutes * 60
+		m.cfg.AudioPrepTimeout = seconds
+		return m.saveConfig(ConfigUpdate{AudioPrepTimeout: &seconds})
 	case editLanguage:
 		val := strings.TrimSpace(m.editBuf)
 		if val == "" {

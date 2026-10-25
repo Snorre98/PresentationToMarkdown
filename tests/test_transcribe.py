@@ -3,6 +3,7 @@ from pathlib import Path
 
 import pytest
 
+from converter import audio as a
 from converter import transcribe as t
 from converter.audio import assign_speakers, assign_speakers_by_words
 
@@ -100,6 +101,7 @@ def test_transcribe_diarize_bounds_passed(monkeypatch, tmp_path):
     )
     calls: dict = {}
     monkeypatch.setattr(t, "diarize_requested", lambda: True)
+    monkeypatch.setattr(t, "AUDIO_DIARIZE_PREFLIGHT", False)
     monkeypatch.setattr(
         t, "diarize_bounds", lambda: {"min_speakers": 2, "max_speakers": 2}
     )
@@ -150,8 +152,8 @@ def test_transcribe_audio_routes_to_fleet(monkeypatch, tmp_path):
         raise AssertionError("there is no subprocess ASR lane")
 
     monkeypatch.setattr(t, "_run", fake_run)
-    monkeypatch.setattr(t, "AUDIO_DEREVERB_ENABLED", False)
-    monkeypatch.setattr(t, "AUDIO_ENHANCE_ENABLED", False)
+    monkeypatch.setattr(a, "AUDIO_DEREVERB_ENABLED", False)
+    monkeypatch.setattr(a, "AUDIO_ENHANCE_ENABLED", False)
     clean = tmp_path / "x.clean.flac"
     segs = t.transcribe_audio(tmp_path / "x.mp3", clean)
     assert segs == [{"start": 0.0, "end": 2.5, "text": "hello"}]
@@ -167,8 +169,8 @@ def test_transcribe_audio_model_override_normalized(monkeypatch, tmp_path):
     calls: dict = {}
     monkeypatch.setattr(t, "transcribe_fleet", lambda path, **kw: calls.update(kw) or [])
     monkeypatch.setattr(t, "_run", lambda cmd, timeout=3600.0, **kw: "")
-    monkeypatch.setattr(t, "AUDIO_DEREVERB_ENABLED", False)
-    monkeypatch.setattr(t, "AUDIO_ENHANCE_ENABLED", False)
+    monkeypatch.setattr(a, "AUDIO_DEREVERB_ENABLED", False)
+    monkeypatch.setattr(a, "AUDIO_ENHANCE_ENABLED", False)
     t.transcribe_audio(
         tmp_path / "x.mp3",
         tmp_path / "x.clean.flac",
@@ -187,8 +189,8 @@ def test_transcribe_audio_failure_raises_no_fallback(monkeypatch, tmp_path):
         raise AssertionError("there is no subprocess fallback")
 
     monkeypatch.setattr(t, "_run", fake_run)
-    monkeypatch.setattr(t, "AUDIO_DEREVERB_ENABLED", False)
-    monkeypatch.setattr(t, "AUDIO_ENHANCE_ENABLED", False)
+    monkeypatch.setattr(a, "AUDIO_DEREVERB_ENABLED", False)
+    monkeypatch.setattr(a, "AUDIO_ENHANCE_ENABLED", False)
     monkeypatch.setattr(
         t,
         "transcribe_fleet",
@@ -408,8 +410,8 @@ def test_transcribe_audio(monkeypatch, tmp_path):
         segments=[{"start": 0.0, "end": 2.5, "text": "hello world"}],
         calls=fleet_calls,
     )
-    monkeypatch.setattr(t, "AUDIO_ENHANCE_ENABLED", False)
-    monkeypatch.setattr(t, "AUDIO_DEREVERB_ENABLED", False)
+    monkeypatch.setattr(a, "AUDIO_ENHANCE_ENABLED", False)
+    monkeypatch.setattr(a, "AUDIO_DEREVERB_ENABLED", False)
     clean = tmp_path / "x.clean.flac"
     segs = t.transcribe_audio(tmp_path / "x.mp3", clean)
 
@@ -436,11 +438,36 @@ def test_transcribe_audio_preprocess_disabled(monkeypatch, tmp_path):
 
     monkeypatch.setattr(t, "_run", fake_run)
     _capture_fleet(monkeypatch)
-    monkeypatch.setattr(t, "AUDIO_ENHANCE_ENABLED", False)
-    monkeypatch.setattr(t, "AUDIO_DEREVERB_ENABLED", False)
+    monkeypatch.setattr(a, "AUDIO_ENHANCE_ENABLED", False)
+    monkeypatch.setattr(a, "AUDIO_DEREVERB_ENABLED", False)
     monkeypatch.setattr(t, "AUDIO_PREPROCESS", False)
     t.transcribe_audio(tmp_path / "x.mp3", tmp_path / "x.clean.flac")
     assert "-af" not in calls[0]
+
+
+def test_transcribe_audio_ffmpeg_ignores_video_tracks(monkeypatch, tmp_path):
+    """A video source must not have its video track re-encoded (ADR-0069).
+
+    Without ``-vn`` ffmpeg selects the video stream, re-encodes it and the FLAC
+    muxer discards it: a 55-minute 1080p .mp4 spent ~40 minutes in the clean
+    step at ~900% CPU instead of seconds.
+    """
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, timeout=3600.0):
+        calls.append(list(cmd))
+        return ""
+
+    monkeypatch.setattr(t, "_run", fake_run)
+    _capture_fleet(monkeypatch)
+    monkeypatch.setattr(a, "AUDIO_ENHANCE_ENABLED", False)
+    monkeypatch.setattr(a, "AUDIO_DEREVERB_ENABLED", False)
+    t.transcribe_audio(tmp_path / "x.mp4", tmp_path / "x.clean.flac")
+
+    cmd = calls[0]
+    assert "-vn" in cmd
+    assert "-sn" in cmd and "-dn" in cmd
+    assert cmd[cmd.index("-map") + 1] == "0:a:0?"
 
 
 def test_transcribe_audio_calls_enhance_when_enabled(monkeypatch, tmp_path):
@@ -448,8 +475,8 @@ def test_transcribe_audio_calls_enhance_when_enabled(monkeypatch, tmp_path):
 
     monkeypatch.setattr(t, "_run", lambda cmd, timeout=3600.0: "")
     _capture_fleet(monkeypatch)
-    monkeypatch.setattr(t, "AUDIO_ENHANCE_ENABLED", True)
-    monkeypatch.setattr(t, "AUDIO_DEREVERB_ENABLED", False)
+    monkeypatch.setattr(a, "AUDIO_ENHANCE_ENABLED", True)
+    monkeypatch.setattr(a, "AUDIO_DEREVERB_ENABLED", False)
     monkeypatch.setattr(t, "enhance", lambda p, o, **kw: enhanced.append((p, o)))
     clean = tmp_path / "x.clean.flac"
     t.transcribe_audio(tmp_path / "x.mp3", clean)
@@ -466,8 +493,8 @@ def test_transcribe_audio_bad_length_enhance_discarded(monkeypatch, tmp_path):
 
     monkeypatch.setattr(t, "_run", fake_run)
     _capture_fleet(monkeypatch)
-    monkeypatch.setattr(t, "AUDIO_ENHANCE_ENABLED", True)
-    monkeypatch.setattr(t, "AUDIO_DEREVERB_ENABLED", False)
+    monkeypatch.setattr(a, "AUDIO_ENHANCE_ENABLED", True)
+    monkeypatch.setattr(a, "AUDIO_DEREVERB_ENABLED", False)
     monkeypatch.setattr(t, "enhance", lambda p, o, **kw: None)
     # source (clean) reports 10s, the enhanced temp reports 30s -> mismatch.
     monkeypatch.setattr(t, "_audio_duration", lambda p: 30.0 if ".enhanced." in p.name else 10.0)
@@ -483,8 +510,8 @@ def test_transcribe_audio_bad_length_enhance_discarded(monkeypatch, tmp_path):
 def test_transcribe_audio_enhance_failure_warns(monkeypatch, tmp_path):
     monkeypatch.setattr(t, "_run", lambda cmd, timeout=3600.0: "")
     _capture_fleet(monkeypatch)
-    monkeypatch.setattr(t, "AUDIO_ENHANCE_ENABLED", True)
-    monkeypatch.setattr(t, "AUDIO_DEREVERB_ENABLED", False)
+    monkeypatch.setattr(a, "AUDIO_ENHANCE_ENABLED", True)
+    monkeypatch.setattr(a, "AUDIO_DEREVERB_ENABLED", False)
     monkeypatch.setattr(t, "enhance", lambda p, o, **kw: (_ for _ in ()).throw(RuntimeError("down")))
     warnings: list[str] = []
     segs = t.transcribe_audio(tmp_path / "x.mp3", tmp_path / "x.clean.flac", warnings=warnings)
@@ -516,9 +543,9 @@ def test_transcribe_audio_dereverb_enhance_isolate_order(monkeypatch, tmp_path):
     monkeypatch.setattr(t, "_run", fake_run)
     _capture_fleet(monkeypatch, calls=fleet_input)
     monkeypatch.setattr(t, "_audio_duration", lambda p: 10.0)
-    monkeypatch.setattr(t, "AUDIO_DEREVERB_ENABLED", True)
-    monkeypatch.setattr(t, "AUDIO_ENHANCE_ENABLED", True)
-    monkeypatch.setattr(t, "AUDIO_ISOLATE_ENABLED", True)
+    monkeypatch.setattr(a, "AUDIO_DEREVERB_ENABLED", True)
+    monkeypatch.setattr(a, "AUDIO_ENHANCE_ENABLED", True)
+    monkeypatch.setattr(a, "AUDIO_ISOLATE_ENABLED", True)
     monkeypatch.setattr(t, "dereverb", dereverb_)
     monkeypatch.setattr(t, "enhance", enhance_)
     monkeypatch.setattr(t, "isolate", isolate_)
@@ -543,9 +570,9 @@ def test_transcribe_audio_isolate_bad_length_falls_back(monkeypatch, tmp_path):
 
     monkeypatch.setattr(t, "_run", fake_run)
     _capture_fleet(monkeypatch, calls=fleet_input)
-    monkeypatch.setattr(t, "AUDIO_DEREVERB_ENABLED", False)
-    monkeypatch.setattr(t, "AUDIO_ENHANCE_ENABLED", False)
-    monkeypatch.setattr(t, "AUDIO_ISOLATE_ENABLED", True)
+    monkeypatch.setattr(a, "AUDIO_DEREVERB_ENABLED", False)
+    monkeypatch.setattr(a, "AUDIO_ENHANCE_ENABLED", False)
+    monkeypatch.setattr(a, "AUDIO_ISOLATE_ENABLED", True)
     monkeypatch.setattr(t, "isolate", lambda p, o, **kw: Path(o).write_bytes(b"isolated"))
     # source (clean) reports 10s, the isolated temp reports 30s -> mismatch.
     monkeypatch.setattr(
@@ -566,9 +593,9 @@ def test_transcribe_audio_isolate_failure_warns(monkeypatch, tmp_path):
 
     monkeypatch.setattr(t, "_run", lambda cmd, timeout=3600.0, **kw: "")
     _capture_fleet(monkeypatch, calls=fleet_input)
-    monkeypatch.setattr(t, "AUDIO_DEREVERB_ENABLED", False)
-    monkeypatch.setattr(t, "AUDIO_ENHANCE_ENABLED", False)
-    monkeypatch.setattr(t, "AUDIO_ISOLATE_ENABLED", True)
+    monkeypatch.setattr(a, "AUDIO_DEREVERB_ENABLED", False)
+    monkeypatch.setattr(a, "AUDIO_ENHANCE_ENABLED", False)
+    monkeypatch.setattr(a, "AUDIO_ISOLATE_ENABLED", True)
     monkeypatch.setattr(
         t, "isolate", lambda p, o, **kw: (_ for _ in ()).throw(RuntimeError("down"))
     )
@@ -587,9 +614,9 @@ def test_transcribe_audio_isolated_versioned_naming(monkeypatch, tmp_path):
     monkeypatch.setattr(t, "_run", lambda cmd, timeout=3600.0, **kw: "")
     _capture_fleet(monkeypatch, calls=fleet_input)
     monkeypatch.setattr(t, "_audio_duration", lambda p: 10.0)
-    monkeypatch.setattr(t, "AUDIO_DEREVERB_ENABLED", False)
-    monkeypatch.setattr(t, "AUDIO_ENHANCE_ENABLED", False)
-    monkeypatch.setattr(t, "AUDIO_ISOLATE_ENABLED", True)
+    monkeypatch.setattr(a, "AUDIO_DEREVERB_ENABLED", False)
+    monkeypatch.setattr(a, "AUDIO_ENHANCE_ENABLED", False)
+    monkeypatch.setattr(a, "AUDIO_ISOLATE_ENABLED", True)
     monkeypatch.setattr(t, "isolate", lambda p, o, **kw: Path(o).write_bytes(b"isolated"))
 
     clean = tmp_path / "week-2.clean.1.flac"

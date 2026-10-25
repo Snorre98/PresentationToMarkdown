@@ -63,6 +63,10 @@ import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 DIARIZE_MODEL = os.environ.get("PYANNOTE_MODEL", "pyannote/speaker-diarization-3.1")
+# ``cpu`` (default, unchanged behaviour), ``mps`` (Apple GPU) or ``auto`` (try
+# mps, fall back to cpu). Diarization is embedding-bound on CPU, which is where
+# most of a long file's wall time goes (ADR-0068).
+DIARIZE_DEVICE = os.environ.get("DIARIZE_DEVICE", "cpu").strip().lower()
 HF_TOKEN = os.environ.get("HF_TOKEN")
 ASR_MODEL = os.environ.get("NB_WHISPER_MODEL", "NbAiLab/nb-whisper-large")
 ASR_DEVICE = os.environ.get("AUDIO_ASR_DEVICE", "mps")
@@ -107,10 +111,44 @@ _asr_pipe = None
 _enhancer = None
 _separator = None
 _vad = None
+# Device the diarization pipeline actually landed on in this process ("cpu",
+# "mps"), reported on every /diarize response.
+_diarize_device = "cpu"
+
+
+def _place_pipeline(pipeline):
+    """Move the diarization pipeline onto the configured device.
+
+    ``DIARIZE_DEVICE`` is ``cpu`` (default), ``mps`` or ``auto``. Any failure —
+    unavailable backend, unsupported operator — logs and stays on CPU, because a
+    slow diarization beats a failed one. The chosen device is reported back on
+    every ``/diarize`` response so a caller can tell what it actually got.
+    """
+    if DIARIZE_DEVICE in {"", "cpu"}:
+        return "cpu"
+    try:
+        import torch
+    except Exception:  # noqa: BLE001 - no torch, no device choice
+        return "cpu"
+    candidates = ["mps"] if DIARIZE_DEVICE in {"mps", "auto", "gpu"} else []
+    for device in candidates:
+        if device == "mps" and not torch.backends.mps.is_available():
+            print("[audio] mps unavailable; diarization stays on cpu", flush=True)
+            continue
+        try:
+            pipeline.to(torch.device(device))
+            print(f"[audio] diarization on {device}", flush=True)
+            return device
+        except Exception as exc:  # noqa: BLE001 - degrade to cpu
+            print(
+                f"[audio] diarization on {device} failed ({exc}); staying on cpu",
+                flush=True,
+            )
+    return "cpu"
 
 
 def _get_pipeline():
-    global _pipeline
+    global _pipeline, _diarize_device
     if _pipeline is None:
         from pyannote.audio import Pipeline
 
@@ -119,6 +157,7 @@ def _get_pipeline():
         except TypeError:
             # Older pyannote used `use_auth_token` instead of `token`.
             _pipeline = Pipeline.from_pretrained(DIARIZE_MODEL, use_auth_token=HF_TOKEN)
+        _diarize_device = _place_pipeline(_pipeline)
     return _pipeline
 
 
@@ -179,18 +218,46 @@ def _get_vad():
     return _vad
 
 
-def _run_diarization(path: str, min_speakers, max_speakers) -> list[dict]:
+def _run_diarization(
+    path: str,
+    min_speakers,
+    max_speakers,
+    return_embeddings: bool = False,
+) -> dict:
+    """Diarize ``path``; return ``{"turns": [...], "embeddings": {...}}``.
+
+    ``return_embeddings`` also returns one speaker embedding per local label,
+    which the client needs to keep ``SPEAKER_xx`` consistent when a long file is
+    diarized in chunks (ADR-0068). The embeddings come from the pipeline's own
+    clustering step, so they are the vectors pyannote actually clustered on.
+    """
     pipeline = _get_pipeline()
     kwargs: dict = {}
     if min_speakers is not None:
         kwargs["min_speakers"] = int(min_speakers)
     if max_speakers is not None:
         kwargs["max_speakers"] = int(max_speakers)
-    diarization = pipeline(path, **kwargs)
-    return [
-        {"start": float(turn.start), "end": float(turn.end), "speaker": str(speaker)}
-        for turn, _, speaker in diarization.itertracks(yield_label=True)
-    ]
+    embeddings: dict[str, list[float]] = {}
+    if return_embeddings:
+        diarization, centroids = pipeline(path, return_embeddings=True, **kwargs)
+        if centroids is not None:
+            for index, label in enumerate(diarization.labels()):
+                if index >= len(centroids):
+                    break
+                try:
+                    embeddings[str(label)] = [float(value) for value in centroids[index]]
+                except (TypeError, ValueError):
+                    continue
+    else:
+        diarization = pipeline(path, **kwargs)
+    return {
+        "turns": [
+            {"start": float(turn.start), "end": float(turn.end), "speaker": str(speaker)}
+            for turn, _, speaker in diarization.itertracks(yield_label=True)
+        ],
+        "embeddings": embeddings,
+        "device": _diarize_device,
+    }
 
 
 def _run_asr(
@@ -600,6 +667,29 @@ class _Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def do_GET(self):  # noqa: N802 - stdlib handler method name
+        """Liveness surface: the diarization pre-flight and ``audio_serve.sh``.
+
+        The heavy endpoints are POST-only; a reachable GET is what lets a caller
+        tell "server up" from "nothing listening" (ADR-0069).
+        """
+        route = self.path.rstrip("/")
+        if route in {"/health", "/v1/health"}:
+            self._send(200, {"ok": True})
+        elif route in {"/v1/models", "/models"}:
+            self._send(
+                200,
+                {
+                    "object": "list",
+                    "data": [
+                        {"id": "nb-whisper-large", "object": "model"},
+                        {"id": DIARIZE_MODEL, "object": "model"},
+                    ],
+                },
+            )
+        else:
+            self._send(404, {"error": "not found"})
+
     def _read_json(self):
         length = int(self.headers.get("Content-Length", 0))
         raw = self.rfile.read(length) if length else b"{}"
@@ -608,12 +698,6 @@ class _Handler(BaseHTTPRequestHandler):
         except json.JSONDecodeError as exc:
             self._send(400, {"error": f"invalid JSON: {exc}"})
             return None
-
-    def do_GET(self):  # noqa: N802 - stdlib handler method name
-        if self.path.rstrip("/") == "/health":
-            self._send(200, {"ok": True})
-            return
-        self._send(404, {"error": "not found"})
 
     def do_POST(self):  # noqa: N802 - stdlib handler method name
         route = self.path.rstrip("/")
@@ -640,6 +724,7 @@ class _Handler(BaseHTTPRequestHandler):
         if not path:
             self._send(400, {"error": "missing 'path'"})
             return
+        started = time.monotonic()
         try:
             res = _run_in_worker(
                 "diarize",
@@ -647,6 +732,10 @@ class _Handler(BaseHTTPRequestHandler):
                     "path": path,
                     "min_speakers": req.get("min_speakers"),
                     "max_speakers": req.get("max_speakers"),
+                    "return_embeddings": str(
+                        req.get("return_embeddings", "")
+                    ).lower()
+                    in {"1", "true", "yes", "on"},
                 },
                 AUDIO_STAGE_TIMEOUT_SEC,
             )
@@ -657,7 +746,12 @@ class _Handler(BaseHTTPRequestHandler):
         if not res["ok"]:
             self._send(500, {"error": res["error"]})
             return
-        self._send(200, res["result"])
+        result = res["result"]
+        if isinstance(result, list):  # pre-ADR-0068 worker shape
+            result = {"turns": result, "embeddings": {}}
+        result.setdefault("device", DIARIZE_DEVICE)
+        result["elapsed_s"] = round(time.monotonic() - started, 3)
+        self._send(200, result)
 
     def _handle_asr(self):
         req = self._read_json()

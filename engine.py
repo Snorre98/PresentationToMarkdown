@@ -823,13 +823,25 @@ _PHASE_MARKERS: list[tuple[str, str]] = [
 ]
 
 
-def _map_phase(line: str) -> str | None:
-    """Map an ``on_line`` phase line to a short phase label, else ``None``."""
-    low = line.strip().lower()
+def _phase_and_detail(line: str) -> tuple[str, str] | None:
+    """Map an ``on_line`` phase line to ``(phase, detail)``, else ``None``.
+
+    ``detail`` is whatever followed the marker — ``"chunk 2/4"`` for
+    ``"diarizing chunk 2/4 …"`` — so chunked diarization shows progress instead
+    of a featureless 30-minute phase (ADR-0068).
+    """
+    stripped = line.strip()
+    low = stripped.lower()
     for marker, phase in _PHASE_MARKERS:
         if low.startswith(marker):
-            return phase
+            return phase, stripped[len(marker):].strip(" …·:")
     return None
+
+
+def _map_phase(line: str) -> str | None:
+    """Map an ``on_line`` phase line to a short phase label, else ``None``."""
+    match = _phase_and_detail(line)
+    return match[0] if match else None
 
 
 def _apply_audio_options(options: dict) -> None:
@@ -856,6 +868,20 @@ def _apply_audio_options(options: dict) -> None:
     audio_mod.AUDIO_DIARIZE_SPEAKERS = speakers if speakers > 0 else None
     audio_mod.AUDIO_DIARIZE_MIN_SPEAKERS = None
     audio_mod.AUDIO_DIARIZE_MAX_SPEAKERS = None
+    # Optional preprocessing and the diarization pre-flight are per-run TUI
+    # settings (ADR-0069). ``converter.transcribe`` reads the two gates through
+    # ``converter.audio``, so setting the audio module is what takes effect.
+    if "dereverb" in options:
+        audio_mod.AUDIO_DEREVERB_ENABLED = bool(options["dereverb"])
+    if "enhance" in options:
+        audio_mod.AUDIO_ENHANCE_ENABLED = bool(options["enhance"])
+    if options.get("prep_timeout") is not None:
+        try:
+            audio_mod.AUDIO_PREP_TIMEOUT = float(options["prep_timeout"])
+        except (TypeError, ValueError):
+            pass
+    if "preflight" in options:
+        transcribe_mod.AUDIO_DIARIZE_PREFLIGHT = bool(options["preflight"])
 
 
 def _transcribe_execute(wsock, paths: list[str], audio_options: dict | None) -> None:
@@ -898,12 +924,17 @@ def _transcribe_execute(wsock, paths: list[str], audio_options: dict | None) -> 
         _emit(event, origin=wsock)
 
     def on_line(line: str) -> None:
-        phase = _map_phase(line)
-        if phase is not None:
+        match = _phase_and_detail(line)
+        if match is not None:
+            phase, detail = match
             _set_job(phase=phase)
-            emit({"type": "phase", "phase": phase})
-            return
-        text = line.rstrip("\n").strip()
+            emit({"type": "phase", "phase": phase, "detail": detail})
+            if not detail:
+                return
+            # Chunked phases carry progress ("chunk 2/4"); surface it in the log.
+            text = f"{phase}: {detail}"
+        else:
+            text = line.rstrip("\n").strip()
         if text:
             _engine_state["log"].append(("info", text))
             job = _engine_state.get("current_job")
@@ -1067,6 +1098,16 @@ def create_app() -> Flask:
             except (TypeError, ValueError):
                 n = 0
             set_setting("audio_speakers", str(n) if n > 0 else "0")
+        for key in ("audio_dereverb", "audio_enhance", "audio_preflight"):
+            if key in data:
+                set_setting(key, "on" if data[key] else "off")
+        if "audio_prep_timeout" in data:
+            try:
+                seconds = int(data["audio_prep_timeout"] or 0)
+            except (TypeError, ValueError):
+                seconds = 0
+            if seconds > 0:
+                set_setting("audio_prep_timeout", str(seconds))
         return jsonify(config.snapshot(probe=False))
 
     @app.get("/api/health/servers")

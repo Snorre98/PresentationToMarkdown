@@ -13,6 +13,7 @@ presents a guess as fleet truth.
 """
 from __future__ import annotations
 
+import socket
 import urllib.parse
 
 from converter import audio, config as _config, fleet
@@ -153,6 +154,35 @@ def _required_by(cfg, features: list[str]) -> list[str]:
     return [key for key in features if _is_enabled(cfg, key)]
 
 
+def _port_open(host: str, port: int, timeout: float = 0.5) -> bool:
+    """Whether ``host:port`` accepts a TCP connection right now."""
+    if not port:
+        return False
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
+def _live_state(state: str, entry: dict, roles: list[str]) -> tuple[str, bool]:
+    """``(state, stale)`` with a direct probe for the audio service.
+
+    flaate's per-model registry reports the last known state, and a dead
+    diarization daemon can keep reporting ``up``. A dead audio server silently
+    costs a whole transcription run (ADR-0069), so a claimed ``up`` for the
+    ``audio`` role is confirmed against its port. Other rows stay a pure
+    projection — they fail cheaply and per pass.
+    """
+    if state != "up" or "audio" not in roles:
+        return state, False
+    host = str(entry.get("host") or "127.0.0.1")
+    port = int(entry.get("port") or 0)
+    if _port_open(host, port):
+        return state, False
+    return "down", True
+
+
 def _host_port(base_url: str) -> tuple[str, int]:
     parsed = urllib.parse.urlparse(base_url)
     return parsed.hostname or "127.0.0.1", parsed.port or 0
@@ -242,6 +272,7 @@ def _manifest_rows(
         covered.update(roles)
         features = _service_features(roles, features_by_server)
         required_by = _required_by(cfg, features)
+        state, state_stale = _live_state(states.get(key, "unknown"), entry, roles)
         rows.append(
             {
                 "key": key,
@@ -252,7 +283,8 @@ def _manifest_rows(
                 "port": entry.get("port") or 0,
                 "runner": entry.get("runner") or "",
                 "modelId": entry.get("modelId") or "",
-                "state": states.get(key, "unknown"),
+                "state": state,
+                "state_stale": state_stale,
                 "roles": roles,
                 "features": features,
                 "required_by": required_by,

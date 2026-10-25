@@ -732,10 +732,14 @@ func (m *model) dispatchTranscribe(paths []string) tea.Cmd {
 	m.jobs.startLocal("transcribe", paths)
 	m.logLine("info", fmt.Sprintf("transcribing %d file(s)…", len(paths)))
 	opts := map[string]any{
-		"model":    m.cfg.AudioModel,
-		"language": m.cfg.AudioLanguage,
-		"diarize":  m.cfg.AudioDiarize,
-		"speakers": m.cfg.AudioSpeakers,
+		"model":        m.cfg.AudioModel,
+		"language":     m.cfg.AudioLanguage,
+		"diarize":      m.cfg.AudioDiarize,
+		"speakers":     m.cfg.AudioSpeakers,
+		"dereverb":     m.cfg.AudioDereverb,
+		"enhance":      m.cfg.AudioEnhance,
+		"prep_timeout": m.cfg.AudioPrepTimeout,
+		"preflight":    m.cfg.AudioPreflight,
 	}
 	if err := m.watch.send(map[string]any{
 		"type":          "transcribe",

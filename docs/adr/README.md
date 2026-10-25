@@ -67,3 +67,5 @@ Index of architectural decisions for PresentationToMarkdown, in
 | [0065](0065-ai-capability-labels-and-requirements.md) | AI capability labels and the resolved requirements projection | Amended by [0066](0066-ai-setup-control-surface.md) |
 | [0066](0066-ai-setup-control-surface.md) | AI setup is the AI control surface | Accepted |
 | [0067](0067-pdf-epub-export.md) | PDF → EPUB export beside the Markdown | Accepted |
+| [0068](0068-chunked-diarization.md) | Chunked diarization with cross-chunk speaker identity | Accepted |
+| [0069](0069-audio-preprocessing-settings.md) | Audio preprocessing is a per-run TUI setting, off by default | Accepted |

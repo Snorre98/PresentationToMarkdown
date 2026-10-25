@@ -8,10 +8,10 @@ import (
 	"testing"
 )
 
-func TestSettingsLayoutHasSectionsAndElevenRows(t *testing.T) {
+func TestSettingsLayoutHasSectionsAndFifteenRows(t *testing.T) {
 	m := testApp()
-	if got := m.settingsRows(); got != 11 {
-		t.Fatalf("settingsRows = %d, want 11", got)
+	if got := m.settingsRows(); got != 15 {
+		t.Fatalf("settingsRows = %d, want 15", got)
 	}
 	layout := m.settingsLayout()
 	var headers []string
@@ -31,6 +31,42 @@ func TestSettingsLayoutHasSectionsAndElevenRows(t *testing.T) {
 	}
 	if got := m.settingsLabel(m.settingsRows() - 1); got != "language" {
 		t.Fatalf("last row = %q", got)
+	}
+	// Audio preprocessing + pre-flight are TUI settings (ADR-0069).
+	for index, want := range map[int]string{
+		9:  "dereverb",
+		10: "denoise",
+		11: "prep timeout",
+		12: "check server",
+	} {
+		if got := m.settingsLabel(index); got != want {
+			t.Fatalf("row %d = %q, want %q", index, got, want)
+		}
+	}
+}
+
+func TestSettingsAudioPreprocessingTogglesAndTimeout(t *testing.T) {
+	m := testApp()
+	m.cfg.AudioPrepTimeout = 300
+
+	m.setCursor = 9 // dereverb
+	if _, _ = m.activateSetting(false); !m.cfg.AudioDereverb {
+		t.Fatal("dereverb did not toggle on")
+	}
+	m.setCursor = 10 // denoise
+	if _, _ = m.activateSetting(false); !m.cfg.AudioEnhance {
+		t.Fatal("denoise did not toggle on")
+	}
+	if got := m.settingsValueFor(settingsRow{key: "prep_timeout"}); got != "5 min" {
+		t.Fatalf("prep timeout = %q, want 5 min", got)
+	}
+	m.editBuf = "12"
+	m.editing = editPrepTimeout
+	if cmd := m.commitEdit(); cmd == nil {
+		t.Fatal("prep timeout commit did not persist")
+	}
+	if m.cfg.AudioPrepTimeout != 720 {
+		t.Fatalf("prep timeout = %d s, want 720", m.cfg.AudioPrepTimeout)
 	}
 }
 

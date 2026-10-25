@@ -55,6 +55,10 @@ class _FakeConfig:
             "audio_language": "no",
             "audio_diarize": True,
             "audio_speakers": 2,
+            "audio_dereverb": False,
+            "audio_enhance": False,
+            "audio_prep_timeout": 300,
+            "audio_preflight": True,
             "features": {"vision": False, "summary": False},
             "passes": {},
             "embed_model": None,
@@ -176,6 +180,11 @@ def test_engine_config_get(client):
     assert c["audio_language"] == "no"
     assert c["audio_diarize"] is True
     assert c["audio_speakers"] == 2
+    # Optional preprocessing is off by default; the pre-flight is on (ADR-0069).
+    assert c["audio_dereverb"] is False
+    assert c["audio_enhance"] is False
+    assert c["audio_prep_timeout"] == 300
+    assert c["audio_preflight"] is True
 
 
 def test_engine_config_set_image_links(client, monkeypatch):
@@ -1076,6 +1085,14 @@ def test_map_phase():
     assert engine._map_phase("some raw stdout line") is None
 
 
+def test_phase_and_detail_surfaces_chunk_progress():
+    import engine
+
+    assert engine._phase_and_detail("diarizing chunk 2/4 …") == ("diarize", "chunk 2/4")
+    assert engine._phase_and_detail("diarizing …") == ("diarize", "")
+    assert engine._phase_and_detail("boom") is None
+
+
 def test_transcribe_execute_streams_structured_frames(monkeypatch, tmp_path):
     import threading
 
@@ -1155,3 +1172,66 @@ def test_transcribe_execute_rejects_when_lock_held(monkeypatch):
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))
+
+
+def test_engine_config_set_audio_preprocessing(client, monkeypatch):
+    """Dereverb, denoise, prep timeout and pre-flight are TUI settings (ADR-0069)."""
+    stored = {}
+    monkeypatch.setattr(
+        "converter.settings.set_setting",
+        lambda key, value: stored.__setitem__(key, value),
+    )
+    client.post(
+        "/api/config",
+        json={
+            "audio_dereverb": True,
+            "audio_enhance": False,
+            "audio_prep_timeout": 90,
+            "audio_preflight": False,
+        },
+    )
+    assert stored == {
+        "audio_dereverb": "on",
+        "audio_enhance": "off",
+        "audio_prep_timeout": "90",
+        "audio_preflight": "off",
+    }
+
+
+def test_apply_audio_options_applies_preprocessing(monkeypatch):
+    import engine
+    from converter import audio as audio_mod
+    from converter import transcribe as transcribe_mod
+
+    monkeypatch.setattr(audio_mod, "AUDIO_DEREVERB_ENABLED", False)
+    monkeypatch.setattr(audio_mod, "AUDIO_ENHANCE_ENABLED", True)
+    monkeypatch.setattr(audio_mod, "AUDIO_PREP_TIMEOUT", 300.0)
+    monkeypatch.setattr(transcribe_mod, "AUDIO_DIARIZE_PREFLIGHT", True)
+
+    engine._apply_audio_options(
+        {
+            "dereverb": True,
+            "enhance": False,
+            "prep_timeout": 120,
+            "preflight": False,
+        }
+    )
+    assert audio_mod.AUDIO_DEREVERB_ENABLED is True
+    assert audio_mod.AUDIO_ENHANCE_ENABLED is False
+    assert audio_mod.AUDIO_PREP_TIMEOUT == 120.0
+    assert transcribe_mod.AUDIO_DIARIZE_PREFLIGHT is False
+
+
+def test_apply_audio_options_leaves_absent_keys_alone(monkeypatch):
+    import engine
+    from converter import audio as audio_mod
+    from converter import transcribe as transcribe_mod
+
+    monkeypatch.setattr(audio_mod, "AUDIO_DEREVERB_ENABLED", True)
+    monkeypatch.setattr(audio_mod, "AUDIO_ENHANCE_ENABLED", True)
+    monkeypatch.setattr(transcribe_mod, "AUDIO_DIARIZE_PREFLIGHT", True)
+
+    engine._apply_audio_options({"model": "whisper-large-v3"})
+    assert audio_mod.AUDIO_DEREVERB_ENABLED is True
+    assert audio_mod.AUDIO_ENHANCE_ENABLED is True
+    assert transcribe_mod.AUDIO_DIARIZE_PREFLIGHT is True

@@ -91,3 +91,31 @@ def test_run_asr_skips_empty_words(fake_pipe):
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))
+
+
+def test_handler_has_exactly_one_get_route_table():
+    """A duplicated ``do_GET`` silently shadows the earlier one (ADR-0069).
+
+    That is exactly how the liveness routes were lost once: the class had two
+    definitions, Python kept the later one, and ``/v1/models`` answered 404 while
+    ``/health`` worked.
+    """
+    import ast
+    import pathlib
+
+    source = pathlib.Path(a.__file__).read_text()
+    tree = ast.parse(source)
+    handler = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == "_Handler"
+    )
+    getters = [
+        node
+        for node in handler.body
+        if isinstance(node, ast.FunctionDef) and node.name == "do_GET"
+    ]
+    assert len(getters) == 1, "duplicate do_GET: the later definition wins"
+    body = ast.get_source_segment(source, getters[0]) or ""
+    assert "/v1/models" in body
+    assert "/health" in body

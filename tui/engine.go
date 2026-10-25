@@ -92,10 +92,14 @@ type Config struct {
 
 	// Transcription settings (ADR-0043): persisted by the engine; the TUI
 	// sends them with each engine-hosted transcription job (ADR-0045).
-	AudioModel    string `json:"audio_model"`
-	AudioLanguage string `json:"audio_language"`
-	AudioDiarize  bool   `json:"audio_diarize"`
-	AudioSpeakers int    `json:"audio_speakers"`
+	AudioModel       string `json:"audio_model"`
+	AudioLanguage    string `json:"audio_language"`
+	AudioDiarize     bool   `json:"audio_diarize"`
+	AudioSpeakers    int    `json:"audio_speakers"`
+	AudioDereverb    bool   `json:"audio_dereverb"`
+	AudioEnhance     bool   `json:"audio_enhance"`
+	AudioPrepTimeout int    `json:"audio_prep_timeout"` // seconds
+	AudioPreflight   bool   `json:"audio_preflight"`
 }
 
 // ConfigUpdate is the engine's /api/config POST body (engine.py config_set).
@@ -109,10 +113,14 @@ type ConfigUpdate struct {
 	VaultRoot          string          `json:"vault_root,omitempty"`
 	Duplicate          *bool           `json:"duplicate,omitempty"`
 
-	AudioModel    *string `json:"audio_model,omitempty"`
-	AudioLanguage *string `json:"audio_language,omitempty"`
-	AudioDiarize  *bool   `json:"audio_diarize,omitempty"`
-	AudioSpeakers *int    `json:"audio_speakers,omitempty"`
+	AudioModel       *string `json:"audio_model,omitempty"`
+	AudioLanguage    *string `json:"audio_language,omitempty"`
+	AudioDiarize     *bool   `json:"audio_diarize,omitempty"`
+	AudioSpeakers    *int    `json:"audio_speakers,omitempty"`
+	AudioDereverb    *bool   `json:"audio_dereverb,omitempty"`
+	AudioEnhance     *bool   `json:"audio_enhance,omitempty"`
+	AudioPrepTimeout *int    `json:"audio_prep_timeout,omitempty"`
+	AudioPreflight   *bool   `json:"audio_preflight,omitempty"`
 }
 
 // JobEvent is one WebSocket frame from the engine's /ws stream.

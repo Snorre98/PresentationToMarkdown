@@ -71,7 +71,11 @@ operational runbook.
 The service exposes four endpoints:
 
 - `POST /v1/diarize` — `{"path": "<audio>", "min_speakers": n, "max_speakers": n}`
-  → `[{"start": f, "end": f, "speaker": "SPEAKER_00"}, …]`.
+  → `[{"start": f, "end": f, "speaker": "SPEAKER_00"}, …]`. Add
+  `"return_embeddings": true` to get
+  `{"turns": […], "embeddings": {"SPEAKER_00": [f, …]}, "device": "cpu|mps",
+  "elapsed_s": f}` — the centroids chunked diarization re-clusters globally
+  (ADR-0068).
 - `POST /v1/enhance` — `{"path": "<in>", "output": "<out>"}` → `{"ok": true}`
   (DeepFilterNet denoise, 48 kHz enhance → 16 kHz save).
 - `POST /v1/dereverb` — `{"path": "<in>", "output": "<out>"}` → `{"ok": true}`
@@ -90,6 +94,21 @@ hides the two wire shapes.
 Reference servers ship in `scripts/` — `audio_server.py` (real),
 `stub_audio_server.py` and `stub_whisper_server.py` (no-model stand-ins for
 testing). See [docs/runbook.md](runbook.md) for the full operational runbook.
+
+`scripts/audio_serve.sh start` goes through the flaate control daemon, which
+keeps **last-known** state: it can answer "up" without a listener and treat
+`/start/audio` as a no-op. When the port is not actually open, use the local
+escape hatch, which launches the server from this repo and passes per-process
+env (`DIARIZE_DEVICE`, `HF_TOKEN`) through:
+
+```bash
+scripts/audio_serve.sh local-start     # bypass flaate
+scripts/audio_serve.sh local-status
+curl -s http://127.0.0.1:8089/v1/models
+```
+
+`GET /v1/models` and `GET /v1/health` are the liveness surface; every heavy
+endpoint stays POST-only.
 
 If the audio server is down, preprocessing still succeeds — dereverberation and
 enhancement degrade to the deterministic ffmpeg chain, isolation is skipped,
@@ -124,6 +143,11 @@ AUDIO_ISOLATE_ENABLED=1 AUDIO_LANGUAGE=en scripts/ptm-tui.sh
 AUDIO_MODEL=whisper-large-v3-turbo-asr-fp16 scripts/ptm-tui.sh
 ```
 
+The clean step takes the **first audio stream** of the input (`-map 0:a:0?`)
+and disables video/subtitle/data (`-vn -sn -dn`); without that ffmpeg
+re-encodes a video source's video track and the FLAC muxer discards it
+(a 55-minute 1080p `.mp4` spent ~40 minutes there at ~900% CPU).
+
 The audio pipeline is `ffmpeg clean → WPE dereverb → DeepFilterNet enhance →
 [SepFormer isolate] → fleet ASR`. WPE dereverberation and enhancement both run
 whenever the server is up (default on); voice isolation is opt-in
@@ -141,6 +165,31 @@ injected** (TUI settings row or env):
   range to search.
 - All three imply diarization (no separate switch needed); the exact count
   overrides the min/max range.
+
+### Long recordings (chunked diarization, ADR-0068)
+
+One diarization request is bounded at 1800 s (`AUDIO_DIARIZE_TIMEOUT` on the
+client, `AUDIO_STAGE_TIMEOUT_SEC` on the server). At ~0.62× realtime on CPU that
+caps a single request at roughly 48 minutes of audio, so anything longer is
+diarized in **VAD-aligned chunks** and stitched:
+
+- chunks end in silence (`/vad`), 15 s of context on each side, cores tile the
+  timeline exactly;
+- each chunk returns its turns *and* one speaker embedding per local label;
+- the embeddings are clustered globally, so `SPEAKER_00` means the same person
+  for the whole file;
+- a failed chunk leaves only its own span unlabelled;
+- the transcript header records the strategy, chunk count and labelled-word
+  ratio, or the failure reason.
+
+Knobs: `AUDIO_DIARIZE_CHUNK_ENABLED` (default on), `AUDIO_DIARIZE_CHUNK_SECONDS`
+(900), `AUDIO_DIARIZE_CHUNK_OVERLAP_SECONDS` (15),
+`AUDIO_DIARIZE_CHUNK_MIN_SECONDS` (480), `AUDIO_DIARIZE_SPEAKER_THRESHOLD`
+(0.65, auto count only), `AUDIO_DIARIZE_TIMEOUT` (1800, per chunk).
+
+Diarization is **embedding-bound on CPU**; `DIARIZE_DEVICE=mps` (or `auto`) on
+the audio server moves the pipeline to the Apple GPU with a CPU fallback. The
+server reports the device and `elapsed_s` on every `/diarize` response.
 
 Consecutive same-speaker ASR segments are merged into continuous utterances in
 the Markdown and `.srt` output, so an interview reads as alternating
@@ -167,8 +216,15 @@ controls:
   restart needed (ADR-0043/0045/0062). Old persisted HF ids are aliased to the
   fleet names on read and write.
 - Defaults: model `nb-whisper-large`, language `no`, diarize **on**, speakers
-  `2` (interview-first). The `AUDIO_*` environment variables override them at
-  engine launch.
+  `2` (interview-first), **dereverb off**, **denoise off**, prep timeout `5 min`,
+  server pre-flight **on** (ADR-0069). The `AUDIO_*` environment variables
+  override them at engine launch.
+
+The `s` screen's audio rows are `diarize`, `speakers`, `dereverb`, `denoise`,
+`prep timeout`, `check server`, `audio model` and `language`. Dereverb and
+denoise are the expensive optional stages: they run on the audio server, and a
+one-hour recording costs ~30 minutes of dereverb at 0.62× realtime. Both are off
+by default and take effect on the next job.
 - NB-Whisper is Norwegian/English focused — pick `whisper-large-v3-asr-fp16` (quality)
   or `whisper-large-v3-turbo-asr-fp16` (speed) for other languages. Start the daemon
   first: `curl -X POST http://127.0.0.1:9300/start/whisper-large-v3-asr-fp16-asr-fp16`.
@@ -185,8 +241,8 @@ controls:
 | `WHISPER_BASE_URL` | manifest `whisper` daemon (`:8099/v1`) | Whisper daemon base URL override |
 | `WHISPER_API_KEY` | *(unset)* | Optional bearer token for the whisper daemon |
 | `AUDIO_PREPROCESS` | `1` | Gentle ffmpeg chain (DC/rumble removal + band-limit) — denoise/dereverb live in the server |
-| `AUDIO_DEREVERB_ENABLED` | `1` | WPE dereverberation via the audio server |
-| `AUDIO_ENHANCE_ENABLED` | `1` | DeepFilterNet denoise via the audio server |
+| `AUDIO_DEREVERB_ENABLED` | *(unset = off)* | WPE dereverberation via the audio server (~30 min per hour of audio) |
+| `AUDIO_ENHANCE_ENABLED` | *(unset = off)* | DeepFilterNet denoise via the audio server (broken in the bundled venv) |
 | `AUDIO_ISOLATE_ENABLED` | *(unset = off)* | Voice isolation (SepFormer) via the audio server |
 | `AUDIO_ENHANCE_BASE_URL` | `AUDIO_DIARIZE_BASE_URL` | Enhancement endpoint |
 | `AUDIO_DIARIZE_ENABLED` | *(unset = off)* | Enable speaker labelling via the diarization server |
@@ -195,6 +251,16 @@ controls:
 | `AUDIO_DIARIZE_MAX_SPEAKERS` | *(unset = auto)* | Upper bound of the speaker-count range; implies diarization |
 | `AUDIO_DIARIZE_BASE_URL` | `http://127.0.0.1:8089/v1` | Audio server base URL (diarization + NB-Whisper) |
 | `AUDIO_DIARIZE_API_KEY` | *(unset)* | Optional bearer token for the audio server |
+| `AUDIO_PREP_TIMEOUT` | `300` | Per-stage timeout for dereverb/denoise, seconds (ADR-0069) |
+| `AUDIO_DIARIZE_PREFLIGHT` | `1` | Probe the audio server before diarizing (ADR-0069) |
+| `AUDIO_DIARIZE_TIMEOUT` | `1800` | Per-request (per-chunk) diarization timeout, seconds (ADR-0068) |
+| `AUDIO_DIARIZE_CHUNK_ENABLED` | `1` | Diarize long recordings in VAD-aligned chunks (ADR-0068) |
+| `AUDIO_DIARIZE_CHUNK_SECONDS` | `900` | Nominal chunk length for long recordings |
+| `AUDIO_DIARIZE_CHUNK_OVERLAP_SECONDS` | `15` | Context included on each side of a chunk |
+| `AUDIO_DIARIZE_CHUNK_MIN_SECONDS` | `480` | Earliest cut accepted when snapping to a silence |
+| `AUDIO_DIARIZE_SPEAKER_THRESHOLD` | `0.65` | Cosine similarity for merging chunk identities (auto count only) |
+| `DIARIZE_DEVICE` | `cpu` | Server-side device for pyannote: `cpu`, `mps` or `auto` |
+| `DIARIZE_MODEL` (`PYANNOTE_MODEL`) | `pyannote/speaker-diarization-3.1` | Server-side diarization pipeline |
 
 `AUDIO_MLX_WHISPER_BIN` and `AUDIO_CONDITION_ON_PREVIOUS_TEXT` are gone with the
 subprocess lane (ADR-0062). The equivalent prompting knob now lives on the

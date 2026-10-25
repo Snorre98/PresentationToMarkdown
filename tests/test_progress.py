@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from converter import audio as a
 from converter import transcribe as t
 
 
@@ -84,7 +85,7 @@ def test_transcribe_audio_streams_phases(monkeypatch, tmp_path):
 
     monkeypatch.setattr(t, "_run", lambda cmd, timeout=3600.0, **kw: "")
     monkeypatch.setattr(t, "transcribe_fleet", lambda path, **kw: [])
-    monkeypatch.setattr(t, "AUDIO_ENHANCE_ENABLED", False)
+    monkeypatch.setattr(a, "AUDIO_ENHANCE_ENABLED", False)
     t.transcribe_audio(tmp_path / "x.mp3", tmp_path / "x.clean.flac", on_line=seen.append)
 
     assert any("ffmpeg" in line for line in seen)

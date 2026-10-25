@@ -149,3 +149,55 @@ def test_needed_tracks_enabled_features(monkeypatch):
     snap = fleetview.snapshot(config)
     text = next(row for row in snap["services"] if row["key"] == text_key)
     assert text["needed"] is True
+
+
+def _audio_model() -> dict:
+    return _model(
+        "audio",
+        "Audio pipeline (NB-Whisper + pyannote)",
+        "audio",
+        8089,
+        ["audio", "asr", "diarization"],
+        "delegate",
+    )
+
+
+def test_audio_row_state_is_probed_when_the_fleet_says_up(monkeypatch):
+    """flaate reports the last known state; a dead audio daemon must not look up."""
+    models = {"audio": _audio_model()}
+    monkeypatch.setattr(fleet, "list_models", lambda force=False: models)
+    monkeypatch.setattr(fleet, "status_all", lambda: {"audio": "up"})
+    monkeypatch.setattr(fleetview, "_port_open", lambda host, port, timeout=0.5: False)
+
+    snap = fleetview.snapshot(config)
+    row = {r["key"]: r for r in snap["services"]}["audio"]
+    assert row["state"] == "down"
+    assert row["state_stale"] is True
+
+
+def test_audio_row_state_survives_a_successful_probe(monkeypatch):
+    models = {"audio": _audio_model()}
+    monkeypatch.setattr(fleet, "list_models", lambda force=False: models)
+    monkeypatch.setattr(fleet, "status_all", lambda: {"audio": "up"})
+    monkeypatch.setattr(fleetview, "_port_open", lambda host, port, timeout=0.5: True)
+
+    snap = fleetview.snapshot(config)
+    row = {r["key"]: r for r in snap["services"]}["audio"]
+    assert row["state"] == "up"
+    assert row["state_stale"] is False
+
+
+def test_non_audio_rows_are_not_probed(monkeypatch):
+    key = "llama-3.2-3b-instruct-4bit"
+    models = {key: _model(key, "Llama 3.2 3B", "llama", 8083, ["text", "summary"])}
+    monkeypatch.setattr(fleet, "list_models", lambda force=False: models)
+    monkeypatch.setattr(fleet, "status_all", lambda: {key: "up"})
+
+    def boom(host, port, timeout=0.5):
+        raise AssertionError("only the audio row is probed")
+
+    monkeypatch.setattr(fleetview, "_port_open", boom)
+    snap = fleetview.snapshot(config)
+    row = {r["key"]: r for r in snap["services"]}[key]
+    assert row["state"] == "up"
+    assert row["state_stale"] is False

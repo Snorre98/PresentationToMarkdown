@@ -27,12 +27,27 @@ Configuration (environment variables):
 - ``AUDIO_HEARTBEAT_SECONDS`` — quiet-interval before a ``still working …`` line
   is emitted while streaming subprocess output, default ``20``.
 - ``AUDIO_PREPROCESS`` — deterministic ffmpeg enhancement chain. Default on.
-- ``AUDIO_DEREVERB_ENABLED`` — WPE dereverberation (via the audio server). Default on.
+- ``AUDIO_DEREVERB_ENABLED`` — WPE dereverberation (via the audio server). Default off.
+- ``AUDIO_ENHANCE_ENABLED`` — DeepFilterNet denoise (via the audio server). Default off.
+- ``AUDIO_PREP_TIMEOUT`` — per-stage timeout for the two optional stages above,
+  default ``300`` seconds.
 - ``AUDIO_ISOLATE_ENABLED`` — voice isolation (SepFormer, via the audio server). Default off.
 - ``AUDIO_DIARIZE_ENABLED`` — speaker labelling (via the audio server). Default off.
 - ``AUDIO_DIARIZE_SPEAKERS`` / ``AUDIO_DIARIZE_MIN_SPEAKERS`` /
   ``AUDIO_DIARIZE_MAX_SPEAKERS`` — exact/range speaker count for pyannote
   (see ``converter.audio``). Any of them implies diarization.
+- ``AUDIO_DIARIZE_CHUNK_ENABLED`` — chunk long recordings for diarization
+  (default on, ADR-0068).
+- ``AUDIO_DIARIZE_CHUNK_SECONDS`` — nominal chunk length, default ``900``.
+- ``AUDIO_DIARIZE_CHUNK_OVERLAP_SECONDS`` — context overlap per chunk side,
+  default ``15``.
+- ``AUDIO_DIARIZE_CHUNK_MIN_SECONDS`` — earliest acceptable cut, default ``480``.
+- ``AUDIO_DIARIZE_PREFLIGHT`` — probe the audio server before diarizing
+  (default on, ADR-0069).
+
+Long recordings are diarized in VAD-aligned chunks and re-identified globally
+from the server's speaker embeddings (ADR-0068); the transcript header records
+which strategy ran, how many chunks, and how many words got a label.
 """
 from __future__ import annotations
 
@@ -46,21 +61,22 @@ from collections import deque
 from pathlib import Path
 from typing import Callable
 
+from converter import audio as audio_mod
 from converter.audio import (
     ASR_MODELS,
-    AUDIO_DEREVERB_ENABLED,
-    AUDIO_ENHANCE_ENABLED,
-    AUDIO_ISOLATE_ENABLED,
     asr,
     assign_speakers,
     assign_speakers_by_words,
     dereverb,
     diarize,
     diarize_bounds,
+    diarize_detailed,
     diarize_requested,
     enhance,
     isolate,
     normalize_audio_model,
+    plan_diarize_chunks,
+    stitch_chunk_turns,
     transcribe_fleet,
     vad,
 )
@@ -121,6 +137,28 @@ AUDIO_GUIDE_ENABLED = os.environ.get("AUDIO_GUIDE_ENABLED", "").strip().lower() 
     "on",
 }
 AUDIO_GUIDE_PATH = os.environ.get("AUDIO_GUIDE_PATH", "")
+
+# Long-file diarization (ADR-0068). A recording longer than the chunk length is
+# diarized in VAD-aligned chunks (one request each), then the per-chunk speaker
+# identities are re-clustered from their embeddings so ``SPEAKER_00`` means the
+# same person for the whole file. Chunking exists because one diarization
+# request is bounded (``AUDIO_DIARIZE_TIMEOUT``), not because it is faster.
+AUDIO_DIARIZE_CHUNK_ENABLED = os.environ.get(
+    "AUDIO_DIARIZE_CHUNK_ENABLED", "1"
+).strip().lower() in {"1", "true", "yes", "on"}
+AUDIO_DIARIZE_CHUNK_SECONDS = float(os.environ.get("AUDIO_DIARIZE_CHUNK_SECONDS", "900"))
+AUDIO_DIARIZE_CHUNK_OVERLAP_SECONDS = float(
+    os.environ.get("AUDIO_DIARIZE_CHUNK_OVERLAP_SECONDS", "15")
+)
+AUDIO_DIARIZE_CHUNK_MIN_SECONDS = float(
+    os.environ.get("AUDIO_DIARIZE_CHUNK_MIN_SECONDS", "480")
+)
+# Probe the audio server before diarizing: a dead/wedged daemon then costs one
+# failed HTTP request instead of a full chunk loop of connection errors
+# (ADR-0069).
+AUDIO_DIARIZE_PREFLIGHT = os.environ.get(
+    "AUDIO_DIARIZE_PREFLIGHT", "1"
+).strip().lower() in {"1", "true", "yes", "on"}
 
 # Deterministic speech-enhancement chain for lecture-hall audio (ADR-0008).
 # Kept deliberately gentle: only DC/rumble removal + band-limiting. The old
@@ -542,9 +580,18 @@ def transcribe_audio(
 
     tmp_clean = _temp_sibling(clean_path)
     try:
+        # ``-vn``/``-map 0:a:0?`` matter for video sources: without them ffmpeg
+        # selects the video track, re-encodes it (1080p PNG at ~9 cores) and the
+        # FLAC muxer then discards it, turning a 4-second clean into ~1.4x
+        # realtime (a 55-minute .mp4 spent 40 minutes in this step).
         ffmpeg_cmd = [
             ffmpeg_bin or AUDIO_FFMPEG_BIN,
-            "-y", "-i", str(audio_path),
+            "-y",
+            "-i", str(audio_path),
+            "-vn",
+            "-sn",
+            "-dn",
+            "-map", "0:a:0?",
         ]
         if AUDIO_PREPROCESS:
             ffmpeg_cmd += ["-af", _ENHANCE_FILTER]
@@ -558,7 +605,7 @@ def transcribe_audio(
             pass
         raise
 
-    if AUDIO_DEREVERB_ENABLED:
+    if audio_mod.AUDIO_DEREVERB_ENABLED:
         if on_line is not None:
             on_line("dereverberating audio …\n")
         try:
@@ -567,7 +614,7 @@ def transcribe_audio(
             if warnings is not None:
                 warnings.append(f"Audio dereverberation failed: {exc}; using reverberant audio")
 
-    if AUDIO_ENHANCE_ENABLED:
+    if audio_mod.AUDIO_ENHANCE_ENABLED:
         if on_line is not None:
             on_line("enhancing audio …\n")
         try:
@@ -577,7 +624,7 @@ def transcribe_audio(
                 warnings.append(f"Audio enhancement failed: {exc}; using preprocessed audio")
 
     target = clean_path
-    if AUDIO_ISOLATE_ENABLED:
+    if audio_mod.AUDIO_ISOLATE_ENABLED:
         if on_line is not None:
             on_line("isolating voice …\n")
         isolated_path = clean_path.with_name(clean_path.name.replace(".clean.", ".isolated."))
@@ -689,9 +736,49 @@ def merge_utterances(
     return merged
 
 
-def segments_to_markdown(segments: list[dict], model: str | None = None) -> str:
+def _diarization_note(info: dict | None) -> str | None:
+    """One-line, human-readable diarization outcome for the transcript header.
+
+    The reader should be able to tell *why* a transcript has no ``SPEAKER_xx``
+    labels without digging through the engine log: never ran, failed (and why),
+    ran but assigned nothing, or ran and labelled N/M words.
+    """
+    if not info:
+        return None
+    if not info.get("diarize_requested"):
+        return "Speaker diarization: off"
+    if info.get("error"):
+        return f"Speaker diarization: failed ({info['error']}) — no speaker labels"
+    speakers = int(info.get("speakers") or 0)
+    words = int(info.get("words") or 0)
+    labelled = int(info.get("labelled") or 0)
+    if not speakers or not labelled:
+        return "Speaker diarization: ran, but no speaker labels were assigned"
+    scope = (
+        f"{info.get('chunks', 1)} chunk(s)"
+        if info.get("strategy") == "chunked"
+        else "single request"
+    )
+    share = f"{labelled / words:.0%}" if words else "0%"
+    note = (
+        f"Speaker diarization: {speakers} speaker(s) · {scope} · "
+        f"{labelled}/{words} words labelled ({share})"
+    )
+    if info.get("failed_chunks"):
+        note += f" · {info['failed_chunks']} chunk(s) failed"
+    return note
+
+
+def segments_to_markdown(
+    segments: list[dict],
+    model: str | None = None,
+    info: dict | None = None,
+) -> str:
     """Render timestamped segments as a Markdown ``# Transcript`` section."""
     lines = ["# Transcript", "", "<details>", f"<summary>Auto-generated transcript ({model or _current_model()})</summary>", ""]
+    note = _diarization_note(info)
+    if note:
+        lines += [f"*{note}*", ""]
     for seg in merge_utterances(segments):
         ts = format_timestamp(seg["start"])
         text = seg["text"].strip()
@@ -850,6 +937,177 @@ def redecode_windows(
     return out
 
 
+def _speech_regions_from_words(
+    words: list[dict], max_gap: float = 0.3
+) -> list[dict]:
+    """Merge ASR word spans into speech regions, splitting at pauses.
+
+    Chunk planning needs to know where the silences are, and the word timeline
+    we already paid for answers that for free. The previous planner asked the
+    audio server for a full-file VAD, which runs the *same* pyannote
+    segmentation model over the whole recording — minutes of extra work (and a
+    second model load) before the first diarization chunk could start.
+
+    Words closer than ``max_gap`` belong to one region; a longer gap is a pause
+    and therefore a candidate cut point. Returns ``[{start, end}, ...]``.
+    """
+    regions: list[dict] = []
+    for word in words:
+        try:
+            start = float(word["start"])
+            end = float(word["end"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if end < start:
+            start, end = end, start
+        if regions and start - regions[-1]["end"] <= max_gap:
+            regions[-1]["end"] = max(regions[-1]["end"], end)
+        else:
+            regions.append({"start": start, "end": end})
+    return regions
+
+
+def _diarize_long(
+    clean_path: Path,
+    warnings: list[str],
+    on_line: Callable[[str], None] | None = None,
+    words: list[dict] | None = None,
+) -> dict:
+    """Diarize ``clean_path`` in one call or in VAD-aligned chunks.
+
+    Returns ``{"turns": [...], "info": {...}}`` where ``info`` describes what
+    actually ran (``strategy``, ``chunks``, ``failed_chunks``) for the transcript
+    header. A file up to ``AUDIO_DIARIZE_CHUNK_SECONDS`` keeps the single-request
+    path; a longer one is sliced at silences, diarized chunk by chunk and
+    re-identified globally from the server's speaker embeddings (ADR-0068).
+
+    A chunk that fails leaves only *its* span unlabelled and warns; if every
+    chunk fails the error is raised so the caller can fall back to an unlabelled
+    transcript. Servers without embedding support trigger one single request
+    instead of guessing identities across chunks.
+    """
+    bounds = diarize_bounds()
+    exact = bounds.get("min_speakers")
+    if exact != bounds.get("max_speakers"):
+        exact = None
+
+    if AUDIO_DIARIZE_PREFLIGHT and not audio_mod.audio_server_available():
+        raise RuntimeError(
+            f"audio server unreachable at {audio_mod.AUDIO_DIARIZE_BASE_URL}"
+        )
+
+    duration = _audio_duration(clean_path)
+    if not AUDIO_DIARIZE_CHUNK_ENABLED or not duration or duration <= AUDIO_DIARIZE_CHUNK_SECONDS:
+        turns = diarize(str(clean_path.resolve()), **bounds)
+        return {"turns": turns, "info": {"strategy": "single", "chunks": 1}}
+
+    # Cuts come from the ASR word timeline we already have; the model-based VAD
+    # is only consulted when no words were supplied (ADR-0068/0069).
+    regions = _speech_regions_from_words(words or [])
+    if not regions:
+        try:
+            regions = vad(str(clean_path.resolve()))
+        except Exception as exc:  # noqa: BLE001 - fixed cuts are a valid fallback
+            warnings.append(f"Chunk-planning VAD failed: {exc}; using fixed cuts")
+
+    plan = plan_diarize_chunks(
+        duration,
+        regions,
+        chunk_seconds=AUDIO_DIARIZE_CHUNK_SECONDS,
+        overlap_seconds=AUDIO_DIARIZE_CHUNK_OVERLAP_SECONDS,
+        min_seconds=AUDIO_DIARIZE_CHUNK_MIN_SECONDS,
+    )
+    chunk_min = None if exact else bounds.get("min_speakers")
+    chunk_max = exact or bounds.get("max_speakers")
+
+    chunks: list[dict] = []
+    failures: list[str] = []
+    missing_embeddings = False
+    for index, item in enumerate(plan, start=1):
+        if on_line is not None:
+            on_line(f"diarizing chunk {index}/{len(plan)} …\n")
+        tmp = _temp_sibling(clean_path)
+        try:
+            _run(
+                [
+                    AUDIO_FFMPEG_BIN,
+                    "-y",
+                    "-ss",
+                    f"{item['request_start']:.3f}",
+                    "-to",
+                    f"{item['request_end']:.3f}",
+                    "-i",
+                    str(clean_path),
+                    "-c:a",
+                    "flac",
+                    "-f",
+                    "flac",
+                    tmp,
+                ],
+                timeout=AUDIO_TIMEOUT,
+            )
+            body = diarize_detailed(
+                str(Path(tmp).resolve()),
+                min_speakers=chunk_min,
+                max_speakers=chunk_max,
+                return_embeddings=True,
+            )
+        except Exception as exc:  # noqa: BLE001 - one chunk must not sink the file
+            failures.append(f"{item['core_start']:.0f}-{item['core_end']:.0f}s ({exc})")
+            continue
+        finally:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+        offset = item["request_start"]
+        chunk = {
+            "core_start": item["core_start"],
+            "core_end": item["core_end"],
+            "turns": [
+                {
+                    "start": turn["start"] + offset,
+                    "end": turn["end"] + offset,
+                    "speaker": turn["speaker"],
+                }
+                for turn in body["turns"]
+            ],
+            "embeddings": body["embeddings"],
+        }
+        if not chunk["embeddings"] and not chunks:
+            # A server without centroid support answers every request without
+            # embeddings: stop after the first one instead of paying for the
+            # whole file twice (ADR-0068).
+            missing_embeddings = True
+            break
+        chunks.append(chunk)
+
+    if failures:
+        warnings.append(
+            "Diarization failed for some chunks — those spans stay unlabelled: "
+            + "; ".join(failures)
+        )
+    if missing_embeddings:
+        warnings.append(
+            "Audio server returned no speaker embeddings — it cannot keep speaker "
+            "identity across chunks; diarizing in one request"
+        )
+        turns = diarize(str(clean_path.resolve()), **bounds)
+        return {"turns": turns, "info": {"strategy": "single", "chunks": 1}}
+    if not chunks:
+        raise RuntimeError("all diarization chunks failed: " + "; ".join(failures))
+
+    turns = stitch_chunk_turns(chunks, num_speakers=exact)
+    return {
+        "turns": turns,
+        "info": {
+            "strategy": "chunked",
+            "chunks": len(chunks),
+            "failed_chunks": len(failures),
+        },
+    }
+
+
 def _transcribe(
     audio_path: Path,
     clean_path: Path,
@@ -857,6 +1115,7 @@ def _transcribe(
     warnings: list[str],
     on_line: Callable[[str], None] | None = None,
     heartbeat: float | None = None,
+    info: dict | None = None,
 ) -> list[dict]:
     """Enhance, transcribe, and (optionally) label ``audio_path``.
 
@@ -868,7 +1127,13 @@ def _transcribe(
     are assigned per word and utterances re-derived at speaker/pause boundaries
     (ADR-0045); both ASR routes return words now (ADR-0062). Otherwise the
     coarser segment-level overlap assignment runs.
+
+    ``info`` (optional, filled in place) collects what actually happened — the
+    diarization strategy, chunk count and labelled-word ratio — so the rendered
+    transcript can state it instead of leaving the reader to guess.
     """
+    info = info if info is not None else {}
+    info["diarize_requested"] = diarize_requested()
     want_words = diarize_requested()
     segments = transcribe_audio(
         audio_path,
@@ -884,14 +1149,16 @@ def _transcribe(
         if on_line is not None:
             on_line("diarizing …\n")
         try:
-            turns = diarize(str(clean_path.resolve()), **diarize_bounds())
-            turns = _ensure_speaker_count(turns, warnings)
+            result = _diarize_long(clean_path, warnings, on_line, words=segments)
+            info.update(result["info"])
+            turns = _ensure_speaker_count(result["turns"], warnings)
             if want_words:
                 assign_speakers_by_words(segments, turns)
                 segments = words_to_utterances(segments)
             else:
                 assign_speakers(segments, turns)
         except Exception as exc:  # noqa: BLE001 - degrade to unlabelled transcript
+            info["error"] = str(exc)
             warnings.append(f"Diarization failed: {exc}; keeping unlabelled transcript")
 
     if AUDIO_COVERAGE_ENABLED:
@@ -901,6 +1168,23 @@ def _transcribe(
         _apply_guide(segments, warnings, on_line)
 
     _apply_edit(segments, warnings, on_line)
+
+    speakers = {seg.get("speaker") for seg in segments if seg.get("speaker")}
+    # Count *words*, not merged utterances: a labelled paragraph and a stray
+    # "It's" are not one unit each, and line-based coverage understated the real
+    # figure by ~37 points on the first long run.
+    words_total = 0
+    words_labelled = 0
+    for seg in segments:
+        count = len((seg.get("text") or "").split())
+        words_total += count
+        if seg.get("speaker"):
+            words_labelled += count
+    info["words"] = words_total
+    info["labelled"] = words_labelled
+    info["segments"] = len(segments)
+    info["labelled_segments"] = sum(1 for seg in segments if seg.get("speaker"))
+    info["speakers"] = len(speakers)
 
     for seg in segments:
         record_segment(
@@ -1052,8 +1336,15 @@ def attach_transcript(
         if audio is None or not audio.exists():
             return None
         clean_path = md_path.with_name(md_path.stem + ".clean.flac")
+        info: dict = {}
         segments = _transcribe(
-            audio, clean_path, str(md_path), warnings, on_line=on_line, heartbeat=heartbeat
+            audio,
+            clean_path,
+            str(md_path),
+            warnings,
+            on_line=on_line,
+            heartbeat=heartbeat,
+            info=info,
         )
         if not segments:
             return None
@@ -1061,7 +1352,10 @@ def attach_transcript(
         md = md_path.read_text(encoding="utf-8")
         _atomic_write_text(
             md_path,
-            _strip_transcript(md).rstrip("\n") + "\n\n" + segments_to_markdown(segments) + "\n",
+            _strip_transcript(md).rstrip("\n")
+            + "\n\n"
+            + segments_to_markdown(segments, info=info)
+            + "\n",
         )
 
         srt_path = md_path.with_name(md_path.stem + ".transcript.srt")
@@ -1103,12 +1397,19 @@ def transcribe_to_markdown(
         n = 0 if overwrite else _paired_version(base_md, base_clean)
         md_path = base_md if n == 0 else base_md.with_name(f"{base_md.stem}.{n}{base_md.suffix}")
         clean_path = base_clean if n == 0 else base_clean.with_name(f"{base_clean.stem}.{n}{base_clean.suffix}")
+        info: dict = {}
         segments = _transcribe(
-            audio, clean_path, str(md_path), warnings, on_line=on_line, heartbeat=heartbeat
+            audio,
+            clean_path,
+            str(md_path),
+            warnings,
+            on_line=on_line,
+            heartbeat=heartbeat,
+            info=info,
         )
         if not segments:
             return None
-        _atomic_write_text(md_path, segments_to_markdown(segments) + "\n")
+        _atomic_write_text(md_path, segments_to_markdown(segments, info=info) + "\n")
         srt_path = md_path.with_suffix(".srt")
         _atomic_write_text(srt_path, segments_to_srt(segments))
         return md_path

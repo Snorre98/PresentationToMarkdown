@@ -816,6 +816,13 @@ def snapshot(probe: bool = True) -> dict:
         "audio_language": _audio_setting("language", "no"),
         "audio_diarize": _audio_setting("diarize", "on").strip().lower() in _TRUE,
         "audio_speakers": _audio_int("speakers", 2),
+        # Preprocessing is opt-in: dereverberation costs ~30 min per hour of
+        # audio and DeepFilterNet has never worked in the audio venv, so both
+        # default off and are one TUI toggle away (ADR-0069).
+        "audio_dereverb": _audio_setting("dereverb", "off").strip().lower() in _TRUE,
+        "audio_enhance": _audio_setting("enhance", "off").strip().lower() in _TRUE,
+        "audio_prep_timeout": _audio_int("prep_timeout", 300),
+        "audio_preflight": _audio_setting("preflight", "on").strip().lower() in _TRUE,
         "features": {key: is_enabled(key) for key in FEATURES},
         "feature_info": feature_info(),
         "passes": passes,

@@ -57,6 +57,22 @@ def _speaker_turns(duration: float, min_speakers: int | None, max_speakers: int 
     return turns
 
 
+def _fake_embedding(label: str, size: int = 8) -> list[float]:
+    """Deterministic orthogonal-ish vector per label, so chunk stitching merges.
+
+    A real server returns the pipeline's clustering centroids (ADR-0068); the
+    stub only has to be stable across requests for the same label.
+    """
+    try:
+        index = int(str(label).rsplit("_", 1)[-1])
+    except ValueError:
+        index = sum(ord(char) for char in str(label))
+    vector = [0.0] * size
+    vector[index % size] = 1.0
+    vector[(index + 1) % size] = 0.25
+    return vector
+
+
 def _asr_segments(duration: float) -> list[dict]:
     """Fabricate ``[{start, end, text}, ...]`` ASR segments spanning ``duration``."""
     segments: list[dict] = []
@@ -100,6 +116,16 @@ class _Handler(BaseHTTPRequestHandler):
         except json.JSONDecodeError as exc:
             self._send(400, {"error": f"invalid JSON: {exc}"})
             return None
+
+    def do_GET(self):  # noqa: N802 - stdlib handler method name
+        """Liveness surface: the pre-flight probe and ``audio_serve.sh status``."""
+        route = self.path.rstrip("/")
+        if route in {"/v1/models", "/models"}:
+            self._send(200, {"object": "list", "data": [{"id": "stub"}]})
+        elif route in {"/health", "/v1/health"}:
+            self._send(200, {"ok": True})
+        else:
+            self._send(404, {"error": "not found"})
 
     def do_POST(self):  # noqa: N802 - stdlib handler method name
         route = self.path.rstrip("/")
@@ -148,7 +174,18 @@ class _Handler(BaseHTTPRequestHandler):
         turns = _speaker_turns(
             _audio_duration(path), req.get("min_speakers"), req.get("max_speakers")
         )
-        self._send(200, turns)
+        if str(req.get("return_embeddings", "")).lower() not in {"1", "true", "yes", "on"}:
+            self._send(200, turns)
+            return
+        labels = sorted({turn["speaker"] for turn in turns})
+        self._send(
+            200,
+            {
+                "turns": turns,
+                "embeddings": {label: _fake_embedding(label) for label in labels},
+                "device": "stub",
+            },
+        )
 
     def _handle_enhance(self):
         req = self._read_json()

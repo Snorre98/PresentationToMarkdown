@@ -28,6 +28,7 @@ from pathlib import Path
 
 import pytest
 
+from converter import audio as a
 from converter import transcribe as t
 from converter.audio import (
     asr,
@@ -322,8 +323,8 @@ def test_transcribe_audio_writes_clean_flac(tmp_path, monkeypatch):
 
     monkeypatch.setattr(t, "_run", fake_run)
     monkeypatch.setattr(t, "transcribe_fleet", lambda path, **kw: [])
-    monkeypatch.setattr(t, "AUDIO_ENHANCE_ENABLED", False)
-    monkeypatch.setattr(t, "AUDIO_DEREVERB_ENABLED", False)
+    monkeypatch.setattr(a, "AUDIO_ENHANCE_ENABLED", False)
+    monkeypatch.setattr(a, "AUDIO_DEREVERB_ENABLED", False)
     t.transcribe_audio(audio, clean)
 
     assert clean.exists()

@@ -82,5 +82,38 @@ def test_stop_without_start_is_harmless(tmp_path):
     assert "nothing running" in stop.stderr
 
 
+def test_stub_diarize_returns_embeddings(tmp_path):
+    """The chunked-diarization wire contract, over real HTTP (ADR-0068)."""
+    from converter import audio as a
+
+    port = _free_port()
+    start = _run(tmp_path, "stub-start", "--port", str(port))
+    assert start.returncode == 0, start.stderr
+    try:
+        body = a.diarize_detailed(
+            "/nonexistent/audio.flac",
+            base_url=f"http://127.0.0.1:{port}/v1",
+            return_embeddings=True,
+            timeout=20.0,
+        )
+        alive = a.audio_server_available(
+            base_url=f"http://127.0.0.1:{port}/v1", timeout=5.0
+        )
+        dead = a.audio_server_available(
+            base_url=f"http://127.0.0.1:{_free_port()}/v1", timeout=0.5
+        )
+    finally:
+        _run(tmp_path, "stub-stop")
+
+    assert alive is True, "pre-flight probe must see the running stub"
+    assert dead is False, "pre-flight probe must fail on a closed port"
+
+    assert body["turns"], "stub should fabricate turns"
+    assert body["embeddings"], "stub should return one centroid per label"
+    labels = {turn["speaker"] for turn in body["turns"]}
+    assert labels == set(body["embeddings"])
+    assert all(isinstance(value, float) for vector in body["embeddings"].values() for value in vector)
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))

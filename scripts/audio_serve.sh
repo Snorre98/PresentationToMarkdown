@@ -13,6 +13,9 @@
 #   audio_serve.sh start              # start the audio daemon via the control daemon
 #   audio_serve.sh stop               # stop the audio daemon
 #   audio_serve.sh status             # daemon state (up/down/starting/...)
+#   audio_serve.sh local-start        # run the real server locally (bypass flaate)
+#   audio_serve.sh local-stop
+#   audio_serve.sh local-status
 #   audio_serve.sh log                # tail -f the daemon-side server log
 #   audio_serve.sh stub-start [--port N]   # start the stub (no PyTorch/HF)
 #   audio_serve.sh stub-stop
@@ -347,11 +350,18 @@ case "${1:-help}" in
   start)            _daemon_start ;;
   stop)             _daemon_stop ;;
   status)           _daemon_status ;;
+  # Escape hatch: run the server from this script instead of through flaate.
+  # flaate keeps last-known state and can report "up" without a listener, in
+  # which case /start/audio is a no-op; these verbs always act locally and let
+  # per-process env (DIARIZE_DEVICE, HF_TOKEN) through.
+  local-start)      _start audio ;;
+  local-stop)       _stop audio ;;
+  local-status)     _status audio ;;
   log)              [ -f "$DEV_AUDIO_LOG" ] && tail -f "$DEV_AUDIO_LOG" || die "no daemon log yet — start it first" ;;
   stub-start)       shift; _start stub "$@" ;;
   stub-stop)        _stop stub ;;
   stub-status)      _status stub ;;
   stub-log)         _log stub ;;
   -h|--help|help)   sed -n '9,21p' "$0" | sed 's/^# \{0,1\}//' ;;
-  *) die "unknown command: ${1:-} (install|start|stop|status|log|stub-start|stub-stop|stub-status|stub-log)" ;;
+  *) die "unknown command: ${1:-} (install|start|stop|status|local-start|local-stop|local-status|log|stub-start|stub-stop|stub-status|stub-log)" ;;
 esac
