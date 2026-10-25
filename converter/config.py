@@ -130,7 +130,7 @@ class Feature:
     env_var: str
     description: str = ""
     implies: tuple[str, ...] = ()
-    scope: str = "all"  # "all" | "paper" — paper features only run in paper mode
+    scope: str = "all"  # "all" | "paper" — paper-only features run in paper mode
 
 
 # Built-in catalog — the fallback projection of the fleet manifest's PtM-serving
@@ -180,8 +180,8 @@ SERVERS: dict[str, Server] = {
         runner="mlx-lm",
         port=8083,
         model="mlx-community/Llama-3.2-3B-Instruct-4bit",
-        description="Text model for summary + paper structure (PresentationToMarkdown)",
-        label="Text model (summary + paper structure)",
+        description="Text model for summary + PDF structure (PresentationToMarkdown)",
+        label="Text model (summary + PDF structure)",
     ),
     "embeddings": Server(
         name="embeddings",
@@ -245,13 +245,13 @@ FEATURES: dict[str, Feature] = {
     ),
     "structure": Feature(
         key="structure",
-        label="Paper structure",
+        label="PDF structure",
         env_var="STRUCTURE_ENABLED",
         description=(
-            "Fixes titles, headings, column order and footnotes in paper-mode "
-            "PDFs and rewords unreadable pages; no effect in slide mode."
+            "Fixes titles, headings, column/diagram order and footnotes in "
+            "paper-mode and slide PDFs and rewords unreadable pages."
         ),
-        scope="paper",
+        scope="all",
     ),
 }
 
@@ -395,15 +395,15 @@ def borderless_tables_enabled() -> bool:
 
 
 def pdf_reflow_enabled() -> bool:
-    """Whether paper mode rejoins wrapped lines into paragraph text (ADR-0055).
+    """Whether PDF modes rejoin wrapped lines into paragraph text (ADR-0055/0070).
 
     A non-AI output preference read lazily at conversion time like
     ``IMAGE_LINKS``/``PDF_COMPRESS``/``PDF_BORDERLESS_TABLES``. Default **on**:
     paper-mode PDFs emit one Markdown line per paragraph (and per section
-    heading) built from the deterministic paragraph model, and paragraphs that
-    span a column or page boundary are joined. ``PDF_REFLOW=off`` keeps the
-    previous line-per-visual-line output (headings are still reconstructed);
-    slide mode (``PDF_MODE=slide``) is never reflowed.
+    heading) built from the deterministic paragraph model; slide-mode PDFs do
+    the same per page while keeping their per-page headings and separators.
+    ``PDF_REFLOW=off`` keeps the line-per-visual-line body output (headings are
+    still reconstructed).
     """
     return (os.environ.get("PDF_REFLOW", "on").strip().lower() or "on") in _TRUE
 

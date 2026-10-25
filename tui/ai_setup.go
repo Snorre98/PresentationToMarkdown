@@ -197,7 +197,7 @@ func (m *model) aiSetupLines(inner int) ([]string, []int) {
 			paperHeader = true
 		} else if req.Scope != "paper" && !slideHeader {
 			lines = append(lines, "")
-			lines = append(lines, th.bold.Render("  Slide passes"))
+			lines = append(lines, th.bold.Render("  Document passes"))
 			slideHeader = true
 		}
 

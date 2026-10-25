@@ -15,7 +15,7 @@ Index of architectural decisions for PresentationToMarkdown, in
 | [0008](0008-audio-enhancement.md) | Enhance lecture-hall audio before ASR and persist a cleaned FLAC | Accepted |
 | [0009](0009-decouple-transcription-from-conversion.md) | Decouple transcription from conversion into a `ptm-transcribe` command | Amended by [0051](0051-tui-sole-surface.md) |
 | [0010](0010-dereverb-voice-isolation.md) | Dereverberation (WPE) and voice isolation (SepFormer) in the audio server | Accepted |
-| [0011](0011-paper-structure-llm-pass.md) | Paper-mode document-structure LLM pass with image reword | Accepted |
+| [0011](0011-paper-structure-llm-pass.md) | Paper-mode document-structure LLM pass with image reword | Amended by [0052](0052-paper-continuous-document.md), [0071](0071-structure-pass-for-slide-pdfs.md) |
 | [0012](0012-runtime-ai-features.md) | Runtime-togglable AI features with server health checks | Accepted |
 | [0013](0013-per-page-progress.md) | Per-page progress reporting | Accepted |
 | [0014](0014-read-only-log-dashboard.md) | Read-only web dashboard for conversion logs | Superseded by [0022](0022-flask-dashboard-conversion-telemetry.md) |
@@ -51,10 +51,10 @@ Index of architectural decisions for PresentationToMarkdown, in
 | [0049](0049-pdf-compression-on-archive.md) | Best-effort PDF compression when sources are archived | Accepted |
 | [0050](0050-inference-marked-markdown.md) | Markdown containing model output is named `-inference-used` | Accepted |
 | [0051](0051-tui-sole-surface.md) | Native TUI is the sole user interface; desktop GUI, dashboard, and CLIs retired | Accepted |
-| [0052](0052-paper-continuous-document.md) | Paper mode is one continuous document (no per-page headings) | Accepted |
+| [0052](0052-paper-continuous-document.md) | Paper mode is one continuous document (no per-page headings) | Amended by [0070](0070-slide-paragraphs-and-headings.md), [0071](0071-structure-pass-for-slide-pdfs.md) |
 | [0053](0053-tui-v2-charm-and-job-contract.md) | TUI v2: Charm v2 shell, fixed-frame layout, engine job contract | Accepted |
 | [0054](0054-borderless-pdf-tables.md) | Borderless PDF tables reconstructed from the text-layer stream | Accepted |
-| [0055](0055-pdf-paragraphs-and-headings.md) | Paper-mode paragraphs and headings from learned typography | Accepted |
+| [0055](0055-pdf-paragraphs-and-headings.md) | Paper-mode paragraphs and headings from learned typography | Amended by [0070](0070-slide-paragraphs-and-headings.md) |
 | [0056](0056-latex-title-and-crossrefs.md) | LaTeX title page and pandoc leftovers normalized | Amended by [0058](0058-latex-title-page-front-block.md), [0059](0059-latex-compiled-float-numbering.md) |
 | [0057](0057-latex-tikz-figures.md) | LaTeX figures: TikZ/pgfplots rendered to PNG | Amended by [0060](0060-latex-tikz-text-without-image.md) |
 | [0058](0058-latex-title-page-front-block.md) | LaTeX title page preserved as a front block | Accepted |
@@ -64,8 +64,10 @@ Index of architectural decisions for PresentationToMarkdown, in
 | [0062](0062-asr-on-the-fleet-whisper-daemon.md) | ASR on the fleet: one whisper daemon, no subprocess lane | Accepted |
 | [0063](0063-fleet-service-availability-in-tui.md) | Fleet service availability in the TUI | Amended by [0065](0065-ai-capability-labels-and-requirements.md) |
 | [0064](0064-fleet-model-identity-key-name-tags.md) | Fleet model identity in PtM — key, display name, tags | Amended by [0065](0065-ai-capability-labels-and-requirements.md) |
-| [0065](0065-ai-capability-labels-and-requirements.md) | AI capability labels and the resolved requirements projection | Amended by [0066](0066-ai-setup-control-surface.md) |
-| [0066](0066-ai-setup-control-surface.md) | AI setup is the AI control surface | Accepted |
+| [0065](0065-ai-capability-labels-and-requirements.md) | AI capability labels and the resolved requirements projection | Amended by [0066](0066-ai-setup-control-surface.md), [0071](0071-structure-pass-for-slide-pdfs.md) |
+| [0066](0066-ai-setup-control-surface.md) | AI setup is the AI control surface | Amended by [0071](0071-structure-pass-for-slide-pdfs.md) |
 | [0067](0067-pdf-epub-export.md) | PDF → EPUB export beside the Markdown | Accepted |
 | [0068](0068-chunked-diarization.md) | Chunked diarization with cross-chunk speaker identity | Accepted |
 | [0069](0069-audio-preprocessing-settings.md) | Audio preprocessing is a per-run TUI setting, off by default | Accepted |
+| [0070](0070-slide-paragraphs-and-headings.md) | Slide-mode paragraphs and headings from learned typography | Accepted |
+| [0071](0071-structure-pass-for-slide-pdfs.md) | The structure pass covers slide PDFs | Accepted |

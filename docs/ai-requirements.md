@@ -15,7 +15,7 @@ toggles the selected pass. Press **`s`** for output and audio preferences.
 | Diagram interpretation | `interpret` | `INTERPRET_ENABLED` | `--interpret` |
 | Markdown restructure | `format` | `FORMAT_ENABLED` | `--format` |
 | Presentation summary | `summary` | `SUMMARY_ENABLED` | `--summary` |
-| Paper structure | `structure` | `STRUCTURE_ENABLED` | `--structure` |
+| PDF structure | `structure` | `STRUCTURE_ENABLED` | `--structure` |
 | Audio transcription | — | `AUDIO_MODEL` | TUI audio job |
 
 The internal keys remain stable because they are the env-var and API names. The
@@ -30,7 +30,7 @@ TUI never shows them; it uses the labels above.
 | Diagram interpretation | Qwen2.5-VL 7B | |
 | Markdown restructure | Qwen2.5-VL 7B + Llama 3.2 3B (`llama-3.2-3b-instruct-4bit`, `:8083`) | Llama is the need-check gate; optional with `NEED_GATE=off` |
 | Presentation summary | Llama 3.2 3B + EmbeddingGemma 2 (`embeddinggemma-2-q8-0`, `:8090`) | Embeddings are optional for retrieval; without them the summary uses a bounded sample |
-| Paper structure | Qwen2.5-VL 7B + Llama 3.2 3B | Paper-mode PDFs only; the 7B handles image pages, the 3B text pages |
+| PDF structure | Qwen2.5-VL 7B + Llama 3.2 3B | Both PDF modes; the 7B handles image pages, the 3B text pages |
 | Audio transcription | `audio` (`:8089`) or a Whisper model (`whisper-large-v3-asr-fp16` / `-turbo-`, `:8099`) | Separate engine job; not part of slide conversion |
 
 The model rows the TUI shows are the models PtM **resolves** for these roles,
@@ -38,10 +38,10 @@ not every model whose tags could match. The current manifest resolves:
 
 | Role label | Resolved model | Serves |
 | --- | --- | --- |
-| Vision + rewrite model | Qwen2.5-VL 7B Instruct (`qwen2.5-vl-7b-instruct-4bit`) | Vision transcription, Diagram interpretation, Markdown restructure, Paper structure |
+| Vision + rewrite model | Qwen2.5-VL 7B Instruct (`qwen2.5-vl-7b-instruct-4bit`) | Vision transcription, Diagram interpretation, Markdown restructure, PDF structure |
 | Image classifier | Qwen2.5-VL 3B Instruct (`qwen2.5-vl-3b-instruct-4bit`) | Image classifier |
 | Summary model | Llama 3.2 3B Instruct (`llama-3.2-3b-instruct-4bit`) | Presentation summary |
-| Text model (summary + paper structure) | Llama 3.2 3B Instruct (`llama-3.2-3b-instruct-4bit`) | Markdown restructure (need check), Paper structure text pages |
+| Text model (summary + PDF structure) | Llama 3.2 3B Instruct (`llama-3.2-3b-instruct-4bit`) | Markdown restructure (need check), PDF structure text pages |
 | Embeddings model | EmbeddingGemma 2 (`embeddinggemma-2-q8-0`) | Presentation summary |
 
 One model can serve several passes. Enabling more passes does not always mean
@@ -91,7 +91,8 @@ matching model in manifest order (ADR-0064). Consequences:
   `EMBED_MODEL=nomic-embed-text`.
 - `NEED_GATE=off` removes the small text model from the Markdown restructure
   requirement; every slide is then rewritten.
-- `PDF_MODE=slide` means Paper structure will not run even if it is enabled.
+- `PDF_MODE=slide` and `PDF_MODE=paper` both run PDF structure when it is
+  enabled; the pass's text pages use the small text model, image pages the VLM.
 
 ## Troubleshooting
 

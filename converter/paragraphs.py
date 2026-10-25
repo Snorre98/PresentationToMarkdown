@@ -1,8 +1,9 @@
 """Deterministic paragraph and heading reconstruction for PDF text layers.
 
-The converter's paper mode turns a stream of visually-wrapped PDF lines into
-blocks: paragraphs, list items and headings. This module owns that model
-(ADR-0055) so the heuristics stay testable without opening a PDF:
+The converter's PDF modes turn a stream of visually-wrapped PDF lines into
+blocks: paragraphs, list items, headings and monospace code. This module owns
+that model (ADR-0055/0070) so the heuristics stay testable without opening a
+PDF:
 
 - :func:`build_profile` learns per-document typography from the text layer:
   the character-weighted body size, the modal line pitch, the paragraph-gap
@@ -16,7 +17,8 @@ blocks: paragraphs, list items and headings. This module owns that model
   leaves the line as text.
 - :func:`render_block` renders Markdown from span runs (never from
   pre-rendered strings), merging formatting across wrapped line breaks so
-  ``**10 available`` + ``additional…**`` becomes one balanced run.
+  ``**10 available`` + ``additional…**`` becomes one balanced run; monospace
+  code blocks render as a fenced ``text`` block.
 
 All thresholds are safety rails or fallbacks; the decision criteria are the
 learned statistics.
@@ -33,8 +35,12 @@ from converter._english_words import ENGLISH_WORDS
 _BOLD_FLAG = 2**4
 _ITALIC_FLAG = 2**1
 
-# Bullet glyphs at line start (same set as the converter's slide-mode path).
+# Bullet glyphs at line start (the classic set used by paper mode).
 _BULLET_RE = re.compile(r"^\s*([\u2022\u2023\u2043\u25AA\u25CF\u25CB\u00B7\u2013\u2014])\s*")
+# PowerPoint's Symbol/Wingdings bullets live in the private-use area (e.g.
+# \uf0b7 and the \uf07d seen in real lecture decks). Slide mode opts into these
+# so paper output stays unchanged (ADR-0070).
+_PUA_BULLET_RE = re.compile(r"^\s*([\uE000-\uF8FF])\s*")
 _NUMBER_RE = re.compile(r"^\d{1,2}[.)]\s")
 _SENTENCE_END_RE = re.compile(r"[.!?:][\"'\u2019\u201d\u00bb)\]]*\s*$")
 _QUOTE_START_RE = re.compile(r"^[\"'\u2018\u2019\u201c\u201d\u00ab\u00bb]")
@@ -79,6 +85,7 @@ class TextLine:
     runs: list[Run]
     bullet: str | None = None
     crowded: bool = False
+    mono: bool = False
 
 
 @dataclass
@@ -202,16 +209,29 @@ def block_plain(block: Block) -> str:
     return plain_text(join_runs(block.lines))
 
 
+def _code_text(line: TextLine) -> str:
+    """A code line's raw text: no Markdown markers, no whitespace collapsing."""
+    return "".join(run.text for run in line.runs).rstrip()
+
+
 def render_block(block: Block, reflow: bool = True) -> list[str]:
     """Render one block to Markdown lines (headings render as plain text).
 
     With ``reflow`` off each visual line is emitted separately (the legacy
     line-per-line output); the paragraph model still drives segmentation and
-    heading promotion.
+    heading promotion. Monospace code blocks always keep their own lines and
+    are fenced, regardless of ``reflow`` (ADR-0070).
     """
     if block.kind == "heading":
         text = block_plain(block)
         return [f"{'#' * max(block.level, 1)} {text}"] if text else []
+    if block.kind == "code":
+        lines = [_code_text(line) for line in block.lines]
+        lines = [line for line in lines if line.strip()]
+        if not lines:
+            return []
+        fence = "````" if any("```" in line for line in lines) else "```"
+        return [fence + "text", *lines, fence]
     if not reflow:
         out: list[str] = []
         indent = "  " * block.bullet_level
@@ -291,6 +311,8 @@ def _continuation(prev: TextLine, line: TextLine, profile: Profile) -> bool:
         threshold *= max(1.0, line.size / profile.body_size)
     if line.y0 - prev.y0 > threshold:
         return False
+    if prev.mono or line.mono:
+        return False
     prev_plain = _plain(prev)
     if _sentence_final(prev_plain) and _starts_sentence(_plain(line)):
         return False
@@ -301,6 +323,8 @@ def _continuation(prev: TextLine, line: TextLine, profile: Profile) -> bool:
 
 def _cross_continuation(prev: TextLine, line: TextLine) -> bool:
     """Continuation across a column or page boundary (no comparable gap)."""
+    if prev.mono or line.mono:
+        return False
     if _sentence_final(_plain(prev)) and _starts_sentence(_plain(line)):
         return False
     if _fmt_continues(prev, line):
@@ -555,17 +579,27 @@ def detect_title(
 # --- segmentation ------------------------------------------------------------
 
 
-def bullet_split(text: str) -> tuple[str | None, str]:
-    """Return ``(glyph, rest)`` when ``text`` starts with a bullet glyph."""
+def bullet_split(
+    text: str, private_use: bool = False
+) -> tuple[str | None, str]:
+    """Return ``(glyph, rest)`` when ``text`` starts with a bullet glyph.
+
+    ``private_use`` enables PowerPoint's Symbol/Wingdings bullets (slide mode);
+    paper mode keeps the classic glyph set so its output is unchanged.
+    """
     match = _BULLET_RE.match(text)
+    if match is None and private_use:
+        match = _PUA_BULLET_RE.match(text)
     if not match:
         return None, text
     return match.group(1), text[match.end():].lstrip()
 
 
-def strip_glyph(line: TextLine) -> None:
+def strip_glyph(line: TextLine, private_use: bool = False) -> None:
     """Remove the leading bullet glyph from the line's runs, in place."""
     match = _BULLET_RE.match(line.text)
+    if match is None and private_use:
+        match = _PUA_BULLET_RE.match(line.text)
     if not match:
         return
     cut = match.end()
@@ -583,29 +617,58 @@ def strip_glyph(line: TextLine) -> None:
 
 
 def segment_group(
-    lines: list[TextLine], profile: Profile, *, prev: TextLine | None = None
+    lines: list[TextLine],
+    profile: Profile,
+    *,
+    prev: TextLine | None = None,
+    relaxed_bullets: bool = False,
 ) -> list[Block]:
-    """Group one reading-order run of lines into paragraph/item blocks."""
+    """Group one reading-order run of lines into paragraph/item/code blocks.
+
+    ``relaxed_bullets`` lets a wrapped bullet line continue at the bullet's own
+    x (PowerPoint wraps to the glyph, not the text indent); paper mode keeps the
+    stricter indented-continuation rule (ADR-0070).
+    """
     blocks: list[Block] = []
     for i, line in enumerate(lines):
+        previous = lines[i - 1] if i > 0 else None
+        if line.mono:
+            # Monospace text is code: contiguous code lines share one block and
+            # never reflow into prose (ADR-0070).
+            if (
+                blocks
+                and blocks[-1].kind == "code"
+                and previous is not None
+                and previous.mono
+                and line.y0 - previous.y0 <= 3.0 * max(line.size, 1.0)
+            ):
+                blocks[-1].lines.append(line)
+            else:
+                block = Block(kind="code", lines=[line])
+                block.start_gap = None if i == 0 else line.y0 - lines[i - 1].y0
+                blocks.append(block)
+            continue
         if i == 0:
             new = True
         else:
-            previous = lines[i - 1]
             if abs(line.y0 - previous.y0) <= ROW_TOL:
                 new = True
                 line.crowded = True
                 previous.crowded = True
+            elif previous.mono:
+                new = True
             elif line.bullet:
                 new = True
             elif _NUMBER_RE.match(_plain(line)):
                 new = True
             elif blocks and blocks[-1].kind == "bullet":
                 bullet_x0 = blocks[-1].lines[0].x0
-                new = not (
-                    _continuation(previous, line, profile)
-                    and line.x0 > bullet_x0 + 2.0
+                x_ok = (
+                    line.x0 >= bullet_x0 - 2.0
+                    if relaxed_bullets
+                    else line.x0 > bullet_x0 + 2.0
                 )
+                new = not (_continuation(previous, line, profile) and x_ok)
             else:
                 new = not _continuation(previous, line, profile)
         if new:
@@ -619,10 +682,13 @@ def segment_group(
         first = blocks[0]
         if first.kind == "bullet":
             if prev.bullet:
-                first.continues = _cross_continuation(prev, first.lines[0]) and (
-                    first.lines[0].x0 > prev.x0 + 2.0
+                x_ok = (
+                    first.lines[0].x0 >= prev.x0 - 2.0
+                    if relaxed_bullets
+                    else first.lines[0].x0 > prev.x0 + 2.0
                 )
-        else:
+                first.continues = _cross_continuation(prev, first.lines[0]) and x_ok
+        elif first.kind == "para":
             first.continues = _cross_continuation(prev, first.lines[0])
     return blocks
 

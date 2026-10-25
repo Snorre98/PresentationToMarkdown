@@ -1,6 +1,6 @@
 # 0011. Paper-mode document-structure LLM pass
 
-- Status: Amended by [0052](0052-paper-continuous-document.md)
+- Status: Amended by [0052](0052-paper-continuous-document.md), [0071](0071-structure-pass-for-slide-pdfs.md)
 - Date: 2026-09-01
 
 ## Context

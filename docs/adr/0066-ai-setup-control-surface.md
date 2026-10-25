@@ -1,6 +1,6 @@
 # 0066. AI setup is the AI control surface
 
-- Status: Accepted
+- Status: Amended by [0071](0071-structure-pass-for-slide-pdfs.md)
 - Date: 2026-10-20
 - Relates to: [0012](0012-runtime-ai-features.md),
   [0063](0063-fleet-service-availability-in-tui.md),

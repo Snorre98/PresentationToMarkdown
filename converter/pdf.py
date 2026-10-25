@@ -5,15 +5,16 @@ The converter reconstructs a page's visual layout from per-span coordinates:
 - every page is rendered to a PNG in memory (the page-level vision input; the
   file is only saved, with a ``[Page N](...)`` link, when ``IMAGE_LINKS`` is on),
 - the shared slide-master background image is detected and skipped,
-- text lines are reordered by ``(row, x)`` and formatted into bullets, paragraphs
-  and pipe tables (bordered via ``find_tables()``; borderless layout grids are
-  reconstructed from the text-layer stream order, ADR-0054),
+- text lines are reordered and formatted into paragraphs, headings, bullets and
+  pipe tables; slide mode uses the learned paragraph/heading model page-scoped
+  (ADR-0070), keeps per-page titles and separators, and fences monospace code,
 - footers and slide numbers are dropped (they repeat on every page),
 - "complex" pages (diagrams / multi-column flowcharts) fall back to the rendered
   image, optionally with a local vision-model transcription.
 """
 from __future__ import annotations
 
+import math
 import os
 import re
 from dataclasses import dataclass
@@ -39,17 +40,31 @@ from converter.interpret import interpret_diagram
 from converter.logstore import current_run_id, phase
 from converter.ocr_columns import detect_bands, detect_text_bands, transcribe_columns
 from converter.paragraphs import TextLine
-from converter.structure import PageData, structure_paper
+from converter.structure import PageData, structure_paper, structure_slides
 
 _BOLD_FLAG = 2**4
 _ITALIC_FLAG = 2**1
 
-# Bullet glyphs at line start: bullet, heavy bullets, en/em dashes.
-_BULLET_RE = re.compile(r"^\s*([\u2022\u2023\u2043\u25AA\u25CF\u25CB\u00B7\u2013\u2014])\s*")
+# Monospace font families: contiguous monospace lines are code, not prose
+# (ADR-0070). Font names come from PyMuPDF spans and may carry a subset prefix.
+_MONO_FONTS = (
+    "mono",
+    "courier",
+    "consol",
+    "lucidaconsole",
+    "menlo",
+    "inconsolata",
+    "dejavu sans mono",
+    "liberation mono",
+    "source code",
+    "code",
+)
+
 _PAGE_NUMBER_RE = re.compile(r"^\d{1,3}$")
 _LEADING_NUMBER_RE = re.compile(r"^\s*\d{1,3}\s+")
 
 _TITLE_MIN_SIZE = 16.0
+_SLIDE_TITLE_BAND = 0.45  # slide titles live in the top 45% of the page
 _FOOTER_MAX_SIZE = 16.0
 _FOOTER_BOTTOM_BAND = 70.0
 _ROW_TOL = 6.0
@@ -74,6 +89,7 @@ class Line:
     size: float
     bold: bool
     italic: bool
+    mono: bool = False
 
 
 def _spans_to_md(spans: list[dict]) -> str:
@@ -82,7 +98,9 @@ def _spans_to_md(spans: list[dict]) -> str:
     return paragraphs.render_runs(paragraphs.runs_from_spans(spans))
 
 
-def _to_text_line(line: Line) -> TextLine:
+def _to_text_line(
+    line: Line, *, private_use: bool = False, code: bool = False
+) -> TextLine:
     """Convert a text-layer line into the paragraph model's line type."""
     stripped = line.text.strip()
     return TextLine(
@@ -93,22 +111,24 @@ def _to_text_line(line: Line) -> TextLine:
         y1=line.bbox[3],
         size=line.size,
         runs=paragraphs.runs_from_spans(line.spans),
-        bullet=paragraphs.bullet_split(stripped)[0],
+        bullet=paragraphs.bullet_split(stripped, private_use=private_use)[0],
+        mono=code and line.mono,
     )
 
 
-def _text_lines(lines: list[Line]) -> list[TextLine]:
+def _text_lines(
+    lines: list[Line], *, private_use: bool = False, code: bool = False
+) -> list[TextLine]:
     """Convert lines for the paragraph model, folding a lone bullet glyph into
-    the text line that follows it on the same row (mirrors
-    :func:`_merge_lone_bullets` for the slide path)."""
+    the text line that follows it on the same row."""
     out: list[TextLine] = []
     i = 0
     while i < len(lines):
         line = lines[i]
-        tl = _to_text_line(line)
-        glyph, rest = paragraphs.bullet_split(tl.text.strip())
+        tl = _to_text_line(line, private_use=private_use, code=code)
+        glyph, rest = paragraphs.bullet_split(tl.text.strip(), private_use=private_use)
         if glyph and not rest and i + 1 < len(lines) and abs(lines[i + 1].bbox[1] - line.bbox[1]) <= _ROW_TOL:
-            nxt = _to_text_line(lines[i + 1])
+            nxt = _to_text_line(lines[i + 1], private_use=private_use, code=code)
             nxt.bullet = glyph
             nxt.x0 = line.bbox[0]
             nxt.y0 = line.bbox[1]
@@ -118,18 +138,15 @@ def _text_lines(lines: list[Line]) -> list[TextLine]:
             continue
         if glyph:
             tl.bullet = glyph
-            paragraphs.strip_glyph(tl)
+            paragraphs.strip_glyph(tl, private_use=private_use)
         out.append(tl)
         i += 1
     return out
 
 
-def _strip_bullet(md: str) -> tuple[str | None, str]:
+def _strip_bullet(md: str, private_use: bool = False) -> tuple[str | None, str]:
     """Return (glyph, rest) if ``md`` starts with a bullet glyph, else (None, md)."""
-    match = _BULLET_RE.match(md)
-    if not match:
-        return None, md
-    return match.group(1), md[match.end():].lstrip()
+    return paragraphs.bullet_split(md, private_use=private_use)
 
 
 def _page_lines(page) -> list[Line]:
@@ -142,6 +159,11 @@ def _page_lines(page) -> list[Line]:
             text = "".join(span["text"] for span in spans)
             if not text.strip():
                 continue
+            visible = [span for span in spans if span.get("text", "").strip()]
+            fonts = [str(span.get("font", "")).lower() for span in visible]
+            mono = bool(fonts) and all(
+                any(marker in font for marker in _MONO_FONTS) for font in fonts
+            )
             lines.append(
                 Line(
                     text=text,
@@ -150,6 +172,7 @@ def _page_lines(page) -> list[Line]:
                     size=max((span["size"] for span in spans), default=0.0),
                     bold=any(span["flags"] & _BOLD_FLAG for span in spans),
                     italic=any(span["flags"] & _ITALIC_FLAG for span in spans),
+                    mono=mono,
                 )
             )
     return lines
@@ -171,39 +194,64 @@ def _ordered_lines(lines: list[Line]) -> list[Line]:
 
 
 def _detect_title(lines: list[Line], page_height: float) -> tuple[str | None, set[int]]:
-    """Return (title, line ids) — the largest-font text, minus page numbers/footers.
+    """Return ``(title, line ids)`` for a slide page.
 
-    Absorbs one or two wrapped continuation lines directly below (e.g. a title
-    that breaks across lines at a slightly smaller font size)."""
+    The title is a contiguous run of the page's largest display size in the
+    top band (ADR-0070). It never absorbs body-size or bullet lines: only
+    lines at >= 90% of the title size, immediately below, may extend it. A
+    leading bullet glyph and a leading page/order number are stripped.
+    """
     candidates = [
         line
         for line in lines
-        if line.size >= _TITLE_MIN_SIZE and not _PAGE_NUMBER_RE.match(line.text.strip())
+        if line.size >= _TITLE_MIN_SIZE
+        and not _PAGE_NUMBER_RE.match(line.text.strip())
     ]
     if not candidates:
         return None, set()
-    max_size = max(line.size for line in candidates)
-    title_lines = [line for line in candidates if abs(line.size - max_size) < 0.5]
-    if not title_lines or len(title_lines) > 4:
+    top = [line for line in candidates if line.bbox[1] < page_height * _SLIDE_TITLE_BAND]
+    if not top:
+        top = candidates
+    max_size = max(line.size for line in top)
+    same = sorted(
+        (line for line in top if abs(line.size - max_size) < 0.5),
+        key=lambda line: line.bbox[1],
+    )
+    if not same or len(same) > 4:
         return None, set()
-    title_lines.sort(key=lambda l: l.bbox[1])
-    absorbed = list(title_lines)
-    title_ids = {id(line) for line in title_lines}
-    ref_y = title_lines[-1].bbox[1]
+    run = [same[0]]
+    for line in same[1:]:
+        if line.bbox[1] - run[-1].bbox[1] <= 2.6 * max_size:
+            run.append(line)
+        else:
+            break
+    run_ids = {id(line) for line in run}
+    absorbed = list(run)
     below = sorted(
-        (line for line in candidates if id(line) not in title_ids and line.bbox[1] >= ref_y - _ROW_TOL),
-        key=lambda l: l.bbox[1],
+        (
+            line
+            for line in candidates
+            if id(line) not in run_ids and line.bbox[1] >= run[-1].bbox[1] - _ROW_TOL
+        ),
+        key=lambda line: line.bbox[1],
     )
     for line in below:
         if len(absorbed) >= 4:
             break
-        if line.size >= 0.7 * max_size and line.bbox[3] <= page_height * 0.45:
+        if (
+            line.size >= 0.9 * max_size
+            and line.bbox[3] <= page_height * _SLIDE_TITLE_BAND
+            and line.bbox[1] - absorbed[-1].bbox[1] <= 2.6 * max_size
+        ):
             absorbed.append(line)
         else:
             break
-    absorbed.sort(key=lambda l: l.bbox[1])
+    absorbed.sort(key=lambda line: line.bbox[1])
     text = " ".join(line.text.strip() for line in absorbed)
+    text = re.sub(r"[\uE000-\uF8FF]", " ", text)
+    text = paragraphs.bullet_split(text)[1].strip()
     text = _LEADING_NUMBER_RE.sub("", text).strip()
+    text = re.sub(r"\s+", " ", text).strip()
     return (text or None), {id(line) for line in absorbed}
 
 
@@ -251,25 +299,42 @@ def _is_page_number(line: Line) -> bool:
     )
 
 
+def _is_bottom_number(line: Line, page_height: float) -> bool:
+    """A standalone 1-3 digit line in the bottom band — a page/slide number."""
+    return (
+        bool(_PAGE_NUMBER_RE.match(line.text.strip()))
+        and line.size <= _FOOTER_MAX_SIZE
+        and line.bbox[1] >= page_height - _FOOTER_BOTTOM_BAND
+    )
+
+
 def _footer_key(text: str) -> str:
     key = re.sub(r"\d", "", text).lower()
     return re.sub(r"\s+", " ", key).strip()
 
 
-def _collect_footer_keys(doc) -> set[str]:
-    """Bottom-band lines repeated on most pages — the per-page footer boilerplate."""
+def _collect_footer_keys(doc, *, drop_empty: bool = False) -> set[str]:
+    """Bottom-band lines repeated on most pages — the per-page footer boilerplate.
+
+    ``drop_empty`` (slide mode) keeps a digit-only page number out of the key
+    set: its key normalizes to ``""``, which would otherwise filter every
+    digit-only body line anywhere on the page (e.g. a year).
+    """
     from collections import Counter
 
     counts: Counter = Counter()
     for page in doc:
         for line in _page_lines(page):
             if line.bbox[1] >= page.rect.height - _FOOTER_BOTTOM_BAND and line.size <= _FOOTER_MAX_SIZE:
-                counts[_footer_key(line.text)] += 1
+                key = _footer_key(line.text)
+                if drop_empty and not key:
+                    continue
+                counts[key] += 1
     threshold = max(2, int(doc.page_count * 0.5))
     return {key for key, n in counts.items() if n >= threshold}
 
 
-def _collect_top_keys(doc) -> set[str]:
+def _collect_top_keys(doc, *, drop_empty: bool = False) -> set[str]:
     """Lines repeating at the top of most pages — the paper's running headers."""
     from collections import Counter
 
@@ -277,7 +342,10 @@ def _collect_top_keys(doc) -> set[str]:
     for page in doc:
         for line in _page_lines(page):
             if line.bbox[1] < page.rect.height * _TOP_BAND_FRAC and line.size <= _FOOTER_MAX_SIZE:
-                counts[_footer_key(line.text)] += 1
+                key = _footer_key(line.text)
+                if drop_empty and not key:
+                    continue
+                counts[key] += 1
     threshold = max(2, int(doc.page_count * 0.5))
     return {key for key, n in counts.items() if n >= threshold}
 
@@ -464,103 +532,6 @@ def _page_images(
     return refs, png_bytes, pix.width, pix.height
 
 
-def _merge_lone_bullets(items: list[dict]) -> list[dict]:
-    """Fold a lone bullet glyph line into the text line that follows it on the same row.
-
-    The bullet's own ``x0``/``y0`` are kept so the merged item is indented by the
-    bullet's position, not the text's."""
-    merged: list[dict] = []
-    i = 0
-    while i < len(items):
-        item = items[i]
-        glyph, rest = _strip_bullet(item["md"])
-        if glyph and not rest and i + 1 < len(items) and abs(items[i + 1]["y0"] - item["y0"]) <= _ROW_TOL:
-            nxt = items[i + 1]
-            merged.append(
-                {
-                    **nxt,
-                    "md": glyph + " " + nxt["md"].lstrip(),
-                    "x0": item["x0"],
-                    "y0": item["y0"],
-                    "heading": False,
-                }
-            )
-            i += 2
-        else:
-            merged.append(item)
-            i += 1
-    return merged
-
-
-def _make_items(lines: list[Line]) -> list[dict]:
-    """Turn ordered lines into emission items carrying layout + font metadata."""
-    items = []
-    for line in lines:
-        items.append(
-            {
-                "md": _spans_to_md(line.spans),
-                "x0": line.bbox[0],
-                "x1": line.bbox[2],
-                "y0": line.bbox[1],
-                "y1": line.bbox[3],
-                "h": max(line.bbox[3] - line.bbox[1], 1.0),
-                "size": line.size,
-                "bold": line.bold,
-            }
-        )
-    return _merge_lone_bullets(items)
-
-
-def _looks_like_lead(md: str) -> bool:
-    """A non-bullet line that starts a bolded term is a paragraph lead-in, not a
-    wrapped continuation of the previous bullet (e.g. ``**Process** is a
-    collection of activities that:``)."""
-    return md.lstrip().startswith("**")
-
-
-def _emit_items(items: list[dict], bullet_levels: dict[int, int]) -> list[str]:
-    out: list[str] = []
-    mode = None  # None | "list" | "para"
-    list_level = 0
-    prev_y1: float | None = None
-    for item in items:
-        md = item["md"].strip()
-        if not md:
-            continue
-        glyph, rest = _strip_bullet(md)
-        y0, y1, h = item["y0"], item["y1"], item["h"]
-        gap = y0 - prev_y1 if prev_y1 is not None else 0.0
-        if item.get("heading"):
-            out.append("")
-            out.append(md)
-            out.append("")
-            mode, list_level = None, 0
-        elif glyph is not None:
-            level = bullet_levels.get(_round5(item["x0"]), 0)
-            indent = "  " * level
-            if mode not in (None, "list"):
-                out.append("")
-            out.append(f"{indent}- {rest}" if rest else f"{indent}-")
-            mode, list_level = "list", level
-        elif mode == "list":
-            if gap <= h * 1.6 and not _looks_like_lead(md):
-                out.append("  " * (list_level + 1) + md)
-            else:
-                out.append("")
-                out.append(md)
-                mode = "para"
-        else:
-            if mode == "para" and gap <= h * 1.6:
-                out.append(md)
-            else:
-                if mode == "para":
-                    out.append("")
-                out.append(md)
-                mode = "para"
-        prev_y1 = y1
-    return out
-
-
 def _round5(x: float) -> int:
     return int(round(x / 5.0) * 5)
 
@@ -588,6 +559,75 @@ def _page_is_complex(lines: list[Line]) -> bool:
     linearized column-by-column by :func:`_detect_columns` instead."""
     distinct_x = len({_round5(line.bbox[0]) for line in lines})
     return distinct_x >= _COMPLEX_DISTINCT_X
+
+
+def _dominant_title_size(pages: list[list[Line]], heights: list[float]) -> float | None:
+    """The slide-title size used on most pages (top-band max-size run)."""
+    from collections import Counter
+
+    sizes: Counter = Counter()
+    for lines, height in zip(pages, heights):
+        _, title_ids = _detect_title(lines, height)
+        for line in lines:
+            if id(line) in title_ids:
+                sizes[round(line.size, 1)] += 1
+                break
+    return sizes.most_common(1)[0][0] if sizes else None
+
+
+def _slide_tier_sizes(
+    pages: list[list[Line]], body_size: float, title_size: float | None
+) -> list[float]:
+    """Display sizes that act like slide subheadings, not design decoration.
+
+    A slide deck uses many arbitrary display sizes (big numbers, pull quotes,
+    diagram labels); paper-mode tier learning would promote them all. A slide
+    tier must be a repeated style that introduces smaller text (ADR-0070).
+    """
+    page_count = len(pages)
+    if page_count == 0:
+        return []
+    min_pages = max(2, math.ceil(0.10 * page_count))
+    counts: dict[float, int] = {}
+    pages_by_size: dict[float, set[int]] = {}
+    alone_counts: dict[float, int] = {}
+    follow_counts: dict[float, int] = {}
+    for pno, lines in enumerate(pages, start=1):
+        rows: list[list[Line]] = []
+        for line in lines:
+            if rows and abs(line.bbox[1] - rows[-1][0].bbox[1]) <= _ROW_TOL:
+                rows[-1].append(line)
+            else:
+                rows.append([line])
+        alone = {id(line) for row in rows if len(row) == 1 for line in row}
+        for i, line in enumerate(lines):
+            size = round(line.size, 1)
+            counts[size] = counts.get(size, 0) + 1
+            pages_by_size.setdefault(size, set()).add(pno)
+            if id(line) in alone:
+                alone_counts[size] = alone_counts.get(size, 0) + 1
+            if i + 1 < len(lines):
+                following = lines[i + 1]
+                dy = following.bbox[1] - line.bbox[1]
+                if (
+                    0 < dy < 3.0 * size
+                    and round(following.size, 1) < size - 0.4
+                ):
+                    follow_counts[size] = follow_counts.get(size, 0) + 1
+    tiers: list[float] = []
+    for size, lines in counts.items():
+        if size <= body_size + 0.4:
+            continue
+        if title_size is not None and abs(size - title_size) <= 0.5:
+            continue
+        if len(pages_by_size[size]) < min_pages or lines < 2:
+            continue
+        if alone_counts.get(size, 0) / lines < 0.9:
+            continue
+        if follow_counts.get(size, 0) / lines < 0.5:
+            continue
+        tiers.append(size)
+    return sorted(tiers, reverse=True)
 
 
 def _detect_columns(lines: list[Line], page_width: float, page_height: float) -> list[list[Line]]:
@@ -733,19 +773,22 @@ class PDFConverter(Converter):
             paper = _pdf_mode()
             image_links = config.image_links_enabled()
             page_links = config.page_links_enabled()
+            reflow = config.pdf_reflow_enabled()
+            structure_enabled = config.is_enabled("structure")
             page_count = doc.page_count
             assets_dir = output_dir / "assets" / stem
             skip_xrefs = _background_xrefs(doc)
-            footer_keys = _collect_footer_keys(doc)
-            top_keys = _collect_top_keys(doc) if paper else set()
+            footer_keys = _collect_footer_keys(doc, drop_empty=not paper)
+            top_keys = _collect_top_keys(doc, drop_empty=not paper)
+            profile = (
+                self._paper_profile(doc, footer_keys, top_keys)
+                if paper
+                else self._slide_profile(doc, footer_keys, top_keys)
+            )
+            levels = paragraphs.heading_levels(profile)
             flow: _PaperFlow | None = None
             if paper:
-                profile = self._paper_profile(doc, footer_keys, top_keys)
-                flow = _PaperFlow(
-                    profile,
-                    paragraphs.heading_levels(profile),
-                    config.pdf_reflow_enabled(),
-                )
+                flow = _PaperFlow(profile, levels, reflow)
             repeated = (
                 repeated_image_hashes(_collect_page_image_digests(doc, skip_xrefs))
                 if image_links
@@ -755,35 +798,36 @@ class PDFConverter(Converter):
             counter = [1]
             dedup: dict[str, str] = {}
             lines: list[str] = []
-            paper_pages: list[PageData] = []
+            structure_pages: list[PageData] = []
             source = str(path)
             for pno, page in enumerate(doc, start=1):
                 page_out, page_content, page_png = self._page_to_md(
                     page, doc, pno, assets_dir, stem, counter, skip_xrefs,
                     footer_keys, top_keys, dedup, result.warnings, repeated,
                     seen, source, paper, image_links, page_links, flow,
+                    profile, levels, reflow,
                 )
                 lines.extend(page_out)
                 if flow is not None:
                     flow.commit(lines)
-                if paper:
-                    if config.is_enabled("structure"):
-                        paper_pages.append(
-                            PageData(
-                                md_lines=page_out,
-                                line_meta=[
-                                    {
-                                        "text": ln.text,
-                                        "size": ln.size,
-                                        "bold": ln.bold,
-                                        "x0": ln.bbox[0],
-                                    }
-                                    for ln in page_content
-                                ],
-                                png=page_png,
-                                pno=pno,
-                            )
+                if structure_enabled:
+                    structure_pages.append(
+                        PageData(
+                            md_lines=page_out,
+                            line_meta=[
+                                {
+                                    "text": ln.text,
+                                    "size": ln.size,
+                                    "bold": ln.bold,
+                                    "x0": ln.bbox[0],
+                                }
+                                for ln in page_content
+                            ],
+                            png=page_png,
+                            pno=pno,
                         )
+                    )
+                if paper:
                     lines.append("")
                 else:
                     lines.extend([
@@ -798,10 +842,16 @@ class PDFConverter(Converter):
             doc.close()
             if flow is not None:
                 flow.resolve()
-            if paper and config.is_enabled("structure"):
+            if structure_enabled:
                 with phase(current_run_id(), "structure", 2):
-                    structured = structure_paper(
-                        paper_pages, warnings=result.warnings, source=source
+                    structured = (
+                        structure_paper(
+                            structure_pages, warnings=result.warnings, source=source
+                        )
+                        if paper
+                        else structure_slides(
+                            structure_pages, warnings=result.warnings, source=source
+                        )
                     )
                 if structured is not None:
                     # The structure pass amended at least one page with model
@@ -818,7 +868,8 @@ class PDFConverter(Converter):
     def _page_to_md(
         self, page, doc, pno, assets_dir, stem, counter, skip_xrefs, footer_keys,
         top_keys, dedup, warnings, repeated, seen, source, paper, image_links,
-        page_links, flow: _PaperFlow | None,
+        page_links, flow: _PaperFlow | None, profile: paragraphs.Profile,
+        levels: dict[float, int], reflow: bool,
     ) -> tuple[list[str], list[Line], bytes | None]:
         """Return ``(md_lines, content_lines, page_png)`` for one page.
 
@@ -893,6 +944,7 @@ class PDFConverter(Converter):
             for line in all_lines
             if id(line) not in title_ids
             and not _is_page_number(line)
+            and (paper or not _is_bottom_number(line, page.rect.height))
             and _footer_key(line.text) not in footer_keys
             and _footer_key(line.text) not in top_keys
             and not _line_in_tables(line, tables)
@@ -961,19 +1013,34 @@ class PDFConverter(Converter):
                     (_ordered_lines(col) for col in columns),
                     _tables_for_columns(tables, columns),
                 ):
-                    self._emit_paper_group(col_lines, col_tables, flow, out)
+                    self._emit_paragraph_group(
+                        col_lines, col_tables, out, profile, levels, reflow, flow=flow
+                    )
                 out.append("")
             else:
-                self._emit_paper_group(content, tables, flow, out)
-        elif columns:
-            for col_lines, col_tables in zip(
-                (_ordered_lines(col) for col in columns),
-                _tables_for_columns(tables, columns),
-            ):
-                out.extend(self._emit_group(col_lines, col_tables))
-            out.append("")
+                self._emit_paragraph_group(
+                    content, tables, out, profile, levels, reflow, flow=flow
+                )
         else:
-            out.extend(self._emit_group(content, tables))
+            # Slide mode: page-scoped paragraph model, no cross-page flow
+            # (ADR-0070). Diagram-heavy pages keep text but never promote a
+            # display-sized label to a heading.
+            allow_headings = not _page_is_complex(content)
+            if columns:
+                for col_lines, col_tables in zip(
+                    (_ordered_lines(col) for col in columns),
+                    _tables_for_columns(tables, columns),
+                ):
+                    self._emit_paragraph_group(
+                        col_lines, col_tables, out, profile, levels, reflow,
+                        allow_headings=allow_headings, slide=True,
+                    )
+                out.append("")
+            else:
+                self._emit_paragraph_group(
+                    content, tables, out, profile, levels, reflow,
+                    allow_headings=allow_headings, slide=True,
+                )
 
         out.append("")
         return out, content, page_png
@@ -1000,33 +1067,94 @@ class PDFConverter(Converter):
             widths.append(page.rect.width)
         return paragraphs.build_profile(pages, heights, widths)
 
-    def _emit_paper_group(
+    def _slide_profile(
+        self, doc, footer_keys: set[str], top_keys: set[str]
+    ) -> paragraphs.Profile:
+        """Learn the deck's typography and conservative slide heading tiers.
+
+        Slide decks share the paragraph model with paper mode, but their display
+        sizes are design choices rather than a document outline, so only tiers
+        that behave like subheadings survive (ADR-0070).
+        """
+        raw_pages: list[list[Line]] = []
+        pages: list[list[TextLine]] = []
+        heights: list[float] = []
+        widths: list[float] = []
+        for page in doc:
+            bottom = page.rect.height - _FOOTER_BOTTOM_BAND
+            lines = [
+                ln
+                for ln in _ordered_lines(_page_lines(page))
+                if not _is_page_number(ln)
+                and not _is_bottom_number(ln, page.rect.height)
+                and _footer_key(ln.text) not in footer_keys
+                and _footer_key(ln.text) not in top_keys
+                and not (ln.bbox[1] >= bottom and ln.size <= _FOOTER_MAX_SIZE)
+            ]
+            raw_pages.append(lines)
+            pages.append([_to_text_line(ln) for ln in lines])
+            heights.append(page.rect.height)
+            widths.append(page.rect.width)
+        base = paragraphs.build_profile(pages, heights, widths)
+        title_size = _dominant_title_size(raw_pages, heights)
+        tiers = _slide_tier_sizes(raw_pages, base.body_size, title_size)
+        return paragraphs.Profile(
+            body_size=base.body_size,
+            pitch=base.pitch,
+            para_gap=base.para_gap,
+            tiers=tiers,
+            title_size=None,
+            title_reused=False,
+        )
+
+    def _emit_paragraph_group(
         self,
         lines: list[Line],
         tables,
-        flow: _PaperFlow,
         out: list[str],
+        profile: paragraphs.Profile,
+        levels: dict[float, int],
+        reflow: bool,
+        *,
+        flow: _PaperFlow | None = None,
+        allow_headings: bool = True,
+        slide: bool = False,
     ) -> None:
-        """Emit one reading-order group through the paragraph model (ADR-0055)."""
-        tlines = _text_lines(lines)
-        prev = flow.prev_line
+        """Emit one reading-order group through the paragraph model.
+
+        Paper mode passes the document-long ``flow`` (ADR-0055). Slide mode
+        passes ``flow=None``: each column/page is independent, so paragraphs
+        never continue across a slide boundary (ADR-0070).
+        """
+        tlines = _text_lines(lines, private_use=slide, code=slide)
+        prev = flow.prev_line if flow is not None else None
         if tlines and tables and min(table.bbox[1] for table in tables) < tlines[0].y0:
             # A table sits between the held tail and this group's first text:
             # the paragraph stops at the table.
-            flow.resolve()
+            if flow is not None:
+                flow.resolve()
             prev = None
-        blocks = paragraphs.segment_group(tlines, flow.profile, prev=prev)
+        blocks = paragraphs.segment_group(
+            tlines, profile, prev=prev, relaxed_bullets=slide
+        )
         x0s = [tl.x0 for tl in tlines]
         x1s = [tl.x1 for tl in tlines]
         col_min, col_max = (min(x0s), max(x1s)) if x0s else (0.0, 0.0)
-        bullet_levels = self._bullet_levels(lines)
+        bullet_levels = self._bullet_levels(lines, private_use=slide)
+        if allow_headings:
+            for block in blocks:
+                level = paragraphs.classify_block(
+                    block, profile, levels, col_min=col_min, col_max=col_max
+                )
+                if level and slide and paragraphs.block_plain(block).endswith("."):
+                    # A slide "heading" ending in a period is usually a list
+                    # item or contents entry ("Introduction and Methodology 1."),
+                    # not a section heading (ADR-0070).
+                    level = 0
+                if level:
+                    block.kind = "heading"
+                    block.level = level
         for block in blocks:
-            level = paragraphs.classify_block(
-                block, flow.profile, flow.levels, col_min=col_min, col_max=col_max
-            )
-            if level:
-                block.kind = "heading"
-                block.level = level
             if block.kind == "bullet":
                 block.bullet_level = bullet_levels.get(_round5(block.lines[0].x0), 0)
 
@@ -1040,75 +1168,51 @@ class PDFConverter(Converter):
         last_index = len(nodes) - 1
         for index, (_, kind, payload) in enumerate(nodes):
             if kind:
-                flow.resolve()
+                if flow is not None:
+                    flow.resolve()
                 table = _table_to_md(payload.extract())
                 if table:
                     if out and out[-1].strip():
                         out.append("")
                     out.extend(table)
                     out.append("")
-                flow.prev_line = None
+                if flow is not None:
+                    flow.prev_line = None
                 tail = None
                 continue
             block: paragraphs.Block = payload
             tail = block
-            if flow.take(block):
+            if flow is not None and flow.take(block):
                 continue
             if (
-                index == last_index
+                flow is not None
+                and index == last_index
                 and block.kind in ("para", "bullet")
                 and flow.reflow
             ):
                 flow.hold(block, out, out)
                 continue
-            _place_block(out, block, flow.reflow)
+            _place_block(out, block, reflow)
 
-        if tail is not None and tail.kind in ("para", "bullet"):
-            pending = flow.pending
-            flow.prev_line = (
-                pending.lines[-1] if pending is not None else tail.lines[-1]
-            )
-        else:
-            flow.prev_line = None
-
-    def _emit_group(self, lines: list[Line], tables) -> list[str]:
-        """Emit one reading-order group in slide mode (unchanged per-page path)."""
-        items = _make_items(lines)
-        return self._with_table_flow(items, tables, self._bullet_levels(lines))
+        if flow is not None:
+            if tail is not None and tail.kind in ("para", "bullet"):
+                pending = flow.pending
+                flow.prev_line = (
+                    pending.lines[-1] if pending is not None else tail.lines[-1]
+                )
+            else:
+                flow.prev_line = None
 
     @staticmethod
-    def _bullet_levels(lines: list[Line]) -> dict[int, int]:
-        xs = sorted({_round5(line.bbox[0]) for line in lines if _strip_bullet(_spans_to_md(line.spans))[0]})
+    def _bullet_levels(
+        lines: list[Line], private_use: bool = False
+    ) -> dict[int, int]:
+        xs = sorted({
+            _round5(line.bbox[0])
+            for line in lines
+            if _strip_bullet(_spans_to_md(line.spans), private_use=private_use)[0]
+        })
         return {x: idx for idx, x in enumerate(xs)}
-
-    def _with_table_flow(self, items, tables, bullet_levels) -> list[str]:
-        """Interleave text items and tables by vertical position."""
-        nodes: list[tuple[float, str, object]] = []
-        for item in items:
-            nodes.append((item["y0"], "text", item))
-        for table in tables:
-            nodes.append((table.bbox[1], "table", table))
-        nodes.sort(key=lambda n: (n[0], 0 if n[1] == "text" else 1))
-
-        out: list[str] = []
-        text_buffer: list[dict] = []
-        for _, kind, payload in nodes:
-            if kind == "text":
-                text_buffer.append(payload)
-            else:
-                out.extend(_emit_items(_merge_lone_bullets(text_buffer), bullet_levels))
-                text_buffer = []
-                rows = payload.extract()
-                table = _table_to_md(rows)
-                if table and out and out[-1].strip():
-                    # A pipe table is a leaf block: it needs a blank line before
-                    # it to not be read as a continuation of the paragraph above.
-                    out.append("")
-                out.extend(table)
-                out.append("")
-        if text_buffer:
-            out.extend(_emit_items(_merge_lone_bullets(text_buffer), bullet_levels))
-        return out
 
 def _details_block(summary: str, body: str) -> str:
     return f"<details>\n<summary>{summary}</summary>\n\n{body}\n\n</details>"

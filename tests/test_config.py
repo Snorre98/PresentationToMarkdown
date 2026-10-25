@@ -85,7 +85,8 @@ def test_feature_labels_and_scopes_are_user_facing():
     assert config.FEATURES["classify"].label == "Image classifier"
     assert config.FEATURES["format"].label == "Markdown restructure"
     assert config.FEATURES["summary"].label == "Presentation summary"
-    assert config.FEATURES["structure"].scope == "paper"
+    assert config.FEATURES["structure"].label == "PDF structure"
+    assert config.FEATURES["structure"].scope == "all"
     assert [item["key"] for item in config.feature_info()] == list(config.FEATURES)
 
 
@@ -95,7 +96,7 @@ def test_feature_descriptions_explain_the_behavior():
     assert "supports B" in config.FEATURES["interpret"].description
     assert "word check" in config.FEATURES["format"].description
     assert "summary header" in config.FEATURES["summary"].description
-    assert "slide mode" in config.FEATURES["structure"].description
+    assert "slide" in config.FEATURES["structure"].description
 
 
 def test_feature_requirements_expose_optional_dependencies(monkeypatch):

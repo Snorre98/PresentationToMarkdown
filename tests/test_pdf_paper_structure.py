@@ -163,8 +163,9 @@ def test_reflow_off_keeps_lines_but_keeps_headings(paper, tmp_path, monkeypatch)
     assert "## " not in "\n".join(line for line in text.splitlines() if "**" in line)
 
 
-def test_slide_mode_output_is_byte_identical(monkeypatch, tmp_path):
-    """F6: slide mode never promotes a heading and keeps the per-page layout."""
+def test_slide_mode_keeps_per_page_layout(monkeypatch, tmp_path):
+    """F6: slide mode keeps one # per page, reflows body paragraphs, and
+    preserves the page-break scaffold (ADR-0070)."""
     monkeypatch.delenv("PDF_MODE", raising=False)
     result = convert_file(SLIDE_PDF, tmp_path)
     assert result.error is None
@@ -177,7 +178,9 @@ SLIDE_GOLDEN = "\n".join(
         "# Sample PDF Page — Page 1",
         "",
         "Plain paragraph text.",
+        "",
         "Line one of two.",
+        "",
         "Line two of two.",
         "",
         "",
@@ -212,6 +215,5 @@ SLIDE_GOLDEN = "\n".join(
         '<div style="page-break-after: always; break-after: page;"></div>',
         "",
         "---",
-        "",
     ]
-)
+) + "\n"

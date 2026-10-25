@@ -44,7 +44,7 @@ func TestRenderAISetupShowsPassDescriptionModelsAndCommand(t *testing.T) {
 
 	out := m.renderAISetupBox(110, 45)
 	for _, want := range []string{
-		"AI setup", "Slide passes", "Vision transcription", "Presentation summary",
+		"AI setup", "Document passes", "Vision transcription", "Presentation summary",
 		"Reads images, diagrams and charts", "Qwen2.5-VL 7B Instruct",
 		"Llama 3.2 3B Instruct", "EmbeddingGemma",
 		"1 model needed", "curl -X POST", "+11 other fleet models",

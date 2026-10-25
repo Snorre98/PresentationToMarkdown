@@ -102,7 +102,7 @@ func TestRenderSettingsShowsSectionsAndNoAIRows(t *testing.T) {
 	}
 	for _, unwanted := range []string{
 		"Vision transcription", "Image classifier", "Markdown restructure",
-		"Presentation summary", "Paper structure",
+		"Presentation summary", "PDF structure",
 	} {
 		if strings.Contains(out, unwanted) {
 			t.Errorf("AI row leaked into settings: %q:\n%s", unwanted, out)

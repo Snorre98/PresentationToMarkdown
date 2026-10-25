@@ -86,6 +86,21 @@ def test_needs_restructure_maps_indices(monkeypatch):
     assert needs_restructure(pages, source="x") == {0, 2}
 
 
+def test_needs_restructure_slides_uses_slide_prompt(monkeypatch):
+    calls: list[list] = []
+
+    def fake_chat(messages, **kw):
+        calls.append(messages)
+        return "2", {}
+
+    monkeypatch.setattr("converter.need._chat_completion", fake_chat)
+    pages = ["First slide body.\n...", "Second slide body.\n..."]
+    assert needs_restructure(pages, source="x", mode="slides") == {1}
+    prompt = calls[0][0]["content"]
+    assert "slides of a converted presentation" in prompt
+    assert "subheadings" in prompt
+
+
 def test_needs_reformat_returns_none_on_error(monkeypatch):
     def boom(messages, **kw):
         raise RuntimeError("down")

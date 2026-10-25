@@ -38,17 +38,26 @@ Also: slide-number and date placeholders are skipped, headers/footers are italic
 | Each page | `# {slide title} — Page N` heading (falls back to `# Page N`) |
 | Page render | Rendered in memory for the vision passes; linked as `[Page N](…)` only with `IMAGE_LINKS=on` |
 | Text | Reconstructed into reading order, preserving bold/italic |
-| Bullets | `- ` / nested `  - ` lists (bullet glyphs + indentation) |
+| Paragraphs | Wrapped lines rejoin into one Markdown line per paragraph; bold/italic runs merge across line breaks; monospace code stays line-by-line in a fenced block |
+| Headings | `##`–`####` from the deck's repeated display styles (conservative), plus strict bold-only headings; diagram-heavy pages keep their labels as text |
+| Bullets | `- ` / nested `  - ` lists reconstructed from the bullet glyph and indentation |
 | Tables | Pipe tables — bordered via `page.find_tables()`, borderless (Word layout grids) reconstructed from the text-layer stream order (ADR-0054); `PDF_BORDERLESS_TABLES=off` disables |
 | Footer / slide number | Dropped (repeats identically on every page) |
 
 Layout-aware: lines are reordered by their coordinates, bullets are detected from
-the `•`/`–` glyphs and their indent, and tables are detected by PyMuPDF — plus
-whitespace-only (borderless) tables rebuilt from the text layer's content-stream
-order (`PDF_BORDERLESS_TABLES=off` disables that, ADR-0054).
+the `•`/`–`/PowerPoint Symbol glyphs and their indent, and tables are detected by
+PyMuPDF — plus whitespace-only (borderless) tables rebuilt from the text layer's
+content-stream order (`PDF_BORDERLESS_TABLES=off` disables that, ADR-0054).
 Pages whose text can't be linearized (diagrams, multi-column flowcharts) fall
 back to a collapsed raw-text block — and can optionally be transcribed by a local
 vision model. See [docs/ai-vision.md](docs/ai-vision.md).
+
+Slide mode keeps its per-page heading and page-break separators, but uses the
+same learned paragraph/heading model as paper mode (ADR-0070). Wrapped lines
+rejoin, lists nest, bold runs stay balanced, and repeated running headers are
+dropped; a paragraph never continues across a page boundary. `PDF_REFLOW=off`
+keeps the line-per-visual-line body output (headings and code are still
+reconstructed).
 
 With *epub export* on (ADR-0067), each PDF also produces `<name>.epub` beside
 its Markdown: the same headings, text, tables and math, with the figures
@@ -76,20 +85,26 @@ slide deck:
 | Running headers | Dropped (repeats at the top of every page) |
 | Page separators | None — pages flow continuously (no `---` / page-break divs) |
 
-Slide decks keep the default per-page behaviour; `PDF_MODE=slide` restores it
-explicitly. The two modes are mutually exclusive. The TUI settings screen offers
-the same choice as *Paper layout* (remembered across sessions).
+Slide decks keep the default per-page behaviour (one `#` per page, page
+separators, no cross-page paragraph merge) but share the same paragraph/heading
+model; `PDF_MODE=slide` is the default and `PDF_MODE=paper` selects the
+continuous document layout. The two modes are mutually exclusive. The TUI
+settings screen offers the same choice as *Paper layout* (remembered across
+sessions).
 
 With the structure pass enabled (AI setup `a` or `STRUCTURE_ENABLED=1`) an
-optional LLM pass then improves
-the structure: it fixes the page-1 title/authors block, blockquotes the
-abstract, adds `##` headings and a `## References` section, wraps footnotes, and
-repairs interleaved multi-column linearization — keeping every word verbatim.
-Later pages carry no top-level heading and the model may not add one (ADR-0052).
-Pages whose text layer is unusable (scans, garbage OCR) are instead reworded
+optional LLM pass then improves the structure of both PDF modes, keeping every
+word verbatim. In paper mode it fixes the page-1 title/authors block, blockquotes
+the abstract, adds `##` headings and a `## References` section, wraps footnotes,
+and repairs interleaved multi-column linearization; later pages carry no
+top-level heading and the model may not add one (ADR-0052). In slide mode it may
+fix each slide title's Markdown while keeping the exact ` — Page N` suffix, add
+`##`/`###` subheadings, rejoin lines and reorder diagram labels; the page-break
+scaffold is reinserted deterministically (ADR-0071). Pages whose text layer is
+unusable (scans, garbage OCR) are instead reworded
 from the rendered page image. Any page the model gets wrong is left in its
 deterministic form with a warning. See
-[Paper structure pass](#paper-structure-pass).
+[PDF structure pass](#pdf-structure-pass).
 
 Shared slide-master background images are detected and skipped. With
 `IMAGE_LINKS=on` (legacy), all extracted images are deduplicated by content hash,
@@ -190,7 +205,7 @@ pass below:
 | `--interpret` | Grounded diagram-interpretation pass |
 | `--format` | LLM markdown-restructure pass |
 | `--summary` | Presentation summary pass |
-| `--structure` | LLM document-structure pass (paper-mode PDFs only) |
+| `--structure` | LLM document-structure pass (PDFs, both modes) |
 | `--all` | The five slide passes above (vision + classify + interpret + format + summary) |
 | `--paper` | Treat PDFs as multi-column whitepapers (continuous document layout) |
 | `--slide` | Treat PDFs as slide decks (the default) |
@@ -259,9 +274,9 @@ the projection PtM uses:
 
 | Port | Used by |
 | --- | --- |
-| `:8081` | `qwen2.5-vl-7b-instruct-4bit` (mlx-vlm, Qwen2.5-VL 7B Instruct) — vision transcription, diagram interpretation, Markdown restructure, paper structure |
+| `:8081` | `qwen2.5-vl-7b-instruct-4bit` (mlx-vlm, Qwen2.5-VL 7B Instruct) — vision transcription, diagram interpretation, Markdown restructure, PDF structure |
 | `:8082` | `qwen2.5-vl-3b-instruct-4bit` (mlx-vlm, Qwen2.5-VL 3B Instruct) — image classifier |
-| `:8083` | `llama-3.2-3b-instruct-4bit` (mlx-lm, Llama-3.2-3B) — presentation summary + paper structure text |
+| `:8083` | `llama-3.2-3b-instruct-4bit` (mlx-lm, Llama-3.2-3B) — presentation summary + PDF structure text |
 | `:8084` | `llama-3.2-1b-instruct-4bit` (writing assistant; not PtM) |
 | `:8085` | `mistral-small-3.1-text-24b-instruct-2503-4bit` daemon (not PtM) |
 | `:8089` | `audio` — audio pipeline (NB-Whisper / diarization / dereverb / enhance / isolate) |
@@ -424,9 +439,9 @@ done
 
 | Model | Port | Needed for |
 | --- | --- | --- |
-| Qwen2.5-VL 7B Instruct (`qwen2.5-vl-7b-instruct-4bit`) | `:8081` | vision transcription, diagram interpretation, Markdown restructure, paper structure |
+| Qwen2.5-VL 7B Instruct (`qwen2.5-vl-7b-instruct-4bit`) | `:8081` | vision transcription, diagram interpretation, Markdown restructure, PDF structure |
 | Qwen2.5-VL 3B Instruct (`qwen2.5-vl-3b-instruct-4bit`) | `:8082` | image classifier (optional; implies vision) |
-| Llama 3.2 3B Instruct (`llama-3.2-3b-instruct-4bit`) | `:8083` | presentation summary, paper structure text, Markdown need check (optional with `NEED_GATE=off`) |
+| Llama 3.2 3B Instruct (`llama-3.2-3b-instruct-4bit`) | `:8083` | presentation summary, PDF structure text, Markdown need check (optional with `NEED_GATE=off`) |
 | EmbeddingGemma 2 (`embeddinggemma-2-q8-0`) | `:8090` | presentation summary embeddings |
 
 The 7B Qwen is the shared vision/rewrite model; the 3B Llama is the shared text
@@ -462,7 +477,7 @@ The model weights live on the external SSD under `HF_HOME` (see
   - `format.py` — Markdown polish post-pass (deterministic whitespace cleanup + optional LLM restructure)
   - `classify.py` — image classifier for the vision pass (tiny VLM)
   - `interpret.py` — grounded diagram-interpretation pass (typed relationships + prose)
-  - `structure.py` — paper-mode document-structure LLM pass (verbatim text regime + image reword)
+  - `structure.py` — PDF document-structure LLM pass (paper and slide modes; verbatim text regime + image reword)
   - `organize.py` — default output layout: kebab-case naming, the `source/` archive, the `-inference-used` marker (ADR-0048/0050)
   - `compress.py` — best-effort PDF compression for archived sources (ADR-0049)
   - `inference.py` — per-conversion ledger of model-produced Markdown content (ADR-0050)
@@ -547,34 +562,41 @@ toggle *Markdown restructure* in the TUI AI setup (`a`), or set
 equivalents; override them to point the restructure pass at a different text
 model.
 
-## Paper structure pass (optional)
+## PDF structure pass (optional)
 
-Paper-mode output (see
+PDF output — both paper mode (see
 [Whitepapers / multi-column documents](#whitepapers--multi-column-documents-paper-mode))
-is produced by deterministic geometry heuristics. The optional **structure pass**
-(`converter/structure.py`) improves it with a local chat model, per page:
+and the default slide mode — is produced by deterministic geometry heuristics.
+The optional **structure pass** (`converter/structure.py`) improves it with a
+local chat model, per page:
 
-- **Text regime** — pages with a usable text layer are *check-and-amended*: the
-  model fixes the page-1 `# Title` + `*Authors*` block, blockquotes the
-  abstract, adds `##` headings (never demoting existing ones), wraps footnotes,
-  inserts a `## References` heading, and repairs interleaved multi-column
-  linearization — while every content word must stay verbatim. A word
-  cross-check rejects any page that omits or invents prose. The page-1 title is
-  the document's only `# ` heading; a later page may not gain one (ADR-0052),
-  so its content stays under the paper's own `##` sections.
+- **Text regime** — pages with a usable text layer are *check-and-amended*,
+  while every content word must stay verbatim. A word cross-check rejects any
+  page that omits or invents prose.
+  - *Paper mode:* the model fixes the page-1 `# Title` + `*Authors*` block,
+    blockquotes the abstract, adds `##` headings (never demoting existing ones),
+    wraps footnotes, inserts a `## References` heading, and repairs interleaved
+    multi-column linearization. The page-1 title is the document's only `# `
+    heading; a later page may not gain one (ADR-0052).
+  - *Slide mode:* the model may fix each slide title's Markdown while keeping
+    every title word and the exact ` — Page N` suffix, add `##`/`###`
+    subheadings (never demoting existing ones), rejoin lines and reorder
+    diagram/text-box labels. Exactly one `# ` heading per slide is enforced, and
+    the page-break scaffold is reinserted deterministically (ADR-0071).
 - **Image regime** — pages whose text layer is unusable (scans, garbage OCR;
   the raw-text `<details>` fallback) are reworded from the rendered page image,
   gated by image readability and transcription quality instead of the verbatim
-  word gate.
+  word gate. Slide titles get their ` — Page N` suffix appended deterministically.
 - Pages already handled by the interpret/vision passes are skipped, and every
   rejected page keeps its deterministic Markdown with a `[WARN]`.
 - A text layer that is *dense OCR garbage* (typo-shaped tokens / vowel-less
   junk, detected pre-call — ADR-0023) is skipped without a model call, since a
   layer that is not really prose can only fail the verbatim word gate.
 
-Enable it together with paper mode: toggle *Paper structure* in the TUI AI setup
-(`a`) and *Paper layout* in settings (`s`), or set `STRUCTURE_ENABLED=1` and
-`PDF_MODE=paper` for the engine.
+Enable it with *PDF structure* in the TUI AI setup (`a`); it works in either PDF
+mode, and `s` still selects *Paper layout* versus slide layout. For the engine,
+set `STRUCTURE_ENABLED=1` (and `PDF_MODE=paper` if you want the continuous
+document layout).
 
 | Var | Default | Purpose |
 | --- | --- | --- |
@@ -735,22 +757,26 @@ cached (no separate probe), and unchanged chunks are not re-embedded.
   raw-text block (embedded images are still transcribed via the vision pass).
   Multi-column text pages *are* linearized: column-by-column automatically, and
   with full document structure in paper mode.
-- Paper-mode headings and paragraphs come from the document's own learned
-  typography (pitch, paragraph-gap, size tiers, ADR-0055). Unusual layouts can
-  still slip through: a heading at body size with no bold, or prose styled at a
-  heading tier (a pull-quote paragraph), may be missed or over-promoted. The
-  optional structure pass is the semantic backstop, and `PDF_REFLOW=off`
-  restores the previous line-per-line body output.
+- PDF headings and paragraphs come from the document's own learned typography
+  (pitch, paragraph-gap, size tiers, ADR-0055/0070). Unusual layouts can still
+  slip through: a heading at body size with no bold, or prose styled at a
+  heading tier (a pull-quote paragraph), may be missed or over-promoted. Slide
+  mode filters display tiers conservatively and skips heading promotion on
+  diagram-heavy pages, but a display-sized diagram label on a simple page can
+  still become a `##`. The optional structure pass is the semantic backstop, and
+  `PDF_REFLOW=off` restores the previous line-per-line body output.
+- Monospace code detection keys on the PDF font name. Code set in a
+  proportional font is treated as prose and reflowed.
 - **Residual review findings** (documented, not fixed; the sweep's outputs and
   report are kept in `artifacts/corpus-sweep/`). Across a 19-PDF corpus of
   lecture decks, papers and a 500-page book: (a) when a recovered `#` title
   also lives inside a detected table (some print-to-PDF web articles), those
   title words appear both as the heading and inside the pipe table;
-  (b) diagram-heavy slides converted in *paper* mode can still have text
-  fragments reordered by the row-major linearizer; (c) Markdown escaping of
-  specials can shift where merged lines move run boundaries (same rendered
-  text). Multi-column fragment order is unchanged from the previous converter,
-  and no text was lost or garbled.
+  (b) diagram-heavy slides can still have text fragments reordered by the
+  row-major linearizer, in either PDF mode; (c) Markdown escaping of specials
+  can shift where merged lines move run boundaries (same rendered text).
+  Multi-column fragment order is unchanged from the previous converter, and no
+  text was lost or garbled.
 - PyMuPDF is AGPL-3.0 (or commercial) licensed — fine for personal use, review if you distribute
 - Audio transcription uses segment-level timestamps (word-level needs wav2vec2 alignment) and does not yet auto-align the transcript to slides (see ADR-0007)
 - **Markdown flavor toggle** (Obsidian `![[wiki-links]]`), note style, and heading level options could go in a settings pane

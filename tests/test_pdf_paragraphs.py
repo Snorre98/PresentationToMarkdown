@@ -9,7 +9,7 @@ from converter import paragraphs
 from converter.paragraphs import Block, Profile, Run, TextLine
 
 
-def _line(text, size=12.0, x0=72.0, y0=100.0, bold=False):
+def _line(text, size=12.0, x0=72.0, y0=100.0, bold=False, mono=False):
     return TextLine(
         text=text,
         x0=x0,
@@ -18,6 +18,7 @@ def _line(text, size=12.0, x0=72.0, y0=100.0, bold=False):
         y1=y0 + size,
         size=size,
         runs=[Run(text, bold, False)],
+        mono=mono,
     )
 
 
@@ -266,3 +267,37 @@ def test_heading_ladder_bold_only_strict_gates():
     crowded = _candidate("A Bold Heading", bold=True)
     crowded.lines[0].crowded = True
     assert paragraphs.classify_block(crowded, profile, {}, col_min=72.0, col_max=300.0) == 0
+
+
+# --- code and private-use bullets (ADR-0070) ---------------------------------
+
+
+def test_private_use_bullet_glyphs_are_bullets():
+    assert paragraphs.bullet_split("\uf07dItem", private_use=True) == ("\uf07d", "Item")
+    assert paragraphs.bullet_split("\uf0b7 Item", private_use=True) == ("\uf0b7", "Item")
+    # Paper mode keeps the classic glyph set.
+    assert paragraphs.bullet_split("\uf07dItem") == (None, "\uf07dItem")
+
+
+def test_strip_glyph_removes_private_use_bullets():
+    line = _line("\uf07dItem")
+    paragraphs.strip_glyph(line, private_use=True)
+    assert paragraphs.plain_text(line.runs) == "Item"
+
+
+def test_monospace_lines_become_a_fenced_code_block():
+    profile = Profile(body_size=12.0, pitch=17.0, para_gap=23.0, tiers=[])
+    lines = [
+        _line("lw   $t0, 4($gp)", y0=100.0, mono=True),
+        _line("ori  $t1, $zero, 3", y0=117.0, mono=True),
+        _line("Prose after code.", y0=150.0),
+    ]
+    blocks = paragraphs.segment_group(lines, profile)
+
+    assert [block.kind for block in blocks] == ["code", "para"]
+    assert paragraphs.render_block(blocks[0]) == [
+        "```text",
+        "lw   $t0, 4($gp)",
+        "ori  $t1, $zero, 3",
+        "```",
+    ]

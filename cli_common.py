@@ -61,7 +61,7 @@ def add_ai_flags(parser: argparse.ArgumentParser) -> None:
     group.add_argument(
         "--structure",
         action="store_true",
-        help="enable the LLM document-structure pass (paper-mode PDFs only)",
+        help="enable the LLM document-structure pass (PDFs, both modes)",
     )
     group.add_argument(
         "--no-gate",

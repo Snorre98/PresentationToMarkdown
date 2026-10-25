@@ -73,6 +73,15 @@ _RESTRUCTURE_PROMPT = (
     "comma-separated (for example: 1, 3). If none need it, answer exactly: none"
 )
 
+_SLIDE_RESTRUCTURE_PROMPT = (
+    "Here are slides of a converted presentation, numbered. Some still need "
+    "restructuring: interleaved diagram/text-box labels to reorder, missing "
+    "`##` subheadings, a slide title to fix, or wrapped lines to rejoin.\n\n"
+    "{items}\n\n"
+    "Answer with only the numbers of the slides that need restructuring, "
+    "comma-separated (for example: 1, 3). If none need it, answer exactly: none"
+)
+
 
 def _parse_indices(reply: str, count: int) -> set[int] | None:
     """Map a model reply to 0-based indices, or ``None`` when unparseable.
@@ -207,12 +216,21 @@ def needs_reformat(
 
 
 def needs_restructure(
-    pages: list[str], source: str = "", page_nos: list[int] | None = None
+    pages: list[str],
+    source: str = "",
+    page_nos: list[int] | None = None,
+    mode: str = "paper",
 ) -> set[int] | None:
     """Indices of ``pages`` (0-based) that need the structure check-and-amend.
 
-    ``pages`` are page Markdown strings (a paper page's ``md_lines`` joined); the
+    ``pages`` are page Markdown strings (a page's ``md_lines`` joined); the
     returned indices are positions into that list. ``page_nos`` are the 1-based
-    page numbers to log (defaults to ``1..N``).
+    page numbers to log (defaults to ``1..N``). ``mode`` selects the paper or
+    slide wording of the gate prompt (ADR-0070/0071).
     """
-    return _classify(pages, _RESTRUCTURE_PROMPT, "need-structure", source, page_nos=page_nos)
+    prompt = (
+        _SLIDE_RESTRUCTURE_PROMPT if mode == "slides" else _RESTRUCTURE_PROMPT
+    )
+    return _classify(
+        pages, prompt, "need-structure", source, page_nos=page_nos
+    )

@@ -1,6 +1,7 @@
 # 0052. Paper mode is one continuous document (no per-page headings)
 
 - Status: Accepted
+- Amended by: [0070](0070-slide-paragraphs-and-headings.md), [0071](0071-structure-pass-for-slide-pdfs.md)
 - Date: 2026-10-13
 
 ## Context

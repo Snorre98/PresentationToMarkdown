@@ -1,20 +1,23 @@
-"""Paper-mode document-structure LLM pass (opt-in).
+"""PDF document-structure LLM pass (paper and slide modes, opt-in).
 
-The deterministic paper-mode converter (``converter/pdf.py``) reconstructs
-title/authors/headings/footnotes/references with geometry heuristics. This
-optional post-pass improves that structure with a local OpenAI-compatible chat
-model, per page, gated by a deterministic confidence signal:
+The deterministic PDF converter (``converter/pdf.py``) reconstructs
+titles/authors/headings/footnotes/references (paper mode) or per-slide titles,
+paragraphs and subheadings (slide mode). This optional post-pass improves that
+structure with a local OpenAI-compatible chat model, per page, gated by a
+deterministic confidence signal:
 
 - **Text regime** — pages with a usable text layer are *check-and-amended*:
-  the model may fix the page-1 title/authors block, blockquote the abstract,
+  paper mode may fix the page-1 title/authors block, blockquote the abstract,
   add ``##`` headings, wrap footnotes, insert a ``## References`` heading, and
-  reorder/rejoin lines to fix multi-column linearization — while every content
-  word must stay verbatim (a word cross-check rejects any page that omits or
-  invents prose).
+  reorder/rejoin lines to fix multi-column linearization; slide mode may fix the
+  slide title's Markdown, add ``##``/``###`` subheadings and reorder diagram
+  labels. Every content word must stay verbatim (a word cross-check rejects any
+  page that omits or invents prose).
 - **Image regime** — pages whose text layer is unusable (scans, garbage OCR,
   the ``<details>`` raw-text fallback) are *reworded from the rendered page
   image* by the same pass, gated by image readability + transcription quality
-  instead of the verbatim word gate.
+  instead of the verbatim word gate. Slide pages get their `` — Page N`` suffix
+  appended deterministically.
 - **Skip** — pages already handled by the interpret/vision passes are left
   alone, and so are dense OCR-garbage text layers (typo-shaped tokens /
   vowel-less junk): a page whose text layer is not really prose can only fail
@@ -46,6 +49,7 @@ from converter.format import (
     FORMAT_API_KEY,
     FORMAT_BASE_URL,
     FORMAT_MODEL,
+    _PAGEBREAK,
     _anchors_intact,
     _deterministic_pass,
     _is_structural,
@@ -106,18 +110,54 @@ _ALLOWED_HEADING_WORDS = frozenset(
     }
 )
 
+# Slide subheadings are structural without being paper sections. These words
+# may be added as heading-only text (the word gate still requires every body
+# word to be verbatim); paper mode keeps the narrower paper set above.
+_SLIDE_ALLOWED_HEADING_WORDS = _ALLOWED_HEADING_WORDS | frozenset(
+    {
+        "agenda",
+        "overview",
+        "summary",
+        "takeaways",
+        "recap",
+        "outline",
+        "questions",
+        "exercise",
+        "demo",
+        "example",
+        "examples",
+        "goals",
+        "objectives",
+        "learning",
+        "outcomes",
+        "next",
+        "steps",
+        "reading",
+        "further",
+        "background",
+        "context",
+        "details",
+        "section",
+        "topic",
+        "topics",
+        "key",
+        "points",
+    }
+)
+
 
 @dataclass
 class PageData:
-    """One paper-mode page: the deterministic Markdown lines plus raw metadata.
+    """One PDF page: the deterministic Markdown lines plus raw metadata.
 
     ``md_lines`` are exactly the lines ``PDFConverter.convert`` would write for
-    the page (page 1 may carry the ``# Title`` heading; later pages carry no
-    top-level heading — ADR-0052) including any legacy ``[Page N](...)`` link
-    and any trailing blank line. ``line_meta`` carries the raw per-line text +
-    coordinates/size/bold in reading order (text regime input and coverage).
-    ``png`` is the rendered page image (image regime), ``pno`` the 1-based page
-    number.
+    the page. Paper mode: page 1 may carry the ``# Title`` heading and later
+    pages carry no top-level heading (ADR-0052). Slide mode: every page carries
+    its ``# {title} — Page N`` heading (ADR-0070). They include any legacy
+    ``[Page N](...)`` link and any trailing blank line. ``line_meta`` carries
+    the raw per-line text + coordinates/size/bold in reading order (text regime
+    input and coverage). ``png`` is the rendered page image (image regime),
+    ``pno`` the 1-based page number.
     """
 
     md_lines: list[str]
@@ -243,20 +283,125 @@ _IMAGE_PROMPT = (
 )
 
 
+_SLIDE_AMEND_PROMPT = (
+    "You are restructuring the Markdown of one slide of a converted "
+    "presentation. Below are the slide's body lines with line numbers and "
+    "layout metadata ([font-size bold x0]), followed by the slide's current "
+    "Markdown.\n\n"
+    "Reproduce the Markdown with ONLY these structural amendments:\n"
+    "- Keep every word of the body text verbatim. Never reword, add, translate "
+    "or \"fix\" OCR-garbled words.\n"
+    "- The slide has exactly one top-level `# ` heading: its title followed by "
+    "the exact ` — Page N` suffix. You may fix the title's Markdown (for "
+    "example remove a stray bullet glyph or move a subtitle into the body), "
+    "but keep every title word and keep the exact ` — Page N` suffix. Never "
+    "add or remove a top-level `# ` heading.\n"
+    "- Promote lines that are real subheadings to `## ` or `### ` headings, "
+    "keeping their words verbatim. Keep the level of every heading that is "
+    "already present (`## `/`### `); never demote or remove an existing "
+    "heading. New heading text may only be a structural marker (Agenda, "
+    "Overview, Summary, Takeaways, Questions, References, ...) or words "
+    "already present in the slide.\n"
+    "- Rejoin wrapped lines into paragraphs and fix list nesting and blank-line "
+    "spacing.\n"
+    "- Where diagram or text-box linearization interleaved labels, reorder the "
+    "lines into reading order.\n"
+    "- Keep bullets, any `[Page N](...)` image link, all pipe tables, "
+    "blockquotes, `<details>` blocks, fenced code, and horizontal rules exactly "
+    "as they are.\n\n"
+    "Numbered body lines with metadata:\n{numbered}\n\n"
+    "Current Markdown:\n{md}\n\n"
+    "Output only the amended Markdown, with no commentary or code fences."
+)
+
+_SLIDE_IMAGE_PROMPT = (
+    "This slide has no usable extracted text layer. Read the rendered slide "
+    "and produce its Markdown: one `# ` slide title first (do not add a page "
+    "number; the writer appends ` — Page N`), then any `## `/`### ` "
+    "subheadings, bullets, body paragraphs and tables.\n\n"
+    "Rules:\n"
+    "- Transcribe text verbatim from the image; do not invent text you cannot "
+    "read; do not add commentary.\n"
+    "- Use exactly one top-level `# ` heading, the slide title.\n"
+    "- Keep any `[Page N](...)` image link line, if present, exactly as it is.\n"
+    "- Render tables as pipe tables and preserve bold/italic where present.\n"
+    "- Keep code on its own lines; a fenced code block is allowed.\n\n"
+    "Output only the Markdown, with no commentary and no wrapper code fence."
+)
+
+
+def _heading_lines(text: str) -> list[tuple[int, str]]:
+    """Top-level ``# `` lines outside fenced code blocks, with their indices."""
+    headings: list[tuple[int, str]] = []
+    fenced = False
+    for index, line in enumerate(text.splitlines()):
+        if line.lstrip().startswith("```"):
+            fenced = not fenced
+            continue
+        if not fenced and line.startswith("# "):
+            headings.append((index, line))
+    return headings
+
+
 def _heading_count(text: str) -> int:
-    return sum(1 for line in text.splitlines() if line.startswith("# "))
+    return len(_heading_lines(text))
 
 
 def _top_level_heading_ok(reply: str, pno: int) -> bool:
-    """The per-page top-level ``#`` heading contract (ADR-0052).
+    """The paper-mode per-page top-level ``#`` heading contract (ADR-0052).
 
     Page 1 may carry at most one ``# `` line — the paper title, the amendment
     target — and may gain one when the deterministic pass found none. A later
     page must carry none: its content belongs under the paper's last real
     ``##`` section, and a reply that adds a page/top-level heading is rejected.
+    Fenced code is ignored.
     """
     count = _heading_count(reply)
     return count <= 1 if pno == 1 else count == 0
+
+
+def _slide_heading_ok(reply: str, pno: int) -> bool:
+    """The slide-mode title contract: exactly one ``# `` heading with page N.
+
+    The heading may be amended, but it must remain the single top-level heading
+    and keep the `` — Page N`` provenance suffix (or the ``# Page N`` fallback).
+    Fenced code is ignored (ADR-0071).
+    """
+    headings = [line.strip() for _, line in _heading_lines(reply)]
+    if len(headings) != 1:
+        return False
+    heading = headings[0].rstrip()
+    if heading == f"# Page {pno}":
+        return True
+    suffix = f" — Page {pno}"
+    if not heading.endswith(suffix):
+        return False
+    return bool(heading[2 : -len(suffix)].strip())
+
+
+def _canonical_slide_title(reply: str, pno: int) -> str:
+    """Give a model-written slide Markdown the canonical `` — Page N`` title.
+
+    Image-regime replies do not know the page number. A missing title falls back
+    to ``# Page N``; an existing one is normalized. Multiple top-level headings
+    are left for :func:`_slide_heading_ok` to reject.
+    """
+    lines = reply.splitlines()
+    headings = _heading_lines(reply)
+    if len(headings) > 1:
+        return reply
+    if not headings:
+        return "\n".join([f"# Page {pno}", ""] + lines)
+    index, line = headings[0]
+    title = line[2:].strip()
+    title = re.sub(
+        r"\s*[-–—]\s*Page\s+\d+\s*$", "", title, flags=re.IGNORECASE
+    ).strip()
+    if not title or re.fullmatch(r"Page\s+\d+", title, flags=re.IGNORECASE):
+        lines[index] = f"# Page {pno}"
+    else:
+        lines[index] = f"# {title} — Page {pno}"
+    return "\n".join(lines)
 
 
 def _link_line(text: str) -> str | None:
@@ -266,7 +411,12 @@ def _link_line(text: str) -> str | None:
     return None
 
 
-def _added_words_allowed(word: str, original: str, reply: str) -> bool:
+def _added_words_allowed(
+    word: str,
+    original: str,
+    reply: str,
+    allowed: frozenset[str] = _ALLOWED_HEADING_WORDS,
+) -> bool:
     """Whether an added word is legal: heading-only AND (structural OR grounded).
 
     ``word`` must appear on a heading line in the reply (``# ``/``## ``) and
@@ -278,7 +428,7 @@ def _added_words_allowed(word: str, original: str, reply: str) -> bool:
         return False
     if not re.search(rf"\b{re.escape(word)}\b", _heading_text(reply), re.IGNORECASE):
         return False
-    if word in _ALLOWED_HEADING_WORDS:
+    if word in allowed:
         return True
     return bool(re.search(rf"\b{re.escape(word)}\b", original, re.IGNORECASE))
 
@@ -295,7 +445,11 @@ def _prose_text(text: str) -> str:
     )
 
 
-def _verify_preserved(original: str, reply: str) -> list[str]:
+def _verify_preserved(
+    original: str,
+    reply: str,
+    allowed: frozenset[str] = _ALLOWED_HEADING_WORDS,
+) -> list[str]:
     """Return problems if the amendment dropped or invented content words."""
     problems: list[str] = []
     missing = verify_no_omissions(original, reply)
@@ -304,14 +458,20 @@ def _verify_preserved(original: str, reply: str) -> list[str]:
     added = {w for w in re.findall(r"[A-Za-z0-9]{4,}", reply.lower()) if len(w) >= 4} - {
         w for w in re.findall(r"[A-Za-z0-9]{4,}", original.lower()) if len(w) >= 4
     }
-    illegal = sorted(w for w in added if not _added_words_allowed(w, original, reply))
+    illegal = sorted(
+        w for w in added if not _added_words_allowed(w, original, reply, allowed)
+    )
     if illegal:
         problems.append("added: " + ", ".join(illegal[:5]))
     return problems
 
 
-def _anchors_for(page: PageData, regime: str) -> list[str]:
-    """Structural lines the amended page must reproduce byte-exact."""
+def _anchors_for(page: PageData, regime: str, mode: str = "paper") -> list[str]:
+    """Structural lines the amended page must reproduce byte-exact.
+
+    The top-level ``# `` title is the amendment target: page 1's paper title in
+    paper mode, and every slide's title in slide mode.
+    """
     anchors: list[str] = []
     for line in page.md_lines:
         s = line.strip()
@@ -319,8 +479,9 @@ def _anchors_for(page: PageData, regime: str) -> list[str]:
             continue
         if not _is_structural(s):
             continue
-        if regime == "text" and page.pno == 1 and s.startswith("# "):
-            continue  # page-1 title line is the amendment target
+        if regime == "text" and s.startswith("# "):
+            if mode == "slides" or page.pno == 1:
+                continue
         if regime == "image" and s.startswith(_RAW_DETAILS_MARKERS):
             continue  # raw-text block is replaced by the image reword
         anchors.append(s)
@@ -339,14 +500,22 @@ def _text_model() -> tuple[str, str, str]:
     return STRUCTURE_BASE_URL, STRUCTURE_MODEL, STRUCTURE_API_KEY
 
 
-def _amend_page_text(page: PageData, warnings: list[str], source: str) -> list[str] | None:
+def _amend_page_text(
+    page: PageData, warnings: list[str], source: str, mode: str = "paper"
+) -> list[str] | None:
     """Text regime: check-and-amend the page, verbatim-gated."""
-    anchors = _anchors_for(page, "text")
+    anchors = _anchors_for(page, "text", mode)
     original = "\n".join(page.md_lines)
     numbered = _numbered_lines(page)
     if not numbered.strip():
         return None
-    user = _AMEND_PROMPT.format(numbered=numbered, md=original)
+    prompt = _SLIDE_AMEND_PROMPT if mode == "slides" else _AMEND_PROMPT
+    allowed = (
+        _SLIDE_ALLOWED_HEADING_WORDS
+        if mode == "slides"
+        else _ALLOWED_HEADING_WORDS
+    )
+    user = prompt.format(numbered=numbered, md=original)
     base_url, model, api_key = _text_model()
     t0 = time.perf_counter()
     try:
@@ -371,11 +540,16 @@ def _amend_page_text(page: PageData, warnings: list[str], source: str) -> list[s
         _reject(page, warnings, "dropped structural lines")
         _log(source, page, model=model, base_url=base_url, decision="rejected", error="anchors dropped", latency_ms=_ms(t0))
         return None
-    if not _top_level_heading_ok(reply, page.pno):
+    heading_ok = (
+        _slide_heading_ok(reply, page.pno)
+        if mode == "slides"
+        else _top_level_heading_ok(reply, page.pno)
+    )
+    if not heading_ok:
         _reject(page, warnings, "heading invariant")
         _log(source, page, model=model, base_url=base_url, decision="rejected", error="heading invariant", latency_ms=_ms(t0))
         return None
-    problems = _verify_preserved(original, reply)
+    problems = _verify_preserved(original, reply, allowed)
     if problems:
         _reject(page, warnings, "; ".join(problems))
         _log(source, page, model=model, base_url=base_url, decision="rejected", error="; ".join(problems), latency_ms=_ms(t0))
@@ -383,10 +557,15 @@ def _amend_page_text(page: PageData, warnings: list[str], source: str) -> list[s
     amended = reply.split("\n") + [""]
     unchanged = _deterministic_pass("\n".join(amended)) == _deterministic_pass(original)
     _log(source, page, model=model, base_url=base_url, decision="unchanged" if unchanged else "amended", latency_ms=_ms(t0))
+    if unchanged and mode == "slides":
+        # A model echo is not model-produced content (ADR-0050/0071).
+        return None
     return amended
 
 
-def _amend_page_image(page: PageData, warnings: list[str], source: str) -> list[str] | None:
+def _amend_page_image(
+    page: PageData, warnings: list[str], source: str, mode: str = "paper"
+) -> list[str] | None:
     """Image regime: reword the page from its rendered image."""
     if not page.png:
         return None
@@ -402,13 +581,14 @@ def _amend_page_image(page: PageData, warnings: list[str], source: str) -> list[
         _log(source, page, decision="skip", error=f"unreadable: {reason}")
         return None
     original = "\n".join(page.md_lines)
+    prompt = _SLIDE_IMAGE_PROMPT if mode == "slides" else _IMAGE_PROMPT
     t0 = time.perf_counter()
     try:
         reply = _chat_completion(
             [
                 {
                     "role": "user",
-                    "content": [{"type": "text", "text": _IMAGE_PROMPT}, _image_content(page.png)],
+                    "content": [{"type": "text", "text": prompt}, _image_content(page.png)],
                 }
             ],
             base_url=STRUCTURE_BASE_URL,
@@ -430,7 +610,14 @@ def _amend_page_image(page: PageData, warnings: list[str], source: str) -> list[
             )
         _log(source, page, decision="rejected", error=f"quality gate: {reason}", latency_ms=_ms(t0))
         return None
-    if not _top_level_heading_ok(reply, page.pno):
+    if mode == "slides":
+        reply = _canonical_slide_title(reply, page.pno)
+    heading_ok = (
+        _slide_heading_ok(reply, page.pno)
+        if mode == "slides"
+        else _top_level_heading_ok(reply, page.pno)
+    )
+    if not heading_ok:
         _reject(page, warnings, "heading invariant")
         _log(source, page, decision="rejected", error="heading invariant", latency_ms=_ms(t0))
         return None
@@ -464,12 +651,13 @@ def _log(source: str, page: PageData, **kw) -> None:
     )
 
 
-def structure_paper(
+def _structure_pages(
     pages: list[PageData],
+    mode: str,
     warnings: list[str] | None = None,
     source: str = "",
 ) -> list[str] | None:
-    """Run the structure pass over paper-mode pages, returning amended Markdown lines.
+    """Run the structure pass over PDF pages, returning amended Markdown lines.
 
     Returns ``None`` (the caller keeps the deterministic output) when disabled,
     given no pages, or when nothing was amended. Never raises: any failure
@@ -478,22 +666,23 @@ def structure_paper(
     if not config.is_enabled("structure") or not pages:
         return None
     regimes = {i: _page_regime(p) for i, p in enumerate(pages)}
-    mode = need_gate()
+    gate = need_gate()
     run_text: set[int] | None = None
-    if mode in ("on", "shadow"):
+    if gate in ("on", "shadow"):
         text_idx = [i for i in range(len(pages)) if regimes[i] == "text"]
         if text_idx:
             need = needs_restructure(
                 ["\n".join(pages[i].md_lines) for i in text_idx],
                 source=source,
                 page_nos=[pages[i].pno for i in text_idx],
+                mode=mode,
             )
             if need is None:
                 need = set(range(len(text_idx)))
             run_text = {text_idx[i] for i in need}
         else:
             run_text = set()
-        if mode == "shadow":
+        if gate == "shadow":
             run_text = None
     out: list[str] = []
     changed = False
@@ -502,17 +691,45 @@ def structure_paper(
         amended: list[str] | None = None
         if regime == "text":
             if run_text is None or i in run_text:
-                amended = _amend_page_text(page, warnings, source)
+                amended = _amend_page_text(page, warnings, source, mode)
         elif regime == "image":
-            amended = _amend_page_image(page, warnings, source)
+            amended = _amend_page_image(page, warnings, source, mode)
         if amended is None:
             out.extend(page.md_lines)
         else:
             out.extend(amended)
             changed = True
-        # Reproduce the inter-page blank line the deterministic writer inserts
-        # in paper mode, so unchanged pages stay byte-identical.
-        out.append("")
+        if mode == "slides":
+            # Reproduce the page-break scaffold the deterministic slide writer
+            # inserts after every page (including the last).
+            out.extend(["", _PAGEBREAK, "", "---", ""])
+        else:
+            # Reproduce the inter-page blank line the paper writer inserts, so
+            # unchanged pages stay byte-identical.
+            out.append("")
     if not changed:
         return None
     return out
+
+
+def structure_paper(
+    pages: list[PageData],
+    warnings: list[str] | None = None,
+    source: str = "",
+) -> list[str] | None:
+    """Run the structure pass over paper-mode pages (ADR-0011/0052)."""
+    return _structure_pages(pages, "paper", warnings, source)
+
+
+def structure_slides(
+    pages: list[PageData],
+    warnings: list[str] | None = None,
+    source: str = "",
+) -> list[str] | None:
+    """Run the structure pass over slide-mode pages (ADR-0071).
+
+    Every page carries its deterministic ``# {title} — Page N`` heading; the
+    model may amend the title text but the page suffix is enforced. The
+    page-break scaffold is reinserted here, so ``PageData`` stays page-local.
+    """
+    return _structure_pages(pages, "slides", warnings, source)

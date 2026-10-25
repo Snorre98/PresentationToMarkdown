@@ -21,7 +21,7 @@ MLX/GGUF "lanes", SSD storage layout, and LAN serving. In short:
 - The **vision + rewrite model** used here is
   `mlx-community/Qwen2.5-VL-7B-Instruct-4bit` (MLX, qwen2_5_vl arch, 4-bit).
   The same server also handles diagram interpretation, Markdown restructure and
-  paper-structure image pages; it is not only a transcriber.
+  structure-pass image pages; it is not only a transcriber.
 
 Serve it (OpenAI-compatible API on `:8081`):
 
@@ -412,8 +412,9 @@ VISION_ENABLED=1 VISION_CLASSIFY_ENABLED=1 INTERPRET_ENABLED=1 \
 FORMAT_ENABLED=1 SUMMARY_ENABLED=1 scripts/ptm-tui.sh
 ```
 
-Paper structure is separate and paper-mode only (`STRUCTURE_ENABLED=1
-PDF_MODE=paper`). The required models and start commands are in
+PDF structure is separate and runs in both PDF modes (`STRUCTURE_ENABLED=1`,
+with `PDF_MODE=paper` if you also want the continuous document layout). The
+required models and start commands are in
 [ai-requirements.md](ai-requirements.md).
 
 ## Logging

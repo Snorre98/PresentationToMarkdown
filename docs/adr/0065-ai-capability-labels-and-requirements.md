@@ -1,6 +1,6 @@
 # 0065. AI capability labels and the resolved requirements projection
 
-- Status: Accepted (amended by [0066](0066-ai-setup-control-surface.md): the AI toggles moved from settings to the `a` view)
+- Status: Accepted (amended by [0066](0066-ai-setup-control-surface.md): the AI toggles moved from settings to the `a` view; [0071](0071-structure-pass-for-slide-pdfs.md): the structure pass applies to both PDF modes)
 - Date: 2026-10-20
 - Relates to: [0012](0012-runtime-ai-features.md),
   [0029](0029-serving-via-control-daemon.md),

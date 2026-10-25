@@ -1,6 +1,7 @@
 # 0055. Paper-mode paragraphs and headings from learned typography
 
 - Status: Accepted
+- Amended by: [0070](0070-slide-paragraphs-and-headings.md)
 - Date: 2026-10-13
 
 ## Context
